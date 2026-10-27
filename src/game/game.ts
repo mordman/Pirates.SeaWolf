@@ -565,6 +565,16 @@ export class Game {
       steps++;
     }
 
+    // телеметрия для отладки/E2E: window.__sea (ватерлиния: y ≈ waterY)
+    const dbg = window as unknown as { __sea: Record<string, number> };
+    dbg.__sea = {
+      fps: this.fpsSmooth,
+      x: this.player.position.x, y: this.player.position.y, z: this.player.position.z,
+      waterY: waterHeightAt(this.player.position.x, this.player.position.z, this.time),
+      roll: this.player.euler.z, pitch: this.player.euler.x,
+      speed: this.player.speedKnots(),
+    };
+
     // действия команды (R)
     if (this.player.pumpAction && !this.docked) {
       const msg = this.player.crewAction(dt);

@@ -271,6 +271,15 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
       idx.push(centerIdx, i0 + 1, i0); // ориентация наружу (-Z)
     }
   }
+  // днище: замыкаем корпус снизу (r=0 — нижняя кромка шпангоутов),
+  // нормали вниз — при крене/под водой не «просвечивает»
+  for (let s = 0; s < S; s++) {
+    const a = s * rowLen + 1;        // левый борт, низ
+    const b = s * rowLen;            // правый борт, низ
+    const c = (s + 1) * rowLen + 1;
+    const d = (s + 1) * rowLen;
+    idx.push(a, b, c, b, d, c);
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
@@ -297,7 +306,9 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
 }
 
 function buildDeck(P: ShipPreset): THREE.BufferGeometry {
-  // палуба: полоса по длине чуть ниже фальшборта
+  // палуба: полоса по длине чуть ниже фальшборта, вплотную к обшивке.
+  // ВАЖНО: порядок вершин (a,b,c)(b,d,c) даёт нормали ВВЕРХ —
+  // иначе палуба отсекается backface-куллингом и «просвечивает».
   const S = 20, L = P.length;
   const pos: number[] = [], col: number[] = [], idx: number[] = [];
   const cDeck = new THREE.Color(P.colors.deck);
@@ -307,14 +318,18 @@ function buildDeck(P: ShipPreset): THREE.BufferGeometry {
     const p = hullProfile(t, P);
     const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
     const deckY = p.bulwark - 1.0;
-    const w = Math.max(0.2, p.w * 0.9 - 0.25);
+    // полуширина корпуса на высоте палубы — та же формула, что в buildHull,
+    // чтобы палуба доходила до борта без щели
+    const u = Math.min(1, Math.max(0, (deckY + p.draft) / (p.draft + p.bulwark)));
+    const flare = Math.pow(u, 0.6);
+    const w = Math.max(0.15, p.w * (0.16 + 0.84 * flare) - 0.05);
     pos.push(w, deckY, z, -w, deckY, z);
     const c = (s % 2 === 0) ? cDeck : cDark;
     col.push(c.r, c.g, c.b, c.r, c.g, c.b);
   }
   for (let s = 0; s < S; s++) {
     const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
-    idx.push(a, c, b, b, c, d);
+    idx.push(a, b, c, b, d, c);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -366,8 +381,8 @@ export function buildShip(P: ShipPreset): ShipVisual {
   hull.castShadow = true;
   group.add(hull);
 
-  // палуба
-  const deck = new THREE.Mesh(buildDeck(P), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+  // палуба (DoubleSide — страховка от куллинга при любой геометрии)
+  const deck = new THREE.Mesh(buildDeck(P), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide }));
   group.add(deck);
 
   const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e5433, roughness: 0.8 });
@@ -486,26 +501,55 @@ export function buildShip(P: ShipPreset): ShipVisual {
     }
   }
 
-  // штурвал
+  // штурвал: пьедестал (не вращается) + колесо, начало координат
+  // вращающейся группы — в ступице, чтобы крутился вокруг СВОЕЙ оси
+  const wheelAsm = new THREE.Group();
   const wheel = new THREE.Group();
-  const wheelTorus = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.05, 6, 16), darkMat);
-  wheelTorus.position.y = 0.9;
+  const wheelR = 0.55;
+  const hubY = 0.98; // высота оси над палубой
+  const wheelTorus = new THREE.Mesh(new THREE.TorusGeometry(wheelR, 0.045, 6, 18), darkMat);
   wheel.add(wheelTorus);
   for (let i = 0; i < 4; i++) {
-    const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.25, 4), darkMat);
-    spoke.rotation.z = (i / 4) * Math.PI;
-    spoke.position.y = 0.9;
+    const ang = (i / 4) * Math.PI;
+    const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, wheelR * 2.3, 4), darkMat);
+    spoke.rotation.z = ang;
     wheel.add(spoke);
+    // рукоятки наружу, к рулевому (в сторону кормы, -Z)
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.26, 5), woodMat);
+    handle.rotation.x = Math.PI / 2;
+    handle.position.set(-Math.sin(ang) * (wheelR + 0.02), Math.cos(ang) * (wheelR + 0.02), -0.14);
+    wheel.add(handle);
   }
-  wheel.position.set(0, P.freeboard * 0.82 - 1.0, -L * 0.3);
-  group.add(wheel);
+  const wheelHub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.34, 8), woodMat);
+  wheelHub.rotation.x = Math.PI / 2;
+  wheel.add(wheelHub);
+  wheel.position.set(0, hubY, 0);
+  wheelAsm.add(wheel);
+  // стойка, подкосы и ось — вне вращающейся группы
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, hubY, 0.12), darkMat);
+  post.position.set(0, hubY / 2, 0);
+  wheelAsm.add(post);
+  for (const sgn of [-1, 1]) {
+    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, hubY * 1.2, 0.08), darkMat);
+    brace.position.set(sgn * 0.24, hubY * 0.5, 0);
+    brace.rotation.z = sgn * 0.55;
+    wheelAsm.add(brace);
+  }
+  const wheelAxle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.55, 6), darkMat);
+  wheelAxle.rotation.x = Math.PI / 2;
+  wheelAxle.position.set(0, hubY, 0.12);
+  wheelAsm.add(wheelAxle);
+  const wheelT = 0.2;
+  wheelAsm.position.set(0, hullProfile(wheelT, P).bulwark - 1.0, THREE.MathUtils.lerp(-L / 2, L / 2, wheelT));
+  group.add(wheelAsm);
 
-  // люки, шпиль, фонарь, якоря
+  // люки, шпиль, фонарь, якоря — строго на палубе
+  const deckYAt = (t: number) => hullProfile(t, P).bulwark - 1.0;
   const hatch = new THREE.Mesh(new THREE.BoxGeometry(L * 0.16, 0.24, L * 0.1), darkMat);
-  hatch.position.set(0, P.freeboard * 0.82 - 0.9, -L * 0.02);
+  hatch.position.set(0, deckYAt(0.48) + 0.12, -L * 0.02);
   group.add(hatch);
   const capstan = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 0.7, 8), woodMat);
-  capstan.position.set(0, P.freeboard * 0.82 - 0.6, L * 0.08);
+  capstan.position.set(0, deckYAt(0.58) + 0.35, L * 0.08);
   group.add(capstan);
   const sternLantern = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8),
     new THREE.MeshStandardMaterial({ color: 0xffd88a, emissive: 0xffaa33, emissiveIntensity: 1.6 }));
