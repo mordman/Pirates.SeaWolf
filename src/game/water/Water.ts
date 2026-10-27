@@ -16,7 +16,10 @@ export class Water {
   group = new THREE.Group();
   material: THREE.ShaderMaterial;
   private detail: THREE.Mesh;
-  private far: THREE.Mesh;
+  // Дальняя вода — 4 полосы ВСТЫК к детальной сетке (не сплошное полотно!):
+  // сплошной план с ячейками 100м рисовался под кораблём и его линейная
+  // интерполяция резала корпус («корабль внутри волны»)
+  private bands: THREE.Mesh[] = [];
   private cam = new THREE.Vector3();
   uniforms: OceanUniforms;
 
@@ -133,14 +136,28 @@ export class Water {
     this.detail.renderOrder = 1;
     this.group.add(this.detail);
 
-    // Дальняя вода: до горизонта
-    const fg = new THREE.PlaneGeometry(9000, 9000, 90, 90);
-    fg.rotateX(-Math.PI / 2);
-    // приподнять середину нельзя — просто мелкая сетка, амплитуда гасится шейдером
-    this.far = new THREE.Mesh(fg, mat);
-    this.far.frustumCulled = false;
-    this.far.renderOrder = 0;
-    this.group.add(this.far);
+    // Дальняя вода: 4 полосы вокруг детального квадрата до горизонта.
+    // Внутренние кромки полос ВСЕГДА совпадают с кромками детальной сетки
+    // (двигаем их вместе с ней), стык бесшовный: вершины совпадают и
+    // смещаются одной функцией gerstner. Перекрытия нет вовсе.
+    const H = 350;               // половина детального плана
+    const FAR = 4500;            // радиус дальней воды
+    const long = FAR - H;        // длина полосы поперёк
+    const mkBand = (w: number, h: number, sx: number, sz: number) => {
+      const g = new THREE.PlaneGeometry(w, h, Math.max(2, Math.round(w / 50)), Math.max(2, Math.round(h / 50)));
+      g.rotateX(-Math.PI / 2);
+      const m = new THREE.Mesh(g, mat);
+      m.frustumCulled = false;
+      m.renderOrder = 0;
+      this.bands.push(m);
+      this.group.add(m);
+      return m;
+    };
+    // север/юг — во всю ширину; запад/восток — только между ними (пинвил)
+    mkBand(2 * FAR, long, 0, -(H + long / 2));
+    mkBand(2 * FAR, long, 0, +(H + long / 2));
+    mkBand(long, 2 * H, -(H + long / 2), 0);
+    mkBand(long, 2 * H, +(H + long / 2), 0);
   }
 
   setEnvironment(sunDir: THREE.Vector3, sunColor: THREE.Color, sky: THREE.Color, horizon: THREE.Color, fogColor: THREE.Color, fogDensity: number) {
@@ -163,7 +180,13 @@ export class Water {
     const sx = Math.round(camScenePos.x / step) * step;
     const sz = Math.round(camScenePos.z / step) * step;
     this.detail.position.set(sx, 0, sz);
-    this.far.position.set(Math.round(camScenePos.x / 100) * 100, 0, Math.round(camScenePos.z / 100) * 100);
+    // полосы дальней воды прижаты к кромкам детального плана
+    const H = 350;
+    const off = H + (4500 - H) / 2;
+    this.bands[0].position.set(sx, 0, sz - off);
+    this.bands[1].position.set(sx, 0, sz + off);
+    this.bands[2].position.set(sx - off, 0, sz);
+    this.bands[3].position.set(sx + off, 0, sz);
   }
 
   heightAt(x: number, z: number, t: number) {

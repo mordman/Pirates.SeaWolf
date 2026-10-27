@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Корабль сидит в воде по ватерлинию (вода у тёмного низа корпуса, высокий надводный борт).\n2) Нет, посторонних плоских «линий» или поверхностей, проходящих через корпус, не видно.\n3) Волны у борта выглядят естественно (есть гребни/впадины и отражения), не как плоская бумага.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1793102059,
+  "id": "2026102719541737017e5967c04e33",
+  "model": "glm-5v-turbo",
+  "object": "chat.completion",
+  "request_id": "2026102719541737017e5967c04e33",
+  "usage": {
+    "completion_tokens": 92,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1945,
+    "prompt_tokens_details": {
+      "cached_tokens": 2
+    },
+    "total_tokens": 2037
+  }
+}

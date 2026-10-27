@@ -353,7 +353,9 @@ export class Game {
     // руль: A — влево, D — вправо (положительный руль = поворот вправо)
     const steer = (inp.isDown('KeyD') ? 1 : 0) - (inp.isDown('KeyA') ? 1 : 0);
     if (this.docked) p.rudderTarget = 0;
-    else p.rudderTarget = steer; // A — лево (+yaw?), D — право
+    else p.rudderTarget = steer; // D — право (штирборт), A — лево (порт);
+    // изометрическая камера следует за курсом, поэтому на экране
+    // D всегда поворачивает вправо, A — влево
 
     // якорь
     if (inp.pressed('KeyF')) {
@@ -543,8 +545,8 @@ export class Game {
     const now = performance.now();
     let dt = (now - this.lastFrame) / 1000;
     this.lastFrame = now;
+    this.fpsSmooth += (1 / Math.max(dt, 1e-4) - this.fpsSmooth) * 0.05; // истинный FPS
     dt = Math.min(dt, 0.1);
-    this.fpsSmooth += (1 / Math.max(dt, 1e-4) - this.fpsSmooth) * 0.05;
 
     this.handleInput(dt);
 
@@ -572,6 +574,8 @@ export class Game {
       x: this.player.position.x, y: this.player.position.y, z: this.player.position.z,
       waterY: waterHeightAt(this.player.position.x, this.player.position.z, this.time),
       roll: this.player.euler.z, pitch: this.player.euler.x,
+      heading: this.player.heading,
+      rudder: this.player.rudder, angY: this.player.angular.y,
       speed: this.player.speedKnots(),
     };
 

@@ -43,6 +43,9 @@ export class CameraRig {
   private freeAzim = Math.PI * 0.75;
   private freeElev = 0.45;
   private isoAzim = Math.PI * 0.25;
+  // изометрия следует за курсом (нос «вверх экрана») — тогда A/D всегда
+  // соответствуют лево/право НА ЭКРАНЕ, инверсии при разных курсах нет
+  private isoFollow = 1.6; // скорость доворота, рад/с
 
   // сглаживание
   private pos = new THREE.Vector3(0, 60, 120);
@@ -71,7 +74,7 @@ export class CameraRig {
       this.dist.free = clamp(this.dist.free + wheel * 0.03, 14, 70);
     } else {
       this.dist[this.mode] = clamp(this.dist[this.mode] + wheel * 0.08,
-        this.mode === 'iso' ? 35 : 16, this.mode === 'iso' ? 420 : 220);
+        this.mode === 'iso' ? 35 : 16, this.mode === 'iso' ? 300 : 220);
     }
 
     // свободная камера — вращение мышью при зажатой ПКМ
@@ -85,6 +88,14 @@ export class CameraRig {
     const t = 1 - Math.exp(-5.0 * dt);
     let target = this._t1;
     let lookTarget = this._t2;
+
+    // изометрическая камера доворачивается за курсом корабля (кратчайшей дугой)
+    {
+      const azTarget = -ship.heading - Math.PI / 2 + 0.55; // сзади и чуть сбоку
+      let dAz = azTarget - this.isoAzim;
+      dAz = Math.atan2(Math.sin(dAz), Math.cos(dAz));
+      this.isoAzim += dAz * Math.min(1, this.isoFollow * dt);
+    }
 
     if (ctx.active) {
       // режим прицеливания: камера за орудиями наводящего борта, ниже к воде

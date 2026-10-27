@@ -252,7 +252,7 @@ export class Ship {
     this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
     const rudderAngle = this.rudder * 0.6; // рад, макс ~34°
     const yawAuth = clamp(spd / 4.0, 0, 1.15); // авторитеты руля от скорости
-    this.torque.y += rudderAngle * yawAuth * m * 7.0;
+    this.torque.y += rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
     // крен на повороте (отцентробежный)
     this.torque.z += this.angular.y * spd * m * 0.35;
     // зарывание носа на скорости
