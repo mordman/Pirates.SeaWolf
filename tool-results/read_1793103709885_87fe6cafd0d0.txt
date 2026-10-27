@@ -1,0 +1,815 @@
+     1→import * as THREE from 'three';
+     2→
+     3→// ============================================================
+     4→// Процедурная постройка кораблей (исторические силуэты):
+     5→// шлюп (игрок), флейт (торговец), бриг (патруль).
+     6→// Корпус — по шпангоутам, паруса — шейдер с «пузом»,
+     7→// такелаж — линиями. Все размеры в метрах, 1u = 1м.
+     8→// ============================================================
+     9→
+    10→export interface ShipPreset {
+    11→  id: string;
+    12→  name: string;
+    13→  length: number; beam: number; draft: number; freeboard: number;
+    14→  masts: 2 | 3;
+    15→  gunsPerSide: number;
+    16→  mass: number;          // кг
+    17→  maxSpeed: number;      // м/с
+    18→  hullHP: number; sailHP: number; maxCrew: number;
+    19→  cargo: number;         // грузоподъёмность, т
+    20→  colors: { hull: number; deck: number; trim: number; sail: number };
+    21→  flagKind: 'pirate' | 'merchant' | 'navy';
+    22→}
+    23→
+    24→export const PRESETS: Record<string, ShipPreset> = {
+    25→  sloop: {
+    26→    id: 'sloop', name: 'Шлюп «Бриз»',
+    27→    length: 28, beam: 7.4, draft: 2.2, freeboard: 2.7,
+    28→    masts: 2, gunsPerSide: 5,
+    29→    mass: 150_000, maxSpeed: 8.8,
+    30→    hullHP: 100, sailHP: 100, maxCrew: 24, cargo: 60,
+    31→    colors: { hull: 0x5c4326, deck: 0xa8895f, trim: 0x2e2013, sail: 0xe9dcc2 },
+    32→    flagKind: 'pirate',
+    33→  },
+    34→  fluyt: {
+    35→    id: 'fluyt', name: 'Флейт «Морская корова»',
+    36→    length: 36, beam: 8.8, draft: 3.1, freeboard: 3.0,
+    37→    masts: 3, gunsPerSide: 3,
+    38→    mass: 360_000, maxSpeed: 5.6,
+    39→    hullHP: 150, sailHP: 110, maxCrew: 20, cargo: 220,
+    40→    colors: { hull: 0x4a3a2a, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
+    41→    flagKind: 'merchant',
+    42→  },
+    43→  brig: {
+    44→    id: 'brig', name: 'Бриг «Ревнитель»',
+    45→    length: 31, beam: 8.4, draft: 2.8, freeboard: 2.9,
+    46→    masts: 2, gunsPerSide: 7,
+    47→    mass: 280_000, maxSpeed: 7.6,
+    48→    hullHP: 180, sailHP: 120, maxCrew: 60, cargo: 90,
+    49→    colors: { hull: 0x3d3d46, deck: 0x8f7752, trim: 0x1c1c22, sail: 0xdfd6bd },
+    50→    flagKind: 'navy',
+    51→  },
+    52→};
+    53→
+    54→export interface ShipVisual {
+    55→  group: THREE.Group;
+    56→  sails: SailRig;
+    57→  gunsPort: THREE.Object3D[];
+    58→  gunsStarboard: THREE.Object3D[];
+    59→  flag: THREE.Mesh;
+    60→  flagMat: THREE.ShaderMaterial;
+    61→  dims: { length: number; beam: number; draft: number };
+    62→  outline: THREE.Vector2[];       // контур ватерлинии (для пены)
+    63→  masts: THREE.Object3D[];        // для ломания мачт
+    64→  lantern?: THREE.PointLight;
+    65→  wheel: THREE.Object3D;
+    66→}
+    67→
+    68→export interface SailRig {
+    69→  sails: SailInfo[];
+    70→  material: THREE.ShaderMaterial;
+    71→}
+    72→interface SailInfo {
+    73→  mesh: THREE.Mesh;
+    74→  baseScaleY: number;
+    75→  side: 1 | -1; // 1 = правый борт не нужен, паруса по центру
+    76→}
+    77→
+    78→// ---------- шейдер паруса ----------
+    79→function sailMaterial(baseColor: number): THREE.ShaderMaterial {
+    80→  return new THREE.ShaderMaterial({
+    81→    uniforms: {
+    82→      uBelly: { value: 0.5 },
+    83→      uTime: { value: 0 },
+    84→      uDamage: { value: 0 },
+    85→      uColor: { value: new THREE.Color(baseColor) },
+    86→      uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) },
+    87→      uFurl: { value: 0 },
+    88→    },
+    89→    vertexShader: /* glsl */`
+    90→      uniform float uBelly, uTime, uFurl;
+    91→      varying vec2 vUv;
+    92→      varying vec3 vN;
+    93→      varying float vDmgU;
+    94→      uniform float uDamage;
+    95→      void main() {
+    96→        vUv = uv;
+    97→        vDmgU = uDamage;
+    98→        vec3 p = position;
+    99→        // «пузо» паруса: синус по ширине и высоте, кромки закреплены
+   100→        float belly = uBelly * sin(uv.x * 3.14159) * sin(uv.y * 3.14159);
+   101→        // трепет кромок от ветра
+   102→        float flut = sin(uv.x * 12.0 + uTime * 6.0) * 0.02 * (0.3 + uBelly) * (1.0 - uv.y) * uv.y * 4.0;
+   103→        float dz = belly + flut;
+   104→        p.z += dz;
+   105→        // нормаль аналитически
+   106→        float dzu = uBelly * cos(uv.x * 3.14159) * 3.14159 * sin(uv.y * 3.14159);
+   107→        float dzv = uBelly * sin(uv.x * 3.14159) * 3.14159 * cos(uv.y * 3.14159);
+   108→        vN = normalize(vec3(-dzu * 0.35, -dzv * 0.35, 1.0));
+   109→        // рифление: при uFurl парус собирается вверх
+   110→        p.y *= mix(1.0, 0.12, uFurl);
+   111→        p.z *= mix(1.0, 0.1, uFurl);
+   112→        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+   113→      }
+   114→    `,
+   115→    fragmentShader: /* glsl */`
+   116→      varying vec2 vUv;
+   117→      varying vec3 vN;
+   118→      varying float vDmgU;
+   119→      uniform vec3 uColor;
+   120→      uniform vec3 uSunDir;
+   121→      float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+   122→      float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+   123→        return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
+   124→      void main() {
+   125→        vec3 col = uColor;
+   126→        // швы (горизонтальные полотнища)
+   127→        float seams = smoothstep(0.035, 0.0, abs(fract(vUv.y * 5.0) - 0.5) - 0.46);
+   128→        col *= 1.0 - seams * 0.16;
+   129→        // заплатки и рваные края от повреждений
+   130→        float dmg = vDmgU;
+   131→        float patches = step(0.55, vnoise(vUv * 4.7 + 7.3)) * dmg;
+   132→        col = mix(col, col * 0.55, patches);
+   133→        float holes = step(0.82 - dmg * 0.15, vnoise(vUv * 7.1 + 2.9)) * dmg * 1.4;
+   134→        // простое освещение
+   135→        float ndl = max(dot(normalize(vN), normalize(uSunDir)), 0.0) * 0.5 + 0.55;
+   136→        col *= ndl;
+   137→        float a = 1.0 - clamp(holes, 0.0, 0.9);
+   138→        if (a < 0.55) discard; // дыры — без полупрозрачности (нет проблем сортировки)
+   139→        gl_FragColor = vec4(col, 1.0);
+   140→      }
+   141→    `,
+   142→    side: THREE.DoubleSide,
+   143→  });
+   144→}
+   145→
+   146→// ---------- флаг ----------
+   147→function makeFlagTexture(kind: 'pirate' | 'merchant' | 'navy'): THREE.Texture {
+   148→  const c = document.createElement('canvas');
+   149→  c.width = 128; c.height = 80;
+   150→  const x = c.getContext('2d')!;
+   151→  if (kind === 'pirate') {
+   152→    x.fillStyle = '#14100c'; x.fillRect(0, 0, 128, 80);
+   153→    x.fillStyle = '#e8e4d8';
+   154→    x.beginPath(); x.arc(64, 34, 13, 0, Math.PI * 2); x.fill(); // череп
+   155→    x.fillStyle = '#14100c';
+   156→    x.beginPath(); x.arc(59, 32, 3, 0, Math.PI * 2); x.arc(69, 32, 3, 0, Math.PI * 2); x.fill();
+   157→    x.fillStyle = '#e8e4d8';
+   158→    x.save(); x.translate(64, 52); x.rotate(0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
+   159→    x.save(); x.translate(64, 52); x.rotate(-0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
+   160→  } else if (kind === 'merchant') {
+   161→    x.fillStyle = '#efe7d2'; x.fillRect(0, 0, 128, 80);
+   162→    x.fillStyle = '#a3362c'; x.fillRect(0, 32, 128, 16);
+   163→  } else {
+   164→    x.fillStyle = '#efe7d2'; x.fillRect(0, 0, 128, 80);
+   165→    x.fillStyle = '#a3362c';
+   166→    x.fillRect(56, 0, 16, 80); x.fillRect(0, 32, 128, 16);
+   167→  }
+   168→  const t = new THREE.CanvasTexture(c);
+   169→  t.colorSpace = THREE.SRGBColorSpace;
+   170→  return t;
+   171→}
+   172→
+   173→function flagMesh(kind: 'pirate' | 'merchant' | 'navy'): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial } {
+   174→  const g = new THREE.PlaneGeometry(2.0, 1.2, 12, 5);
+   175→  g.translate(1.0, 0, 0); // крепление у древка (x=0)
+   176→  const mat = new THREE.ShaderMaterial({
+   177→    uniforms: { uTime: { value: 0 }, uTex: { value: makeFlagTexture(kind) } },
+   178→    vertexShader: /* glsl */`
+   179→      uniform float uTime;
+   180→      varying vec2 vUv;
+   181→      void main() {
+   182→        vUv = uv;
+   183→        vec3 p = position;
+   184→        float w = sin(p.x * 3.0 - uTime * 7.0) * 0.12 * p.x + sin(p.x * 6.0 - uTime * 11.0) * 0.05 * p.x;
+   185→        p.z += w; p.y += sin(p.x * 2.0 - uTime * 5.0) * 0.04 * p.x;
+   186→        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+   187→      }
+   188→    `,
+   189→    fragmentShader: /* glsl */`
+   190→      uniform sampler2D uTex;
+   191→      varying vec2 vUv;
+   192→      void main() { gl_FragColor = texture2D(uTex, vUv); }
+   193→    `,
+   194→    side: THREE.DoubleSide,
+   195→  });
+   196→  const mesh = new THREE.Mesh(g, mat);
+   197→  mesh.frustumCulled = false;
+   198→  return { mesh, mat };
+   199→}
+   200→
+   201→// ---------- корпус по шпангоутам ----------
+   202→function hullProfile(t: number, P: ShipPreset) {
+   203→  // t: 0 корма -> 1 нос. Полуширина, осадка, высота фальшборта
+   204→  const B = P.beam / 2;
+   205→  let w: number;
+   206→  if (t < 0.45) w = THREE.MathUtils.lerp(0.58, 1.0, smooth01(t / 0.45));
+   207→  else w = THREE.MathUtils.lerp(1.0, 0.0, Math.pow(smooth01((t - 0.45) / 0.55), 0.75));
+   208→  const draft = P.draft * (0.72 + 0.28 * Math.sin(Math.PI * Math.min(1, t * 1.15)));
+   209→  const bulwark = P.freeboard * (0.82 + 0.35 * Math.pow(Math.max(0, t - 0.75) / 0.25, 1.4) + 0.5 * Math.pow(1 - t, 2.2) * 0.6);
+   210→  return { w: w * B, draft, bulwark };
+   211→}
+   212→function smooth01(x: number) { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); }
+   213→
+   214→function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
+   215→  const S = 26, R = 8;
+   216→  const L = P.length;
+   217→  const pos: number[] = [];
+   218→  const col: number[] = [];
+   219→  const cHull = new THREE.Color(P.colors.hull);
+   220→  const cBelow = new THREE.Color(0x33402a); // подводная часть — обрастание
+   221→  const cBoot = new THREE.Color(0xd8d2c2); // пояс ватерлинии
+   222→  const cWale = new THREE.Color(P.colors.trim);
+   223→  const tmp = new THREE.Color();
+   224→
+   225→  const stations: { z: number; w: number; draft: number; bulwark: number }[] = [];
+   226→  for (let s = 0; s <= S; s++) {
+   227→    const t = s / S;
+   228→    const p = hullProfile(t, P);
+   229→    stations.push({ z: THREE.MathUtils.lerp(-L / 2, L / 2, t), w: p.w, draft: p.draft, bulwark: p.bulwark });
+   230→  }
+   231→
+   232→  const pushPoint = (x: number, y: number, z: number) => {
+   233→    pos.push(x, y, z);
+   234→    // раскраска по высоте
+   235→    if (y < -0.15) tmp.copy(cHull).lerp(cBelow, Math.min(1, (-y + 0.15) / P.draft));
+   236→    else if (y < 0.42) tmp.copy(cBoot);
+   237→    else if (y > 0.9 && y < 1.35) tmp.copy(cWale);
+   238→    else tmp.copy(cHull);
+   239→    // лёгкая полосатость обшивки
+   240→    const stripe = 1.0 - 0.06 * (Math.sin(y * 9.0) * 0.5 + 0.5);
+   241→    col.push(tmp.r * stripe, tmp.g * stripe, tmp.b * stripe);
+   242→  };
+   243→
+   244→  for (const st of stations) {
+   245→    for (let r = 0; r <= R; r++) {
+   246→      const u = r / R;
+   247→      const y = THREE.MathUtils.lerp(-st.draft, st.bulwark, u);
+   248→      const flare = Math.pow(u, 0.6);
+   249→      const halfW = st.w * (0.16 + 0.84 * flare);
+   250→      pushPoint(halfW, y, st.z);
+   251→      pushPoint(-halfW, y, st.z);
+   252→    }
+   253→  }
+   254→  const idx: number[] = [];
+   255→  const rowLen = (R + 1) * 2;
+   256→  for (let s = 0; s < S; s++) {
+   257→    for (let r = 0; r < R; r++) {
+   258→      const a = s * rowLen + r * 2, b = a + 1, c = a + 2, d = a + 3;
+   259→      const e = a + rowLen, f = e + 1, g = e + 2, h = e + 3;
+   260→      idx.push(a, c, e, c, g, e);
+   261→      idx.push(b, e + 1, d, b, f, d); // зеркальная сторона (обратный порядок)
+   262→    }
+   263→  }
+   264→  // транцевая корма: веер
+   265→  const st0 = stations[0];
+   266→  const centerIdx = pos.length / 3;
+   267→  pushPoint(0, -st0.draft * 0.55, st0.z - 0.01);
+   268→  for (let r = 0; r <= R; r++) {
+   269→    const i0 = r * 2;
+   270→    if (r < R) {
+   271→      idx.push(centerIdx, i0 + 1, i0); // ориентация наружу (-Z)
+   272→    }
+   273→  }
+   274→  // днище: замыкаем корпус снизу (r=0 — нижняя кромка шпангоутов),
+   275→  // нормали вниз — при крене/под водой не «просвечивает»
+   276→  for (let s = 0; s < S; s++) {
+   277→    const a = s * rowLen + 1;        // левый борт, низ
+   278→    const b = s * rowLen;            // правый борт, низ
+   279→    const c = (s + 1) * rowLen + 1;
+   280→    const d = (s + 1) * rowLen;
+   281→    idx.push(a, b, c, b, d, c);
+   282→  }
+   283→  const g = new THREE.BufferGeometry();
+   284→  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+   285→  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+   286→  g.setIndex(idx);
+   287→  g.computeVertexNormals();
+   288→
+   289→  // контур ватерлинии
+   290→  const outline: THREE.Vector2[] = [];
+   291→  for (let s = 0; s <= S; s += 2) {
+   292→    const st = stations[s];
+   293→    const u = (st.draft) / (st.draft + st.bulwark); // u при y=0
+   294→    const flare = Math.pow(u, 0.6);
+   295→    const halfW = Math.max(0.25, st.w * (0.16 + 0.84 * flare));
+   296→    outline.push(new THREE.Vector2(halfW, st.z));
+   297→  }
+   298→  for (let s = S; s >= 0; s -= 2) {
+   299→    const st = stations[s];
+   300→    const u = st.draft / (st.draft + st.bulwark);
+   301→    const flare = Math.pow(u, 0.6);
+   302→    const halfW = Math.max(0.25, st.w * (0.16 + 0.84 * flare));
+   303→    outline.push(new THREE.Vector2(-halfW, st.z));
+   304→  }
+   305→  return { geometry: g, outline };
+   306→}
+   307→
+   308→function buildDeck(P: ShipPreset): THREE.BufferGeometry {
+   309→  // палуба: полоса по длине чуть ниже фальшборта, вплотную к обшивке.
+   310→  // ВАЖНО: порядок вершин (a,b,c)(b,d,c) даёт нормали ВВЕРХ —
+   311→  // иначе палуба отсекается backface-куллингом и «просвечивает».
+   312→  // UV: u — поперёк (0..1 = полная ширина), v — вдоль (тайл = ширина),
+   313→  // доски идут вдоль корпуса, у краёв — тёмный водосток (в текстуре).
+   314→  const S = 20, L = P.length;
+   315→  const pos: number[] = [], uv: number[] = [], idx: number[] = [];
+   316→  for (let s = 0; s <= S; s++) {
+   317→    const t = s / S;
+   318→    const p = hullProfile(t, P);
+   319→    const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
+   320→    const deckY = p.bulwark - 1.0;
+   321→    // полуширина корпуса на высоте палубы — та же формула, что в buildHull,
+   322→    // чтобы палуба доходила до борта без щели
+   323→    const u = Math.min(1, Math.max(0, (deckY + p.draft) / (p.draft + p.bulwark)));
+   324→    const flare = Math.pow(u, 0.6);
+   325→    const w = Math.max(0.15, p.w * (0.16 + 0.84 * flare) - 0.05);
+   326→    pos.push(w, deckY, z, -w, deckY, z);
+   327→    const vv = z / P.beam;
+   328→    uv.push(0.5 + w / P.beam, vv, 0.5 - w / P.beam, vv);
+   329→  }
+   330→  for (let s = 0; s < S; s++) {
+   331→    const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
+   332→    idx.push(a, b, c, b, d, c);
+   333→  }
+   334→  const g = new THREE.BufferGeometry();
+   335→  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+   336→  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+   337→  g.setIndex(idx);
+   338→  g.computeVertexNormals();
+   339→  return g;
+   340→}
+   341→
+   342→/** Текстура палубных досок: конопаченые швы, разбежка стыков, гвозди,
+   343→ *  волокна, потёртости; тёмные водосточные планки по краям (u≈0 и u≈1) */
+   344→function makeDeckTexture(baseColor: number, seed: number): THREE.Texture {
+   345→  const S = 512;
+   346→  const c = document.createElement('canvas');
+   347→  c.width = S; c.height = S;
+   348→  const x = c.getContext('2d')!;
+   349→  const base = new THREE.Color(baseColor);
+   350→  let rs = seed * 2654435761 % 2147483647;
+   351→  const rnd = () => { rs = (rs * 16807) % 2147483647; return rs / 2147483647; };
+   352→  const N = 30, pw = S / N;
+   353→  for (let i = 0; i < N; i++) {
+   354→    const v = 0.84 + rnd() * 0.26;
+   355→    x.fillStyle = `rgb(${Math.round(base.r * 255 * v)},${Math.round(base.g * 255 * v)},${Math.round(base.b * 255 * v)})`;
+   356→    x.fillRect(i * pw, 0, pw + 1, S);
+   357→    // волокна дерева
+   358→    x.strokeStyle = 'rgba(30,18,8,0.10)';
+   359→    x.lineWidth = 1;
+   360→    for (let k = 0; k < 3; k++) {
+   361→      const gx = i * pw + pw * (0.2 + 0.6 * rnd());
+   362→      x.beginPath();
+   363→      x.moveTo(gx, 0);
+   364→      for (let y = 0; y <= S; y += 32) x.lineTo(gx + Math.sin(y * 0.045 + i * 7 + k * 3) * 2.2, y);
+   365→      x.stroke();
+   366→    }
+   367→    // стыки досок с разбежкой + гвозди
+   368→    const b1 = (i * 137 + 61) % S, b2 = (b1 + Math.round(S * 0.55)) % S;
+   369→    for (const by of [b1, b2]) {
+   370→      x.fillStyle = 'rgba(22,14,7,0.6)';
+   371→      x.fillRect(i * pw, by, pw + 1, 2);
+   372→      x.fillStyle = 'rgba(32,32,36,0.85)';
+   373→      x.beginPath(); x.arc(i * pw + pw * 0.3, by + 5, 1.4, 0, 7); x.fill();
+   374→      x.beginPath(); x.arc(i * pw + pw * 0.7, by - 3, 1.4, 0, 7); x.fill();
+   375→    }
+   376→    // конопаченый шов между досками
+   377→    x.fillStyle = 'rgba(20,13,7,0.72)';
+   378→    x.fillRect(i * pw, 0, 1.6, S);
+   379→  }
+   380→  // водосточный жёлоб по краям палубы (тёмные продольные планки)
+   381→  for (const [x0, wW] of [[0, S * 0.075], [S * 0.925, S * 0.075]] as [number, number][]) {
+   382→    const gr = x.createLinearGradient(x0, 0, x0 + wW, 0);
+   383→    gr.addColorStop(0, 'rgba(24,15,7,0.5)');
+   384→    gr.addColorStop(1, 'rgba(24,15,7,0.12)');
+   385→    x.fillStyle = gr;
+   386→    x.fillRect(x0, 0, wW, S);
+   387→  }
+   388→  // потёртости и разводы
+   389→  for (let k = 0; k < 26; k++) {
+   390→    const rx = rnd() * S, ry = rnd() * S, rr = 18 + rnd() * 55;
+   391→    const rg = x.createRadialGradient(rx, ry, 0, rx, ry, rr);
+   392→    rg.addColorStop(0, 'rgba(28,18,8,0.09)');
+   393→    rg.addColorStop(1, 'rgba(0,0,0,0)');
+   394→    x.fillStyle = rg;
+   395→    x.fillRect(rx - rr, ry - rr, rr * 2, rr * 2);
+   396→  }
+   397→  const t = new THREE.CanvasTexture(c);
+   398→  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+   399→  t.colorSpace = THREE.SRGBColorSpace;
+   400→  t.anisotropy = 4;
+   401→  return t;
+   402→}
+   403→
+   404→/** Планширь: планка, закрывающая верхнюю кромку фальшборта */
+   405→function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
+   406→  const S = 26, L = P.length;
+   407→  const pos: number[] = [], col: number[] = [], idx: number[] = [];
+   408→  const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.25);
+   409→  const cRail2 = new THREE.Color(P.colors.trim);
+   410→  const push = (px: number, py: number, z: number, c: THREE.Color) => {
+   411→    pos.push(px, py, z); col.push(c.r, c.g, c.b);
+   412→  };
+   413→  for (let s = 0; s <= S; s++) {
+   414→    const t = s / S;
+   415→    const p = hullProfile(t, P);
+   416→    const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
+   417→    const y = p.bulwark;
+   418→    // внутренняя и внешняя кромки планки (лёгкий свес наружу)
+   419→    push(p.w - 0.26, y + 0.07, z, cRail);
+   420→    push(p.w + 0.13, y + 0.015, z, cRail2);
+   421→    push(-p.w + 0.26, y + 0.07, z, cRail);
+   422→    push(-p.w - 0.13, y + 0.015, z, cRail2);
+   423→  }
+   424→  for (let s = 0; s < S; s++) {
+   425→    const a = s * 4;
+   426→    // правый борт
+   427→    idx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5);
+   428→    // левый борт
+   429→    idx.push(a + 2, a + 3, a + 6, a + 3, a + 7, a + 6);
+   430→  }
+   431→  const g = new THREE.BufferGeometry();
+   432→  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+   433→  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+   434→  g.setIndex(idx);
+   435→  g.computeVertexNormals();
+   436→  return g;
+   437→}
+   438→
+   439→/** Запечь геометрию в общие массивы (для слияния реквизита в один меш) */
+   440→function bakeInto(target: { pos: number[]; col: number[] }, geo: THREE.BufferGeometry,
+   441→  color: THREE.Color, x: number, y: number, z: number, euler?: THREE.Euler) {
+   442→  const g = geo.index ? geo.toNonIndexed() : geo;
+   443→  const p = g.attributes.position as THREE.BufferAttribute;
+   444→  const v = new THREE.Vector3();
+   445→  for (let i = 0; i < p.count; i++) {
+   446→    v.fromBufferAttribute(p, i);
+   447→    if (euler) v.applyEuler(euler);
+   448→    target.pos.push(v.x + x, v.y + y, v.z + z);
+   449→    target.col.push(color.r, color.g, color.b);
+   450→  }
+   451→}
+   452→
+   453→/** Палубный реквизит: решётчатый люк, бочки, канаты, кнехты, колокол,
+   454→ *  ядра, сундук, ведро — всё сливается в ОДИН меш с vertex colors */
+   455→function buildDeckProps(P: ShipPreset): THREE.BufferGeometry {
+   456→  const L = P.length;
+   457→  const t: { pos: number[]; col: number[] } = { pos: [], col: [] };
+   458→  const deckYAt = (tt: number) => hullProfile(tt, P).bulwark - 1.0;
+   459→  const cWood = new THREE.Color(0x7a5c38);
+   460→  const cWoodD = new THREE.Color(0x4a3420);
+   461→  const cDark = new THREE.Color(P.colors.trim);
+   462→  const cIron = new THREE.Color(0x24262b);
+   463→  const cBrass = new THREE.Color(0xb8912f);
+   464→  const cRope = new THREE.Color(0xa08656);
+   465→  const cBarrel = new THREE.Color(0x8a6a42);
+   466→
+   467→  // --- решётчатый люк (гратинг) с коомингом ---
+   468→  const hx = L * 0.08, hz = L * 0.05; // пол-размера (между мачтами)
+   469→  const hy = deckYAt(0.48);
+   470→  // кооминг (рамка)
+   471→  bakeInto(t, new THREE.BoxGeometry(hx * 2 + 0.24, 0.22, 0.12), cWoodD, 0, hy + 0.11, hz);
+   472→  bakeInto(t, new THREE.BoxGeometry(hx * 2 + 0.24, 0.22, 0.12), cWoodD, 0, hy + 0.11, -hz);
+   473→  bakeInto(t, new THREE.BoxGeometry(0.12, 0.22, hz * 2), cWoodD, hx, hy + 0.11, 0);
+   474→  bakeInto(t, new THREE.BoxGeometry(0.12, 0.22, hz * 2), cWoodD, -hx, hy + 0.11, 0);
+   475→  // продольные планки
+   476→  const nL = 9;
+   477→  for (let i = 0; i < nL; i++) {
+   478→    const px = -hx + 0.12 + (i / (nL - 1)) * (hx * 2 - 0.24);
+   479→    bakeInto(t, new THREE.BoxGeometry(0.09, 0.07, hz * 2 - 0.1), cWood, px, hy + 0.24, 0);
+   480→  }
+   481→  // поперечные планки
+   482→  const nT = 5;
+   483→  for (let i = 0; i < nT; i++) {
+   484→    const pz = -hz + 0.1 + (i / (nT - 1)) * (hz * 2 - 0.2);
+   485→    bakeInto(t, new THREE.BoxGeometry(hx * 2 - 0.16, 0.07, 0.09), cWood, 0, hy + 0.30, pz);
+   486→  }
+   487→
+   488→  // --- бочки (2 стоя, 1 лёжа) ---
+   489→  const barrelG = new THREE.CylinderGeometry(0.34, 0.34, 0.8, 10);
+   490→  const hoopG = new THREE.TorusGeometry(0.345, 0.022, 5, 12);
+   491→  const hoopE = new THREE.Euler(Math.PI / 2, 0, 0);
+   492→  const mkBarrel = (x: number, z: number, lying = false) => {
+   493→    const y = deckYAt(0.5 + z / L) + (lying ? 0.34 : 0.4);
+   494→    const e = lying ? new THREE.Euler(0, lying ? 0.7 : 0, Math.PI / 2) : undefined;
+   495→    bakeInto(t, barrelG, cBarrel, x, y, z, e);
+   496→    if (lying) {
+   497→      bakeInto(t, hoopG, cIron, x, y - 0.25, z, e);
+   498→      bakeInto(t, hoopG, cIron, x, y + 0.25, z, e);
+   499→    } else {
+   500→      bakeInto(t, hoopG, cIron, x, y - 0.28, z, hoopE);
+   501→      bakeInto(t, hoopG, cIron, x, y + 0.28, z, hoopE);
+   502→    }
+   503→  };
+   504→  mkBarrel(P.beam * 0.24, L * 0.10);
+   505→  mkBarrel(-P.beam * 0.26, L * 0.04);
+   506→  mkBarrel(P.beam * 0.22, -L * 0.12, true);
+   507→  // --- бухты канатов ---
+   508→  const coilG = new THREE.TorusGeometry(0.30, 0.10, 6, 14);
+   509→  const coilE = new THREE.Euler(Math.PI / 2, 0, 0);
+   510→  bakeInto(t, coilG, cRope, P.beam * 0.20, deckYAt(0.75) + 0.10, L * 0.30, coilE);
+   511→  bakeInto(t, coilG, cRope, -P.beam * 0.18, deckYAt(0.62) + 0.10, L * 0.18, coilE);
+   512→  bakeInto(t, coilG, cRope, P.beam * 0.34, deckYAt(0.36) + 0.10, -L * 0.15, coilE);
+   513→
+   514→  // --- кнехты (битенги) с поперечиной у носа ---
+   515→  const bittG = new THREE.BoxGeometry(0.15, 0.6, 0.15);
+   516→  for (const side of [-1, 1]) {
+   517→    bakeInto(t, bittG, cWoodD, side * 0.42, deckYAt(0.85) + 0.3, L * 0.36);
+   518→    bakeInto(t, bittG, cWoodD, side * 0.42, deckYAt(0.85) + 0.3, L * 0.36 - 0.5);
+   519→    bakeInto(t, new THREE.BoxGeometry(0.13, 0.13, 0.75), cWoodD, side * 0.42, deckYAt(0.85) + 0.55, L * 0.36 - 0.25);
+   520→  }
+   521→
+   522→  // --- корабельный колокол у штурвала ---
+   523→  const bellZ = THREE.MathUtils.lerp(-L / 2, L / 2, 0.2) + 1.6;
+   524→  bakeInto(t, new THREE.BoxGeometry(0.12, 0.8, 0.12), cWoodD, 0.8, deckYAt(0.22) + 0.4, bellZ);
+   525→  bakeInto(t, new THREE.CylinderGeometry(0.05, 0.13, 0.2, 8), cBrass, 0.8, deckYAt(0.22) + 0.85, bellZ);
+   526→
+   527→  // --- пирамиды ядер у мачты ---
+   528→  const ballG = new THREE.SphereGeometry(0.105, 7, 6);
+   529→  const pile = (x: number, z: number) => {
+   530→    const y0 = deckYAt(0.5 + z / L);
+   531→    for (const [dx, dz] of [[-0.115, 0], [0, 0], [0.115, 0], [-0.058, 0.1], [0.058, 0.1], [0, 0.05]]) {
+   532→      bakeInto(t, ballG, cIron, x + dx, y0 + 0.105, z + dz);
+   533→    }
+   534→  };
+   535→  pile(0.85, -L * 0.16);
+   536→  pile(-P.beam * 0.20, L * 0.09);
+   537→
+   538→  // --- сундук с инструментом ---
+   539→  bakeInto(t, new THREE.BoxGeometry(0.72, 0.42, 0.5), cWoodD, -P.beam * 0.26, deckYAt(0.42) + 0.21, -L * 0.2);
+   540→  bakeInto(t, new THREE.BoxGeometry(0.78, 0.1, 0.56), cDark, -P.beam * 0.26, deckYAt(0.42) + 0.46, -L * 0.2);
+   541→
+   542→  // --- ведро ---
+   543→  bakeInto(t, new THREE.CylinderGeometry(0.17, 0.13, 0.3, 8, 1, true), cWood, -P.beam * 0.2, deckYAt(0.72) + 0.15, L * 0.24);
+   544→
+   545→  const g = new THREE.BufferGeometry();
+   546→  g.setAttribute('position', new THREE.Float32BufferAttribute(t.pos, 3));
+   547→  g.setAttribute('color', new THREE.Float32BufferAttribute(t.col, 3));
+   548→  g.computeVertexNormals();
+   549→  return g;
+   550→}
+   551→
+   552→// ---------- такелаж (линии) ----------
+   553→function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3): THREE.LineSegments {
+   554→  const pts: number[] = [];
+   555→  const L = P.length;
+   556→  const addLine = (a: THREE.Vector3, b: THREE.Vector3) => { pts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
+   557→  for (const m of masts) {
+   558→    const top = new THREE.Vector3(0, m.h, m.z);
+   559→    // штаги к носу и корме
+   560→    addLine(top, bowspritTip);
+   561→    addLine(top, new THREE.Vector3(0, 1.2, -L / 2 + 0.4));
+   562→    // ванты к бортам
+   563→    for (const side of [-1, 1]) {
+   564→      for (let k = 0; k < 3; k++) {
+   565→        const zz = m.z - 1.5 + k * 1.5;
+   566→        addLine(new THREE.Vector3(side * 2.6, 1.6, zz), new THREE.Vector3(0, m.h * (0.55 + k * 0.15), m.z));
+   567→      }
+   568→    }
+   569→  }
+   570→  // бакштаги к корме от грот-мачты
+   571→  if (masts.length >= 2) {
+   572→    const main = masts[masts.length - 1 > 1 ? masts.length - 2 : 0];
+   573→    addLine(new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
+   574→    addLine(new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
+   575→  }
+   576→  const g = new THREE.BufferGeometry();
+   577→  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+   578→  const mat = new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.85 });
+   579→  return new THREE.LineSegments(g, mat);
+   580→}
+   581→
+   582→// ---------- полная сборка ----------
+   583→export function buildShip(P: ShipPreset): ShipVisual {
+   584→  const group = new THREE.Group();
+   585→  const L = P.length;
+   586→
+   587→  // корпус
+   588→  const { geometry: hullGeo, outline } = buildHull(P);
+   589→  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.05 });
+   590→  const hull = new THREE.Mesh(hullGeo, hullMat);
+   591→  hull.castShadow = true;
+   592→  group.add(hull);
+   593→
+   594→  // палуба: текстура досок с конопачением (DoubleSide — страховка от куллинга)
+   595→  const deckMat = new THREE.MeshStandardMaterial({
+   596→    map: makeDeckTexture(P.colors.deck, P.colors.deck + P.length),
+   597→    roughness: 0.93, side: THREE.DoubleSide,
+   598→  });
+   599→  const deck = new THREE.Mesh(buildDeck(P), deckMat);
+   600→  group.add(deck);
+   601→
+   602→  // планширь по верхней кромке фальшборта
+   603→  const capRail = new THREE.Mesh(buildCapRail(P),
+   604→    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.05 }));
+   605→  group.add(capRail);
+   606→
+   607→  const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e5433, roughness: 0.8 });
+   608→  const darkMat = new THREE.MeshStandardMaterial({ color: P.colors.trim, roughness: 0.75 });
+   609→
+   610→  // бушприт
+   611→  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.16, L * 0.32, 6), woodMat);
+   612→  bowsprit.rotation.x = Math.PI / 2 - 0.18;
+   613→  bowsprit.position.set(0, P.freeboard * 0.75, L / 2 + L * 0.12);
+   614→  group.add(bowsprit);
+   615→  const bowspritTip = new THREE.Vector3(0, P.freeboard * 0.75 + L * 0.32 * 0.18, L / 2 + L * 0.12 + L * 0.32 * Math.cos(0.18) * 0.98);
+   616→
+   617→  // мачты
+   618→  const mastDefs: { z: number; h: number }[] = [];
+   619→  const H = P.freeboard + L * 0.78;
+   620→  if (P.masts === 2) {
+   621→    mastDefs.push({ z: L * 0.16, h: H * 0.88 });
+   622→    mastDefs.push({ z: -L * 0.10, h: H });
+   623→  } else {
+   624→    mastDefs.push({ z: L * 0.18, h: H * 0.8 });
+   625→    mastDefs.push({ z: -L * 0.05, h: H });
+   626→    mastDefs.push({ z: -L * 0.28, h: H * 0.62 });
+   627→  }
+   628→  const masts: THREE.Object3D[] = [];
+   629→  for (const md of mastDefs) {
+   630→    const mast = new THREE.Group();
+   631→    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.24, md.h, 7), woodMat);
+   632→    pole.position.y = md.h / 2 - P.draft * 0.3;
+   633→    pole.castShadow = true;
+   634→    mast.add(pole);
+   635→    // марс (платформа)
+   636→    const top = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.6, 0.28, 8), darkMat);
+   637→    top.position.y = md.h * 0.72 - P.draft * 0.3;
+   638→    mast.add(top);
+   639→    mast.position.set(0, -P.draft * 0.3 > 0 ? 0 : 0, md.z);
+   640→    mast.userData.height = md.h;
+   641→    masts.push(mast);
+   642→    group.add(mast);
+   643→  }
+   644→
+   645→  // паруса
+   646→  const sailMat = sailMaterial(P.colors.sail);
+   647→  const sails: SailInfo[] = [];
+   648→  const addSquareSail = (mastIndex: number, level: number, width: number, height: number) => {
+   649→    const md = mastDefs[mastIndex];
+   650→    const g = new THREE.PlaneGeometry(width, height, 8, 6);
+   651→    g.translate(0, -height / 2, 0); // верхняя кромка у реи
+   652→    const mesh = new THREE.Mesh(g, sailMat);
+   653→    const y = md.h * level - P.draft * 0.3;
+   654→    // рея
+   655→    const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, width * 1.04, 5), woodMat);
+   656→    yard.rotation.z = Math.PI / 2;
+   657→    yard.position.set(0, y + 0.05, md.z);
+   658→    group.add(yard);
+   659→    mesh.position.set(0, y + 0.05, md.z - 0.25);
+   660→    group.add(mesh);
+   661→    sails.push({ mesh, baseScaleY: 1, side: 1 });
+   662→  };
+   663→  if (P.masts === 2) {
+   664→    addSquareSail(0, 0.66, L * 0.3, L * 0.16);       // фок
+   665→    addSquareSail(1, 0.72, L * 0.36, L * 0.2);       // грот нижний
+   666→    addSquareSail(1, 0.45, L * 0.26, L * 0.14);      // грот верхний (брамсель)
+   667→  } else {
+   668→    addSquareSail(0, 0.62, L * 0.24, L * 0.13);
+   669→    addSquareSail(1, 0.7, L * 0.34, L * 0.18);
+   670→    addSquareSail(1, 0.44, L * 0.24, L * 0.13);
+   671→    addSquareSail(2, 0.5, L * 0.18, L * 0.11);
+   672→  }
+   673→
+   674→  // кливера (треугольные) от бушприта к фок-мачте
+   675→  const addJib = (tip: THREE.Vector3, foot: THREE.Vector3, headY: number, mastZ: number) => {
+   676→    const a = tip, b = foot;
+   677→    const c = new THREE.Vector3(0, headY, mastZ - 0.3);
+   678→    const g = new THREE.BufferGeometry();
+   679→    const verts = new Float32Array([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]);
+   680→    g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+   681→    g.computeVertexNormals();
+   682→    const mesh = new THREE.Mesh(g, sailMat);
+   683→    mesh.frustumCulled = false;
+   684→    group.add(mesh);
+   685→    sails.push({ mesh, baseScaleY: 1, side: 1 });
+   686→  };
+   687→  const foreTop = mastDefs[0];
+   688→  addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z);
+   689→  addJib(new THREE.Vector3(bowspritTip.x * 0.55, bowspritTip.y - (bowspritTip.y - P.freeboard * 0.72) * 0.45, bowspritTip.z - L * 0.1),
+   690→    new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z);
+   691→
+   692→  // флаг на топе грот-мачты
+   693→  const mainMast = mastDefs[P.masts === 2 ? 1 : 1];
+   694→  const { mesh: flag, mat: flagMat } = flagMesh(P.flagKind);
+   695→  flag.position.set(0.05, mainMast.h - P.draft * 0.3 - 0.4, mainMast.z);
+   696→  group.add(flag);
+   697→
+   698→  // пушки по бортам
+   699→  const gunsPort: THREE.Object3D[] = [];
+   700→  const gunsStarboard: THREE.Object3D[] = [];
+   701→  const gunZ0 = -L * 0.22, gunZ1 = L * 0.24;
+   702→  for (let i = 0; i < P.gunsPerSide; i++) {
+   703→    const z = THREE.MathUtils.lerp(gunZ0, gunZ1, P.gunsPerSide === 1 ? 0.5 : i / (P.gunsPerSide - 1));
+   704→    const p = hullProfile((z + L / 2) / L, P);
+   705→    const deckY = p.bulwark - 0.72;
+   706→    for (const side of [-1, 1]) {
+   707→      const gun = new THREE.Group();
+   708→      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 8),
+   709→        new THREE.MeshStandardMaterial({ color: 0x1f1f22, roughness: 0.5, metalness: 0.75 }));
+   710→      barrel.rotation.z = Math.PI / 2;
+   711→      barrel.position.set(side * 0.62, 0.08, 0);
+   712→      gun.add(barrel);
+   713→      const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.55), darkMat);
+   714→      carriage.position.set(0, 0.0, 0);
+   715→      gun.add(carriage);
+   716→      gun.position.set(side * (p.w * 0.9 - 0.15), deckY, z);
+   717→      gun.userData.side = side;
+   718→      group.add(gun);
+   719→      (side < 0 ? gunsPort : gunsStarboard).push(gun);
+   720→    }
+   721→  }
+   722→
+   723→  // штурвал: пьедестал (не вращается) + колесо, начало координат
+   724→  // вращающейся группы — в ступице, чтобы крутился вокруг СВОЕЙ оси
+   725→  const wheelAsm = new THREE.Group();
+   726→  const wheel = new THREE.Group();
+   727→  const wheelR = 0.55;
+   728→  const hubY = 0.98; // высота оси над палубой
+   729→  const wheelTorus = new THREE.Mesh(new THREE.TorusGeometry(wheelR, 0.045, 6, 18), darkMat);
+   730→  wheel.add(wheelTorus);
+   731→  for (let i = 0; i < 4; i++) {
+   732→    const ang = (i / 4) * Math.PI;
+   733→    const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, wheelR * 2.3, 4), darkMat);
+   734→    spoke.rotation.z = ang;
+   735→    wheel.add(spoke);
+   736→    // рукоятки наружу, к рулевому (в сторону кормы, -Z)
+   737→    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.26, 5), woodMat);
+   738→    handle.rotation.x = Math.PI / 2;
+   739→    handle.position.set(-Math.sin(ang) * (wheelR + 0.02), Math.cos(ang) * (wheelR + 0.02), -0.14);
+   740→    wheel.add(handle);
+   741→  }
+   742→  const wheelHub = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.34, 8), woodMat);
+   743→  wheelHub.rotation.x = Math.PI / 2;
+   744→  wheel.add(wheelHub);
+   745→  wheel.position.set(0, hubY, 0);
+   746→  wheelAsm.add(wheel);
+   747→  // стойка, подкосы и ось — вне вращающейся группы
+   748→  const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, hubY, 0.12), darkMat);
+   749→  post.position.set(0, hubY / 2, 0);
+   750→  wheelAsm.add(post);
+   751→  for (const sgn of [-1, 1]) {
+   752→    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, hubY * 1.2, 0.08), darkMat);
+   753→    brace.position.set(sgn * 0.24, hubY * 0.5, 0);
+   754→    brace.rotation.z = sgn * 0.55;
+   755→    wheelAsm.add(brace);
+   756→  }
+   757→  const wheelAxle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.55, 6), darkMat);
+   758→  wheelAxle.rotation.x = Math.PI / 2;
+   759→  wheelAxle.position.set(0, hubY, 0.12);
+   760→  wheelAsm.add(wheelAxle);
+   761→  const wheelT = 0.2;
+   762→  wheelAsm.position.set(0, hullProfile(wheelT, P).bulwark - 1.0, THREE.MathUtils.lerp(-L / 2, L / 2, wheelT));
+   763→  group.add(wheelAsm);
+   764→
+   765→  // палубный реквизит: гратинг-люк, бочки, канаты, кнехты, колокол, ядра,
+   766→  // сундук, ведро — одним мешом
+   767→  const props = new THREE.Mesh(buildDeckProps(P),
+   768→    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }));
+   769→  props.castShadow = true;
+   770→  group.add(props);
+   771→
+   772→  // шпиль, фонарь, якоря — строго на палубе
+   773→  const deckYAt = (t: number) => hullProfile(t, P).bulwark - 1.0;
+   774→  const capstan = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 0.7, 8), woodMat);
+   775→  capstan.position.set(0, deckYAt(0.36) + 0.35, -L * 0.16);
+   776→  group.add(capstan);
+   777→  const sternLantern = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8),
+   778→    new THREE.MeshStandardMaterial({ color: 0xffd88a, emissive: 0xffaa33, emissiveIntensity: 1.6 }));
+   779→  sternLantern.position.set(0, P.freeboard * 1.15, -L / 2 - 0.15);
+   780→  group.add(sternLantern);
+   781→  let lantern: THREE.PointLight | undefined;
+   782→  // фигура на носу
+   783→  const figure = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.8, 6),
+   784→    new THREE.MeshStandardMaterial({ color: 0xc9a24a, roughness: 0.4, metalness: 0.6 }));
+   785→  figure.position.set(0, P.freeboard * 1.12, L / 2 - 0.2);
+   786→  figure.rotation.x = -0.5;
+   787→  group.add(figure);
+   788→  // якоря
+   789→  for (const side of [-1, 1]) {
+   790→    const anchor = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.9, 0.3), darkMat);
+   791→    anchor.position.set(side * P.beam * 0.42, P.freeboard * 0.3, L / 2 - L * 0.06);
+   792→    anchor.rotation.z = side * 0.35;
+   793→    group.add(anchor);
+   794→  }
+   795→
+   796→  // такелаж
+   797→  group.add(buildRigging(P, mastDefs, bowspritTip));
+   798→
+   799→  const rig: SailRig = { sails, material: sailMat };
+   800→
+   801→  return {
+   802→    group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
+   803→    dims: { length: L, beam: P.beam, draft: P.draft }, outline,
+   804→    masts, lantern, wheel,
+   805→  };
+   806→}
+   807→
+   808→/** Включить фонарь (ночь) — только для игрока, ради перфа */
+   809→export function enableLantern(vis: ShipVisual) {
+   810→  if (vis.lantern) return;
+   811→  vis.lantern = new THREE.PointLight(0xffa644, 6, 26, 1.6);
+   812→  vis.lantern.position.set(0, vis.dims.length * 0.06, -vis.dims.length / 2 - 0.4);
+   813→  vis.group.add(vis.lantern);
+   814→}
+   815→

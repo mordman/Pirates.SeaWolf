@@ -119,6 +119,20 @@ export class SkySystem {
     scene.add(this.moon);
   }
 
+  /** Разрешение теневой карты (из настроек качества) */
+  setShadowRes(res: number) {
+    this.sun.shadow.mapSize.set(res, res);
+    if (this.sun.shadow.map) {
+      this.sun.shadow.map.dispose();
+      this.sun.shadow.map = null as unknown as THREE.WebGLRenderTarget;
+    }
+  }
+
+  /** Масштаб купола неба — чтобы купол покрывал дальность прорисовки */
+  setDomeScale(scale: number) {
+    this.dome.scale.setScalar(Math.max(1, scale));
+  }
+
   update(dt: number, time: number, camPos: THREE.Vector3, playerPos: THREE.Vector3, cloudiness: number) {
     this.timeOfDay = (this.timeOfDay + dt / this.dayLength) % 1;
     const th = (this.timeOfDay - 0.25) * Math.PI * 2;

@@ -3,7 +3,7 @@ import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern } from './bui
 import { waterHeightAt, waterNormalAt } from '../water/waves';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
-import { clamp, mod2pi } from '../core/rng';
+import { clamp, mod2pi, smoothstep } from '../core/rng';
 
 // ============================================================
 // Корабль как сущность: 6DOF-физика (surge/sway/heave/roll/
@@ -38,6 +38,7 @@ export class Ship {
   mass: number;
   inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
   private probes: Probe[] = [];
+  private reserve: Probe[] = [];   // запас плавучести надводного борта
   private force = new THREE.Vector3();
   private torque = new THREE.Vector3();
   private _f = new THREE.Vector3();
@@ -121,7 +122,9 @@ export class Ship {
       this.mass * (B * B + F * F) / 12 * 1.5,   // roll (z)
     );
 
-    // зонды плавучести: 7 шпангоутов × 3 точки
+    // зонды плавучести: 7 шпангоутов × 3 точки (ниже ватерлинии).
+    // Жёстче прежнего (нейтральная глубина 0.38 осадки) — корабль
+    // быстрее следует за гребнем волны, не проваливается в него.
     const NZ = 7;
     let n = 0;
     for (let i = 0; i < NZ; i++) {
@@ -130,15 +133,34 @@ export class Ship {
       const prof = this.halfWidthAt(z);
       const offs = [0, -prof * 0.75, prof * 0.75];
       for (const x of offs) {
-        this.probes.push({ off: new THREE.Vector3(x, -D * 0.45, z), k: 0, c: 0 });
+        this.probes.push({ off: new THREE.Vector3(x, -D * 0.38, z), k: 0, c: 0 });
         n++;
       }
     }
-    const neutral = D * 0.45;
+    const neutral = D * 0.38;
     const kTotal = this.mass * G / neutral;
     for (const p of this.probes) {
       p.k = kTotal / n;
-      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.42; // демпфер качки
+      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.5; // демпфер качки
+    }
+    // Резервные зонды по скулам борта чуть выше спокойной ватерлинии:
+    // моделируют запас плавучести корпуса до планширя — гребень, накрывший
+    // палубу, встречает сильное сопротивление и кренящий момент вправку,
+    // «полностью по борт» корабль больше не погружается.
+    let rn = 0;
+    for (let i = 0; i < NZ; i++) {
+      const t = i / (NZ - 1);
+      const z = THREE.MathUtils.lerp(-L * 0.44, L * 0.44, t);
+      const prof = this.halfWidthAt(z) * 0.85;
+      for (const x of [-prof, prof]) {
+        this.reserve.push({ off: new THREE.Vector3(x, F * 0.34, z), k: 0, c: 0 });
+        rn++;
+      }
+    }
+    const rkTotal = this.mass * G / 0.22; // полный вес запаса на 22 см погружения борта
+    for (const p of this.reserve) {
+      p.k = rkTotal / rn;
+      p.c = 2 * Math.sqrt(p.k * (this.mass / rn)) * 1.05;
     }
 
     this.foam = new WaterlineFoam(this.visual.outline);
@@ -197,7 +219,8 @@ export class Ship {
     this.torque.set(0, 0, 0);
 
     const f = this._f.copy(this.forward);
-    const right = this._r.set(f.z, 0, -f.x).normalize(); // право борта
+    // штирборт (правый борт): forward × up = (−f.z, 0, f.x)
+    const right = this._r.set(-f.z, 0, f.x).normalize();
     const e = this.euler;
     const spd = this.speed();
 
@@ -222,6 +245,23 @@ export class Ship {
         this.torque.z += rx * fl;
       }
     }
+    // --- запас плавучести бортов (пока не тонем) ---
+    if (!this.sinking) {
+      for (const p of this.reserve) {
+        const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
+        const wy = waterHeightAt(wp.x, wp.z, time);
+        const depth = wy - wp.y;
+        if (depth > 0) {
+          const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
+          const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
+          let fl = p.k * Math.min(depth, 2.5) - p.c * vy;
+          if (fl < 0) fl = 0;
+          this.force.y += fl;
+          this.torque.x += -rz * fl;
+          this.torque.z += rx * fl;
+        }
+      }
+    }
 
     // --- ветер на парусах ---
     this.sailFrac += (this.sailTarget / 3 - this.sailFrac) * Math.min(1, dt * 0.7);
@@ -242,7 +282,7 @@ export class Ship {
     const wf = new THREE.Vector3(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
     const windTravel = wf.clone().multiplyScalar(-this.wind.speed);
     const lateral = windTravel.dot(right);
-    const heelF = -lateral * this.sailFrac * windPower * m * 0.05;
+    const heelF = lateral * this.sailFrac * windPower * m * 0.05;
     this.torque.z += heelF;
     // ... и небольшое боковое сносовое усилие
     this.force.x += right.x * lateral * this.sailFrac * m * 0.004;
@@ -252,7 +292,9 @@ export class Ship {
     this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
     const rudderAngle = this.rudder * 0.6; // рад, макс ~34°
     const yawAuth = clamp(spd / 4.0, 0, 1.15); // авторитеты руля от скорости
-    this.torque.y += rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
+    // положительный руль (D) = поворот ВПРАВО (штирборт):
+    // вращение вокруг −Y, т.к. +Y = поворот влево (к порту)
+    this.torque.y -= rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
     // крен на повороте (отцентробежный)
     this.torque.z += this.angular.y * spd * m * 0.35;
     // зарывание носа на скорости
@@ -470,20 +512,47 @@ export class Ship {
     v.group.position.copy(this.position);
     v.group.quaternion.copy(this.quaternion);
 
-    // паруса: рифление по уровню + пузо от ветра
+    // паруса: рифление по уровню тяги (уровень 0 — всё убрано, 3 — всё
+    // поставлено), брасопка реев и «пузо» — по кажущемуся ветру
     const awa = this.apparentWindAngle();
-    const belly = 0.25 + 0.55 * this.sailFrac * (0.4 + 0.6 * Ship.polar(awa)) * clamp(this.wind.speed / 9, 0.3, 1.4);
-    v.sails.material.uniforms.uTime.value = time;
-    v.sails.material.uniforms.uBelly.value = belly;
-    v.sails.material.uniforms.uDamage.value = 1 - this.sailHP / this.preset.sailHP;
+    const polar = Ship.polar(awa);
+    const windClamp = clamp(this.wind.speed / 9, 0.3, 1.4);
+    // локальный вектор «откуда дует» (x — борт, z — нос): ψ = φ + курс
+    const psi = this.wind.from + this.heading;
+    const wlX = Math.cos(psi); // >0 — ветер с порта (левый борт)
+    // цель брасопки: рея поперёк ветра (нормаль паруса по ветру), ±55°
+    let bt = Math.atan2(wlX, Math.sin(psi)) - Math.PI;
+    bt = Math.atan2(Math.sin(bt), Math.cos(bt)); // кратчайшая дуга
+    const braceTarget = clamp(bt, -0.96, 0.96);
+    const bellyBase = (0.18 + 0.6 * windClamp) * (0.15 + 0.85 * polar);
+    const flutterBase = 0.012 * windClamp * (1 + (1 - polar) * 2.2);
+    for (const s of v.sails.sails) {
+      // доля постановки этого паруса при текущем уровне тяги
+      const setFrac = smoothstep(s.setAt - 0.38, s.setAt, this.sailFrac);
+      s.furl += ((1 - setFrac) - s.furl) * Math.min(1, dt * 1.5);
+      const sf = 1 - s.furl;
+      s.mat.uniforms.uTime.value = time;
+      s.mat.uniforms.uFurl.value = s.furl;
+      s.mat.uniforms.uDamage.value = 1 - this.sailHP / this.preset.sailHP;
+      s.mat.uniforms.uFlutter.value = flutterBase * (0.25 + 0.75 * sf);
+      if (s.square && s.brace) {
+        // реи разворачиваются медленно — как будто работают брашпили
+        s.braceAngle += (braceTarget - s.braceAngle) * Math.min(1, dt * 0.5);
+        s.brace.rotation.y = s.braceAngle;
+        s.mat.uniforms.uBelly.value = bellyBase * sf;
+      } else {
+        // кливер: пузо в подветренную сторону (локальный Z → борт)
+        s.mat.uniforms.uBelly.value = bellyBase * sf * (-wlX);
+      }
+    }
 
     // флаг — по ветру
     const wf = Math.atan2(-Math.cos(this.wind.from), -Math.sin(this.wind.from));
     v.flag.rotation.y = wf - this.heading + Math.PI;
     v.flagMat.uniforms.uTime.value = time;
 
-    // штурвал крутится от руля
-    v.wheel.rotation.z = -this.rudder * 2.2;
+    // штурвал крутится от руля: D (руль вправо) — по часовой от рулевого
+    v.wheel.rotation.z = this.rudder * 2.2;
 
     // падение мачты
     if (this.mastAnim >= 0 && this.mastAnim < 1 && this.mastsBroken > 0) {

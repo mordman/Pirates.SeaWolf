@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { Game, HudState } from '@/game/game';
 import type { AmmoType } from '@/game/combat/combat';
+import SettingsPanel from './SettingsPanel';
+import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings } from '@/game/core/settings';
 
 // ============================================================
 // Страница игры: canvas + HUD (панели, компас, карта, порт)
@@ -75,6 +77,9 @@ export default function Home() {
   const [hud, setHud] = useState<HudState | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<GameSettings>(() =>
+    typeof window === 'undefined' ? structuredClone(DEFAULT_SETTINGS) : loadSettings());
   const [portMsg, setPortMsg] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -98,15 +103,39 @@ export default function Home() {
     };
   }, []);
 
-  // Tab / H / Esc
+  // Tab / H / Esc — клавиши из настроек; при открытом экране настроек — пауза
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Tab') { e.preventDefault(); setMapOpen(v => !v); }
-      if (e.code === 'KeyH') setHelpOpen(v => !v);
-      if (e.code === 'Escape') { setMapOpen(false); setHelpOpen(false); }
+      const c = settings.controls;
+      if (e.code === 'Escape') {
+        setSettingsOpen(false); setMapOpen(false); setHelpOpen(false);
+        const gg = gameRef.current; if (gg) { gg.uiOpen = false; gg.input.keys.clear(); }
+        return;
+      }
+      if (settingsOpen) return;
+      if (e.code === c.map) { e.preventDefault(); setMapOpen(v => !v); }
+      if (e.code === c.help) setHelpOpen(v => !v);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, [settings, settingsOpen]);
+
+  const openSettings = useCallback(() => {
+    const gg = gameRef.current;
+    if (gg) gg.uiOpen = true;
+    setSettingsOpen(true);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    const gg = gameRef.current;
+    if (gg) { gg.uiOpen = false; gg.input.keys.clear(); }
+    setSettingsOpen(false);
+  }, []);
+
+  const applySettings = useCallback((s: GameSettings) => {
+    setSettings(s);
+    saveSettings(s);
+    gameRef.current?.applySettings(s);
   }, []);
 
   // отрисовка карты
@@ -201,16 +230,16 @@ export default function Home() {
             <h1 className="mb-1 font-serif text-4xl font-bold text-amber-300">Морские волки</h1>
             <p className="mb-5 text-sm italic text-stone-400">Пиратская песочница на бесконечном море</p>
             <div className="mb-6 grid grid-cols-2 gap-x-6 gap-y-1.5 text-left text-xs text-stone-300">
-              <span><b className="text-amber-200">W / S</b> — паруса 0–3</span>
-              <span><b className="text-amber-200">A / D</b> — руль</span>
-              <span><b className="text-amber-200">Q / E</b> — прицел борта</span>
-              <span><b className="text-amber-200">ЛКМ / Space</b> — выстрел / залп</span>
-              <span><b className="text-amber-200">1–4</b> — боеприпасы</span>
-              <span><b className="text-amber-200">C</b> — камера (изометрия и др.)</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.sailsUp)} / {keyLabel(settings.controls.sailsDown)}</b> — паруса 0–3</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.aimPort)} / {keyLabel(settings.controls.aimStarboard)}</b> — прицел борта</span>
+              <span><b className="text-amber-200">ЛКМ / {keyLabel(settings.controls.fire)}</b> — выстрел / залп</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — боеприпасы</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера (изометрия и др.)</span>
               <span><b className="text-amber-200">Колесо</b> — зум</span>
-              <span><b className="text-amber-200">F</b> — якорь</span>
-              <span><b className="text-amber-200">R</b> — ремонт / откачка</span>
-              <span><b className="text-amber-200">Tab</b> — карта · <b className="text-amber-200">H</b> — помощь</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
             </div>
             <button
               onClick={() => { gameRef.current?.start(); }}
@@ -253,9 +282,13 @@ export default function Home() {
             </Panel>
           </div>
 
-          {/* ---- ветер/курс (право-верх) ---- */}
-          <div className="absolute right-3 top-3">
+          {/* ---- ветер/курс (право-верх) + настройки ---- */}
+          <div className="absolute right-3 top-3 flex flex-col items-end gap-2">
             <Panel><WindCompass hud={hud} /></Panel>
+            <button onClick={openSettings}
+              className="pointer-events-auto rounded-lg border border-amber-900/60 bg-[#160f08]/80 px-3 py-1.5 text-xs font-semibold text-amber-200 shadow-lg backdrop-blur-sm transition hover:border-amber-500 hover:text-amber-100">
+              ⚙ Настройки
+            </button>
           </div>
 
           {/* ---- сообщения ---- */}
@@ -272,7 +305,9 @@ export default function Home() {
             <Panel className="flex items-end gap-4 p-3">
               {/* паруса */}
               <div className="text-center">
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">Паруса (W/S)</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
+                  Паруса ({keyLabel(settings.controls.sailsUp)}/{keyLabel(settings.controls.sailsDown)})
+                </div>
                 <div className="flex gap-1">
                   {[1, 2, 3].map(i => (
                     <div key={i} className={`h-7 w-6 rounded-sm border ${i <= hud.sailLevel ? 'border-amber-400 bg-amber-500/70' : 'border-stone-700 bg-stone-900'}`} />
@@ -281,7 +316,9 @@ export default function Home() {
               </div>
               {/* руль */}
               <div className="text-center">
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">Руль (A/D)</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
+                  Руль ({keyLabel(settings.controls.steerLeft)}/{keyLabel(settings.controls.steerRight)})
+                </div>
                 <div className="relative h-7 w-24 rounded-sm border border-stone-700 bg-stone-900">
                   <div className="absolute left-1/2 top-0 h-full w-px bg-stone-600" />
                   <div className="absolute top-1 h-5 w-2.5 rounded-sm bg-amber-400 transition-all duration-150"
@@ -292,12 +329,12 @@ export default function Home() {
               <div>
                 <div className="mb-1 text-center text-[10px] uppercase tracking-wide text-stone-400">Боеприпасы (1–4)</div>
                 <div className="flex gap-1.5">
-                  {AMMO_ORDER.map(a => (
+                  {AMMO_ORDER.map((a, i) => (
                     <div key={a.key}
                       className={`w-16 rounded-sm border px-1 py-1 text-center ${hud.ammoType === a.key ? 'border-amber-400 bg-amber-900/50' : 'border-stone-700 bg-stone-900/70'}`}>
                       <div className="text-[9px] leading-tight text-stone-300">{a.label}</div>
                       <div className={`text-xs font-bold ${hud.ammoCounts[a.key] > 0 ? 'text-amber-200' : 'text-red-400'}`}>{hud.ammoCounts[a.key] ?? 0}</div>
-                      <div className="text-[8px] text-stone-500">{a.hotkey}</div>
+                      <div className="text-[8px] text-stone-500">{keyLabel(settings.controls.ammo[i])}</div>
                     </div>
                   ))}
                 </div>
@@ -467,22 +504,22 @@ export default function Home() {
           <div className="w-[520px] rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 font-serif shadow-2xl">
             <h2 className="mb-4 text-center text-xl font-bold text-amber-300">⚓ Судовой журнал</h2>
             <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs text-stone-300">
-              <div><b className="text-amber-200">W / S</b> — поднять/убрать паруса (0–3)</div>
-              <div><b className="text-amber-200">A / D</b> — руль (инерция!)</div>
-              <div><b className="text-amber-200">S (держать)</b> — задний ход на вёслах</div>
-              <div><b className="text-amber-200">F</b> — якорь</div>
-              <div><b className="text-amber-200">Q</b> — прицел левый борт</div>
-              <div><b className="text-amber-200">E</b> — прицел правый борт / действие</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsUp)} / {keyLabel(settings.controls.sailsDown)}</b> — поднять/убрать паруса (0–3)</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль (инерция!)</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход на вёслах</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / действие</div>
               <div><b className="text-amber-200">Мышь</b> — наведение в прицеле</div>
               <div><b className="text-amber-200">Колесо</b> — зум</div>
               <div><b className="text-amber-200">ЛКМ</b> — выстрел орудия</div>
-              <div><b className="text-amber-200">Space</b> — залп всем бортом</div>
-              <div><b className="text-amber-200">1–4</b> — ядро/книппель/картечь/зажигат.</div>
-              <div><b className="text-amber-200">R (держать)</b> — тушить/откачивать/чинить</div>
-              <div><b className="text-amber-200">C</b> — камера: изометрия → корма → борт → свободная</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.fire)}</b> — залп всем бортом</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — ядро/книппель/картечь/зажигат.</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.repair)} (держать)</b> — тушить/откачивать/чинить</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера: изометрия → корма → борт → свободная</div>
               <div><b className="text-amber-200">ПКМ (в свободной)</b> — вращение камеры</div>
-              <div><b className="text-amber-200">Tab</b> — карта</div>
-              <div><b className="text-amber-200">H</b> — эта справка</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — эта справка</div>
             </div>
             <div className="mt-4 border-t border-amber-900/50 pt-3 text-[11px] leading-relaxed text-stone-400">
               <p><b className="text-amber-200">Мореходство:</b> против ветра (левентик) корабль почти не идёт — лавируйте галсами.
@@ -492,6 +529,10 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+      {/* ---- настройки ---- */}
+      {settingsOpen && (
+        <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings} />
       )}
     </main>
   );

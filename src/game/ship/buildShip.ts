@@ -67,12 +67,15 @@ export interface ShipVisual {
 
 export interface SailRig {
   sails: SailInfo[];
-  material: THREE.ShaderMaterial;
 }
 interface SailInfo {
   mesh: THREE.Mesh;
-  baseScaleY: number;
-  side: 1 | -1; // 1 = правый борт не нужен, паруса по центру
+  mat: THREE.ShaderMaterial;      // свой материал на парус (своё рифление uFurl)
+  brace?: THREE.Group;            // поворотная группа (рея+парус) — брасопка
+  setAt: number;                  // доля тяги (sailFrac), при которой парус ПОЛНОСТЬЮ поставлен
+  furl: number;                   // текущее рифление 0..1 (анимируется, 1 = убран)
+  square: boolean;                // квадратный парус (рея брасопится)
+  braceAngle: number;             // текущий угол брасопки (рад)
 }
 
 // ---------- шейдер паруса ----------
@@ -80,6 +83,7 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       uBelly: { value: 0.5 },
+      uFlutter: { value: 0.3 },
       uTime: { value: 0 },
       uDamage: { value: 0 },
       uColor: { value: new THREE.Color(baseColor) },
@@ -87,7 +91,7 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uFurl: { value: 0 },
     },
     vertexShader: /* glsl */`
-      uniform float uBelly, uTime, uFurl;
+      uniform float uBelly, uTime, uFurl, uFlutter;
       varying vec2 vUv;
       varying vec3 vN;
       varying float vDmgU;
@@ -96,19 +100,24 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         vUv = uv;
         vDmgU = uDamage;
         vec3 p = position;
-        // «пузо» паруса: синус по ширине и высоте, кромки закреплены
+        // «пузо» паруса: синус по ширине и высоте, кромки закреплены.
+        // uBelly задан на CPU с учётом ветра и степени постановки
         float belly = uBelly * sin(uv.x * 3.14159) * sin(uv.y * 3.14159);
-        // трепет кромок от ветра
-        float flut = sin(uv.x * 12.0 + uTime * 6.0) * 0.02 * (0.3 + uBelly) * (1.0 - uv.y) * uv.y * 4.0;
+        // трепет свободной кромки: две волны, сильнее при слабом пузе (флюктер)
+        float flut = uFlutter * (
+          sin(uv.x * 9.0 + uTime * 7.3) * 0.6 +
+          sin(uv.x * 17.0 - uTime * 11.7) * 0.4
+        ) * sin(uv.y * 3.14159) * (1.0 - uv.y * 0.75);
         float dz = belly + flut;
         p.z += dz;
-        // нормаль аналитически
+        // нормаль аналитически (по пуза)
         float dzu = uBelly * cos(uv.x * 3.14159) * 3.14159 * sin(uv.y * 3.14159);
         float dzv = uBelly * sin(uv.x * 3.14159) * 3.14159 * cos(uv.y * 3.14159);
         vN = normalize(vec3(-dzu * 0.35, -dzv * 0.35, 1.0));
-        // рифление: при uFurl парус собирается вверх
-        p.y *= mix(1.0, 0.12, uFurl);
-        p.z *= mix(1.0, 0.1, uFurl);
+        // рифление: при uFurl парус собирается к рее/штагу
+        p.y *= mix(1.0, 0.10, uFurl);
+        p.x *= mix(1.0, 0.55, uFurl);
+        p.z *= mix(1.0, 0.08, uFurl);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
       }
     `,
@@ -642,52 +651,83 @@ export function buildShip(P: ShipPreset): ShipVisual {
     group.add(mast);
   }
 
-  // паруса
-  const sailMat = sailMaterial(P.colors.sail);
+  // паруса: каждый со своим материалом (своё рифление), квадратные —
+  // на поворотной группе «рея+парус» для брасопки по ветру
   const sails: SailInfo[] = [];
-  const addSquareSail = (mastIndex: number, level: number, width: number, height: number) => {
+  const addSquareSail = (mastIndex: number, level: number, width: number, height: number, setAt: number) => {
     const md = mastDefs[mastIndex];
-    const g = new THREE.PlaneGeometry(width, height, 8, 6);
+    const g = new THREE.PlaneGeometry(width, height, 10, 7);
     g.translate(0, -height / 2, 0); // верхняя кромка у реи
-    const mesh = new THREE.Mesh(g, sailMat);
+    const mat = sailMaterial(P.colors.sail);
+    const mesh = new THREE.Mesh(g, mat);
     const y = md.h * level - P.draft * 0.3;
+    // поворотная группа: ось вращения — мачта (брасопка рея по ветру)
+    const pivot = new THREE.Group();
+    pivot.position.set(0, y + 0.05, md.z);
     // рея
     const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, width * 1.04, 5), woodMat);
     yard.rotation.z = Math.PI / 2;
-    yard.position.set(0, y + 0.05, md.z);
-    group.add(yard);
-    mesh.position.set(0, y + 0.05, md.z - 0.25);
-    group.add(mesh);
-    sails.push({ mesh, baseScaleY: 1, side: 1 });
+    pivot.add(yard);
+    mesh.position.set(0, 0, -0.25);
+    pivot.add(mesh);
+    group.add(pivot);
+    sails.push({ mesh, mat, brace: pivot, setAt, furl: 1, square: true, braceAngle: 0 });
   };
   if (P.masts === 2) {
-    addSquareSail(0, 0.66, L * 0.3, L * 0.16);       // фок
-    addSquareSail(1, 0.72, L * 0.36, L * 0.2);       // грот нижний
-    addSquareSail(1, 0.45, L * 0.26, L * 0.14);      // грот верхний (брамсель)
+    addSquareSail(0, 0.66, L * 0.3, L * 0.16, 0.62);   // фок
+    addSquareSail(1, 0.72, L * 0.36, L * 0.2, 0.45);   // грот нижний — ставится первым
+    addSquareSail(1, 0.45, L * 0.26, L * 0.14, 0.92);  // грот верхний (брамсель)
   } else {
-    addSquareSail(0, 0.62, L * 0.24, L * 0.13);
-    addSquareSail(1, 0.7, L * 0.34, L * 0.18);
-    addSquareSail(1, 0.44, L * 0.24, L * 0.13);
-    addSquareSail(2, 0.5, L * 0.18, L * 0.11);
+    addSquareSail(0, 0.62, L * 0.24, L * 0.13, 0.60);
+    addSquareSail(1, 0.7, L * 0.34, L * 0.18, 0.45);
+    addSquareSail(1, 0.44, L * 0.24, L * 0.13, 0.92);
+    addSquareSail(2, 0.5, L * 0.18, L * 0.11, 0.78);
   }
 
-  // кливера (треугольные) от бушприта к фок-мачте
-  const addJib = (tip: THREE.Vector3, foot: THREE.Vector3, headY: number, mastZ: number) => {
-    const a = tip, b = foot;
-    const c = new THREE.Vector3(0, headY, mastZ - 0.3);
+  // кливера (треугольные) от бушприта к фок-мачте: сетка с uv —
+  // есть «пузо» и трепет; при рифлении собираются к голове
+  const addJib = (tip: THREE.Vector3, foot: THREE.Vector3, headY: number, mastZ: number, setAt: number) => {
+    const head = new THREE.Vector3(0, headY, mastZ - 0.3);
+    // локальная система: X = −мирZ (продольная), Y = мирY, Z = мирX (пузо вбок)
+    const a = { x: -(tip.z - head.z), y: tip.y - head.y };
+    const b = { x: -(foot.z - head.z), y: foot.y - head.y };
+    const NU = 8, NV = 5;
+    const pos: number[] = [], uvs: number[] = [], idx: number[] = [];
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      // точка на штаге (к галсовому углу) и на шкаторине
+      const lx = a.x * u, ly = a.y * u;
+      const rx = b.x * u, ry = b.y * u;
+      for (let j = 0; j <= NV; j++) {
+        const v = j / NV;
+        pos.push(THREE.MathUtils.lerp(lx, rx, v), THREE.MathUtils.lerp(ly, ry, v), 0);
+        uvs.push(u, v);
+      }
+    }
+    const row = NV + 1;
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const p0 = i * row + j, p1 = p0 + 1, p2 = p0 + row, p3 = p2 + 1;
+        idx.push(p0, p1, p2, p1, p3, p2);
+      }
+    }
     const g = new THREE.BufferGeometry();
-    const verts = new Float32Array([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]);
-    g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
     g.computeVertexNormals();
-    const mesh = new THREE.Mesh(g, sailMat);
+    const mat = sailMaterial(P.colors.sail);
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.position.copy(head);
+    mesh.rotation.y = Math.PI / 2; // локальный Z (пузо) -> мир X (борт)
     mesh.frustumCulled = false;
     group.add(mesh);
-    sails.push({ mesh, baseScaleY: 1, side: 1 });
+    sails.push({ mesh, mat, setAt, furl: 1, square: false, braceAngle: 0 });
   };
   const foreTop = mastDefs[0];
-  addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z);
+  addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
   addJib(new THREE.Vector3(bowspritTip.x * 0.55, bowspritTip.y - (bowspritTip.y - P.freeboard * 0.72) * 0.45, bowspritTip.z - L * 0.1),
-    new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z);
+    new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
 
   // флаг на топе грот-мачты
   const mainMast = mastDefs[P.masts === 2 ? 1 : 1];
@@ -716,7 +756,8 @@ export function buildShip(P: ShipPreset): ShipVisual {
       gun.position.set(side * (p.w * 0.9 - 0.15), deckY, z);
       gun.userData.side = side;
       group.add(gun);
-      (side < 0 ? gunsPort : gunsStarboard).push(gun);
+      // локальный −X = штирборт (правый борт), локальный +X = порт (левый)
+      (side < 0 ? gunsStarboard : gunsPort).push(gun);
     }
   }
 
@@ -796,7 +837,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // такелаж
   group.add(buildRigging(P, mastDefs, bowspritTip));
 
-  const rig: SailRig = { sails, material: sailMat };
+  const rig: SailRig = { sails };
 
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,

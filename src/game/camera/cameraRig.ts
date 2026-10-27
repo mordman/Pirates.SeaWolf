@@ -74,7 +74,7 @@ export class CameraRig {
       this.dist.free = clamp(this.dist.free + wheel * 0.03, 14, 70);
     } else {
       this.dist[this.mode] = clamp(this.dist[this.mode] + wheel * 0.08,
-        this.mode === 'iso' ? 35 : 16, this.mode === 'iso' ? 300 : 220);
+        this.mode === 'iso' ? 35 : 16, this.mode === 'iso' ? 420 : 260);
     }
 
     // свободная камера — вращение мышью при зажатой ПКМ

@@ -125,9 +125,9 @@ export class CombatSystem {
   /** Мировое направление прицела */
   aimDirection(out: THREE.Vector3): THREE.Vector3 {
     const heading = this.player.heading;
-    const right = this.aim.side; // 1 = правый борт
-    // базовое направление борта: right вектор = (cos(h), 0, -sin(h))
-    const baseAz = Math.atan2(right * Math.cos(heading), right * -Math.sin(heading));
+    const side = this.aim.side; // 1 = правый борт (штирборт = мир −X при курсе 0)
+    // штирборт: (−cos h, 0, sin h); порт: зеркально
+    const baseAz = Math.atan2(-side * Math.cos(heading), side * Math.sin(heading));
     // baseAz: направление правого/левого борта
     const az = baseAz + this.aim.azimuth;
     const cosE = Math.cos(this.aim.elevation);
@@ -203,8 +203,8 @@ export class CombatSystem {
     const h = ship.heading;
 
     this.aimDirection(this.aimDir);
-    // отдача: крен от залпа
-    ship.angular.z += -sideDir * 0.006 * info.muzzle / 175;
+    // отдача: крен от залпа (борт, из которого стреляем, поднимается)
+    ship.angular.z += sideDir * 0.006 * info.muzzle / 175;
 
     for (let p = 0; p < info.pellets; p++) {
       const pr = this.projectiles.find(q => !q.active);

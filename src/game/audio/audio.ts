@@ -13,6 +13,13 @@ export class AudioSys {
   private creakTimer = 0;
   private gullTimer = 6;
   enabled = false;
+  private volume = 0.55;
+
+  /** Громкость (0..1) — применяется сразу, даже до init() */
+  setVolume(v: number) {
+    this.volume = Math.min(1, Math.max(0, v));
+    if (this.master) this.master.gain.value = this.volume;
+  }
 
   init() {
     if (this.ctx) return;
@@ -20,7 +27,7 @@ export class AudioSys {
     this.ctx = new AC();
     const ctx = this.ctx;
     this.master = ctx.createGain();
-    this.master.gain.value = 0.55;
+    this.master.gain.value = this.volume;
     this.master.connect(ctx.destination);
 
     // белый шум 2 сек

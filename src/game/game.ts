@@ -12,6 +12,7 @@ import { Particles } from './fx/particles';
 import { SkySystem } from './fx/sky';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
+import { GameSettings, loadSettings } from './core/settings';
 
 // ============================================================
 // Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
@@ -95,6 +96,9 @@ export class Game {
   docked = false;
   dead = false;
   started = false;
+  settings: GameSettings;         // графика/управление/звук (см. core/settings.ts)
+  uiOpen = false;                 // открыт ли модальный экран (пауза ввода)
+  paused = false;                 // отладка/E2E: заморозить физику (рендер идёт)
   private msgId = 1;
   messages: HudMessage[] = [];
   private msgTtl: number[] = [];
@@ -110,22 +114,30 @@ export class Game {
   private spawnPos = new THREE.Vector3(315, 0, 620);
 
   constructor(private canvas: HTMLCanvasElement) {
+    this.settings = loadSettings();
+    const g = this.settings.graphics;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = g.shadows;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.06;
 
     this.input = new InputManager(canvas);
+    this.input.setPreventCodes(this.preventCodes());
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
+    this.rig.camera.far = g.drawDistance * 2 + 4000;
+    this.rig.camera.updateProjectionMatrix();
     this.scene.add(this.worldGroup);
-    this.scene.fog = new THREE.FogExp2(0x9fb6bd, 0.00035);
+    this.scene.fog = new THREE.FogExp2(0x9fb6bd, this.fogBase());
 
-    this.water = new Water();
+    this.water = new Water({ detailSegs: g.waterDetail, far: g.drawDistance });
+    this.water.setFoamQuality(g.foamQuality);
     this.scene.add(this.water.group);
     this.sky = new SkySystem(this.scene);
+    this.sky.setShadowRes(g.shadowRes);
+    this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
     this.world = new World();
     this.worldGroup.add(this.world.group);
     this.worldGroup.add(this.particles.points);
@@ -137,6 +149,58 @@ export class Game {
     this.hud = this.makeHud();
     (window as unknown as { __game?: Game }).__game = this;
     window.addEventListener('resize', this.onResize);
+  }
+
+  /** Базовая плотность тумана из дальности прорисовки: к краю воды ~92% тумана */
+  private fogBase(): number {
+    return 1.55 / Math.max(1500, this.settings.graphics.drawDistance);
+  }
+
+  /** Коды клавиш, которые не должен обрабатывать браузер (страница/скролл) */
+  private preventCodes(): Set<string> {
+    const c = this.settings.controls;
+    return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
+      c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help,
+      ...c.ammo, 'Tab', 'Space']);
+  }
+
+  /** Применить новые настройки на лету (вызывается экраном настроек) */
+  applySettings(s: GameSettings) {
+    const prev = this.settings;
+    this.settings = s;
+    const g = s.graphics;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
+    if (prev.graphics.shadows !== g.shadows) this.setShadows(g.shadows);
+    if (prev.graphics.shadowRes !== g.shadowRes) this.sky.setShadowRes(g.shadowRes);
+    if (prev.graphics.waterDetail !== g.waterDetail || prev.graphics.drawDistance !== g.drawDistance) {
+      this.water.configure(g.waterDetail, g.drawDistance);
+    }
+    this.water.setFoamQuality(g.foamQuality);
+    this.rig.camera.far = g.drawDistance * 2 + 4000;
+    this.rig.camera.updateProjectionMatrix();
+    this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
+    (this.scene.fog as THREE.FogExp2).density = this.fogBase();
+    this.audio.setVolume(s.audio.volume);
+    this.input.setPreventCodes(this.preventCodes());
+  }
+
+  private setShadows(on: boolean) {
+    this.renderer.shadowMap.enabled = on;
+    this.renderer.shadowMap.needsUpdate = true;
+    // переключение теней требует перекомпиляции материалов
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.material) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of mats) (m as THREE.Material).needsUpdate = true;
+      }
+    });
+  }
+
+  /** Отладочный хук для E2E: принудительный ветер (→ состояние моря) */
+  debugSetWind(speed: number) {
+    this.windTargetSpeed = speed;
+    this.wind.speed = speed;
   }
 
   private spawnShips() {
@@ -338,27 +402,27 @@ export class Game {
   // ---------- управление ----------
   private handleInput(dt: number) {
     const inp = this.input;
-    if (!this.started || this.dead) { inp.endFrame(); return; }
+    if (!this.started || this.dead || this.uiOpen) { inp.endFrame(); return; }
     const p = this.player;
+    const c = this.settings.controls;
 
     // паруса
-    if (inp.pressed('KeyW')) { p.sailTarget = Math.min(3, p.sailTarget + 1); if (p.anchored) this.pushMessage('Сначала поднять якорь (F)'); }
-    if (inp.pressed('KeyS')) {
+    if (inp.pressed(c.sailsUp)) { p.sailTarget = Math.min(3, p.sailTarget + 1); if (p.anchored) this.pushMessage('Сначала поднять якорь (F)'); }
+    if (inp.pressed(c.sailsDown)) {
       if (p.sailTarget > 0) p.sailTarget = Math.max(0, p.sailTarget - 1);
     }
-    // задний ход на вёслах: держать S при убранных парусах
-    p.reverseThrust = inp.isDown('KeyS') && p.sailTarget === 0 && !p.anchored;
+    // задний ход на вёслах: держать «убрать паруса» при убранных парусах
+    p.reverseThrust = inp.isDown(c.sailsDown) && p.sailTarget === 0 && !p.anchored;
     if (p.reverseThrust) this.lastSOffset += dt; else this.lastSOffset = 0;
 
-    // руль: A — влево, D — вправо (положительный руль = поворот вправо)
-    const steer = (inp.isDown('KeyD') ? 1 : 0) - (inp.isDown('KeyA') ? 1 : 0);
+    // руль: A — влево, D — вправо (положительный руль = поворот вправо,
+    // ползунок HUD при D уходит вправо — и корабль поворачивает вправо)
+    const steer = (inp.isDown(c.steerRight) ? 1 : 0) - (inp.isDown(c.steerLeft) ? 1 : 0);
     if (this.docked) p.rudderTarget = 0;
-    else p.rudderTarget = steer; // D — право (штирборт), A — лево (порт);
-    // изометрическая камера следует за курсом, поэтому на экране
-    // D всегда поворачивает вправо, A — влево
+    else p.rudderTarget = steer; // D — штирборт (право), A — порт (лево)
 
     // якорь
-    if (inp.pressed('KeyF')) {
+    if (inp.pressed(c.anchor)) {
       if (this.docked) { this.undock(); }
       else {
         p.anchored = !p.anchored;
@@ -368,13 +432,13 @@ export class Game {
     }
 
     // камера
-    if (inp.pressed('KeyC')) {
+    if (inp.pressed(c.camera)) {
       this.rig.cycleMode();
       this.pushMessage(`Камера: ${CAMERA_LABEL[this.rig.mode]}`);
     }
 
     // боеприпасы
-    const ammoKeys: [string, AmmoType][] = [['Digit1', 'ball'], ['Digit2', 'chain'], ['Digit3', 'grape'], ['Digit4', 'fire']];
+    const ammoKeys: [string, AmmoType][] = [[c.ammo[0], 'ball'], [c.ammo[1], 'chain'], [c.ammo[2], 'grape'], [c.ammo[3], 'fire']];
     for (const [key, kind] of ammoKeys) {
       if (inp.pressed(key)) {
         this.combat.ammo = kind;
@@ -388,14 +452,14 @@ export class Game {
       this.combat.aim.elevation = clamp(this.combat.aim.elevation + inp.mouseDY * 0.0016, 0.01, 0.24);
     }
 
-    // Q/E — борта; E ещё и взаимодействие
+    // борта; «правый борт» ещё и взаимодействие
     const boardTarget = this.canBoard();
     const canDockHere = this.canDock();
     this.boardingTarget = boardTarget;
-    if (inp.pressed('KeyQ')) {
+    if (inp.pressed(c.aimPort)) {
       this.combat.toggleAim(-1);
     }
-    if (inp.pressed('KeyE')) {
+    if (inp.pressed(c.aimStarboard)) {
       if (boardTarget) {
         this.takePrize(boardTarget);
       } else if (canDockHere && !this.combat.aim.active) {
@@ -408,11 +472,11 @@ export class Game {
     // огонь
     if (this.combat.aim.active) {
       if (inp.lmbJust) this.combat.fireOne();
-      if (inp.pressed('Space')) this.combat.fireBroadside();
+      if (inp.pressed(c.fire)) this.combat.fireBroadside();
     }
 
-    // ремонт/откачка (R)
-    p.pumpAction = inp.isDown('KeyR');
+    // ремонт/откачка
+    p.pumpAction = inp.isDown(c.repair);
   }
 
   // ---------- столкновения кораблей ----------
@@ -536,7 +600,8 @@ export class Game {
     const gust = Math.sin(this.gustT * 0.5) * 0.9 + Math.sin(this.gustT * 1.7 + 2) * 0.5;
     this.wind.speed += (this.windTargetSpeed + gust - this.wind.speed) * Math.min(1, dt * 0.3);
     this.wind.from += dt * 0.008 * Math.sin(this.time * 0.037 + 1.3);
-    SEA.amplitude = clamp(0.45 + (this.wind.speed - 3) * 0.09, 0.4, 1.5);
+    // амплитуда волн: 0.4 штиль .. 1.3 шторм (при 1.5 гребни накрывали палубу)
+    SEA.amplitude = clamp(0.45 + (this.wind.speed - 3) * 0.085, 0.4, 1.3);
   }
 
   // ---------- кадр ----------
@@ -554,7 +619,7 @@ export class Game {
     this.accum += dt;
     const STEP = 1 / 60;
     let steps = 0;
-    while (this.accum >= STEP && steps < 5) {
+    while (!this.paused && this.accum >= STEP && steps < 5) {
       this.time += STEP;
       this.updateWeather(STEP);
       this.player.fixedStep(STEP, this.time);
@@ -567,8 +632,23 @@ export class Game {
       steps++;
     }
 
-    // телеметрия для отладки/E2E: window.__sea (ватерлиния: y ≈ waterY)
+    // телеметрия для отладки/E2E: window.__sea
     const dbg = window as unknown as { __sea: Record<string, number> };
+    const sailsV = this.player.visual.sails.sails;
+    let furlSum = 0, furlMin = 1, furlMax = 0;
+    for (const sv of sailsV) {
+      furlSum += sv.furl;
+      furlMin = Math.min(furlMin, sv.furl);
+      furlMax = Math.max(furlMax, sv.furl);
+    }
+    // минимальный надводный борт: высота палубы у планширя минус вода
+    // в носу/корме/миделе (учитываем крен/дифферент кватернионом)
+    let freeboard = Infinity;
+    const deckLocal = this.player.preset.freeboard * 0.82 - 1.0;
+    for (const lz of [-this.player.preset.length * 0.38, 0, this.player.preset.length * 0.38]) {
+      this._v3.set(0, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
+      freeboard = Math.min(freeboard, this._v3.y - waterHeightAt(this._v3.x, this._v3.z, this.time));
+    }
     dbg.__sea = {
       fps: this.fpsSmooth,
       x: this.player.position.x, y: this.player.position.y, z: this.player.position.z,
@@ -577,6 +657,10 @@ export class Game {
       heading: this.player.heading,
       rudder: this.player.rudder, angY: this.player.angular.y,
       speed: this.player.speedKnots(),
+      sailLevel: this.player.sailTarget, sailFrac: this.player.sailFrac,
+      furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
+      sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
+      freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
     };
 
     // действия команды (R)
@@ -614,9 +698,10 @@ export class Game {
     playerScene.copy(this.player.position).add(this.shift);
     const { dayF } = this.sky.update(dt, this.time, this.rig.camera.position, playerScene, 0.42);
     const env = this.sky.environmentColors(dayF, 0);
-    this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, 0.00035);
+    const fogD = this.fogBase() * (1 + (1 - dayF) * 0.18);
+    this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, fogD);
     (this.scene.fog as THREE.FogExp2).color.copy(env.fog);
-    (this.scene.fog as THREE.FogExp2).density = 0.00030 + (1 - dayF) * 0.00006;
+    (this.scene.fog as THREE.FogExp2).density = fogD;
 
     // фонарь игрока ночью
     if (this.player.visual.lantern) {
@@ -666,6 +751,7 @@ export class Game {
 
   private _v1 = new THREE.Vector3();
   private _v2 = new THREE.Vector3();
+  private _v3 = new THREE.Vector3();
 
   private nearLand(): boolean {
     for (const isl of this.world.islands) {

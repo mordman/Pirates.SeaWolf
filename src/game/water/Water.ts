@@ -12,6 +12,9 @@ interface OceanUniforms {
   [k: string]: THREE.IUniform;
 }
 
+// Настройки качества воды по умолчанию (переопределяется из GameSettings)
+export const WATER_DEFAULTS = { detailSegs: 176, far: 5600 };
+
 export class Water {
   group = new THREE.Group();
   material: THREE.ShaderMaterial;
@@ -23,7 +26,11 @@ export class Water {
   private cam = new THREE.Vector3();
   uniforms: OceanUniforms;
 
-  constructor() {
+  private segs = WATER_DEFAULTS.detailSegs;
+  private far = WATER_DEFAULTS.far;
+  private detailHalf = 450;
+
+  constructor(opts?: { detailSegs?: number; far?: number }) {
     this.uniforms = {
       uTime: { value: 0 },
       uAmp: { value: SEA.amplitude },
@@ -37,6 +44,8 @@ export class Water {
       uFogColor: { value: new THREE.Color(0.72, 0.82, 0.86) },
       uFogDensity: { value: 0.00035 },
       uFoamTex: { value: null },
+      uFoamQ: { value: 2.0 },                       // качество/сложность пены 0..2
+      uFarFade: { value: new THREE.Vector2(600, 4600) }, // диапазон затухания волн
     };
 
     // Процедурная текстура пены
@@ -53,11 +62,12 @@ export class Water {
         varying vec2 vWorldXZ;
         ${gerstnerGLSL()}
         uniform vec3 uShift; // = -worldGroup.position (сцена -> мир)
+        uniform vec2 uFarFade;
         void main() {
           vec3 sceneP = (modelMatrix * vec4(position, 1.0)).xyz;
           vec2 worldXZ = sceneP.xz + uShift.xz; // мировые координаты вершины
           float d = length(sceneP.xz - cameraPosition.xz);
-          float farFade = 1.0 - smoothstep(700.0, 2600.0, d);
+          float farFade = 1.0 - smoothstep(uFarFade.x, uFarFade.y, d);
           vec3 disp; vec3 nrm;
           gerstner(worldXZ, uAmp * farFade, disp, nrm);
           vec3 p = sceneP + disp;
@@ -78,7 +88,7 @@ export class Water {
         varying float vFoamWave;
         varying vec2 vWorldXZ;
         uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uFogColor;
-        uniform float uTime, uFogDensity;
+        uniform float uTime, uFogDensity, uFoamQ;
         uniform sampler2D uFoamTex;
         ${NOISE_GLSL}
 
@@ -105,17 +115,42 @@ export class Water {
           float glint = pow(max(dot(R, normalize(uSunDir)), 0.0), 24.0) * 0.25;
           col += uSunColor * (spec * 1.4 + glint);
 
-          // пена только на высоких гребнях
+          // ===== ПЕНА: несколько независимых слоёв, чтобы не было однообразия =====
+          // (1) «поля пятнистости»: крупные медленные области, где пена вообще
+          //     появляется — одни гребни пенные, другие чистые
+          float patch = fbm(vWorldXZ * 0.013 + vec2(uTime * 0.011, -uTime * 0.008));
+          patch = smoothstep(0.30, 0.62, patch);
+          // (2) гребень: высота волны + крутизна (нормаль)
           float crest = smoothstep(0.94, 1.3, vWorldPos.y * 0.42 + 0.5) * vFoamWave;
-          float foamNoise = fbm(vWorldXZ * 0.55 + uTime * 0.35);
-          float crestFoam = smoothstep(0.72, 0.98, crest * 0.8 + foamNoise * 0.32);
-          col = mix(col, vec3(0.92, 0.96, 0.97), crestFoam * 0.75);
-
-          // мерцающая текстура пены поверх
-          float ft = texture2D(uFoamTex, vWorldXZ * 0.09 + vec2(uTime * 0.02, uTime * -0.015)).r;
-          float ft2 = texture2D(uFoamTex, vWorldXZ * 0.045 - vec2(uTime * 0.014, uTime * 0.02)).r;
-          float fmix = smoothstep(0.62, 1.0, ft * 0.6 + ft2 * 0.6) * 0.16 * vFoamWave;
-          col = mix(col, vec3(0.9, 0.95, 0.96), fmix);
+          float steep = clamp(1.0 - vNormal.y, 0.0, 1.0);
+          // (3) два слоя шума разного масштаба и скорости
+          float fn1 = fbm(vWorldXZ * 0.9 + vec2(uTime * 0.32, uTime * -0.21));
+          float fn2 = fbm(vWorldXZ * 2.9 + vec2(-uTime * 0.5, uTime * 0.36) + 17.3);
+          // (4) «прожилки» — анизотропный шум, вытянутый вдоль главной волны
+          vec2 wdir = normalize(vec2(1.0, 0.25));
+          vec2 sp = vec2(dot(vWorldXZ, wdir) * 0.030, dot(vWorldXZ, vec2(-wdir.y, wdir.x)) * 0.40);
+          float streak = fbm(sp + vec2(uTime * 0.05, uTime * 0.022));
+          float streakFoam = smoothstep(0.80, 1.02, streak * 0.5 + crest * 0.5 + fn2 * 0.25)
+                             * patch * crest * 1.5;
+          // (5) основная пена гребней: порог гуляет от пятнистости и fn1
+          float crestFoam = smoothstep(0.60, 0.96,
+            crest * (0.55 + 0.75 * patch) + fn1 * 0.34 * (0.45 + 0.55 * patch) + steep * 0.5);
+          // качество 0 — упрощённая пена (без прожилок и с одним слоем)
+          if (uFoamQ < 0.5) {
+            crestFoam = smoothstep(0.72, 0.98, crest * 0.8 + fn1 * 0.32);
+            streakFoam = 0.0;
+          } else if (uFoamQ < 1.5) {
+            streakFoam *= 0.6;
+          }
+          // (6) пузырьковая текстура в ДВА масштаба с разными скоростями
+          float ft = texture2D(uFoamTex, vWorldXZ * 0.11 + vec2(uTime * 0.021, uTime * -0.014)).r;
+          float ft2 = texture2D(uFoamTex, vWorldXZ * 0.037 - vec2(uTime * 0.012, uTime * 0.017)).r;
+          float texFoam = smoothstep(0.66, 1.05, ft * 0.6 + ft2 * 0.6 + crest * 0.35) * (0.10 + 0.14 * patch);
+          float foamAmt = crestFoam * (0.55 + 0.45 * fn2) + streakFoam * 0.6 + texFoam;
+          foamAmt = clamp(foamAmt, 0.0, 1.0) * (0.35 + 0.65 * vFoamWave);
+          // яркость пены тоже варьируется — не плоско-белая
+          vec3 foamCol = mix(vec3(0.84, 0.89, 0.92), vec3(0.97, 0.99, 1.0), fn2);
+          col = mix(col, foamCol, foamAmt * 0.8);
 
           // туман
           float fog = 1.0 - exp(-uFogDensity * uFogDensity * vDist * vDist);
@@ -128,36 +163,63 @@ export class Water {
     });
     this.material = mat;
 
-    // Детальный план: 700x700м, сетка следует за камерой с шагом сетки
-    const dg = new THREE.PlaneGeometry(700, 700, 160, 160);
-    dg.rotateX(-Math.PI / 2);
+    // Детальный план: следует за камерой с шагом сетки (размер/сегменты из настроек)
+    const dg = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
     this.detail = new THREE.Mesh(dg, mat);
     this.detail.frustumCulled = false;
     this.detail.renderOrder = 1;
     this.group.add(this.detail);
 
-    // Дальняя вода: 4 полосы вокруг детального квадрата до горизонта.
-    // Внутренние кромки полос ВСЕГДА совпадают с кромками детальной сетки
-    // (двигаем их вместе с ней), стык бесшовный: вершины совпадают и
-    // смещаются одной функцией gerstner. Перекрытия нет вовсе.
-    const H = 350;               // половина детального плана
-    const FAR = 4500;            // радиус дальней воды
-    const long = FAR - H;        // длина полосы поперёк
-    const mkBand = (w: number, h: number, sx: number, sz: number) => {
-      const g = new THREE.PlaneGeometry(w, h, Math.max(2, Math.round(w / 50)), Math.max(2, Math.round(h / 50)));
-      g.rotateX(-Math.PI / 2);
-      const m = new THREE.Mesh(g, mat);
+    // полосы дальней воды создаются в configure()
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(new THREE.BufferGeometry(), mat);
       m.frustumCulled = false;
       m.renderOrder = 0;
       this.bands.push(m);
       this.group.add(m);
-      return m;
-    };
-    // север/юг — во всю ширину; запад/восток — только между ними (пинвил)
-    mkBand(2 * FAR, long, 0, -(H + long / 2));
-    mkBand(2 * FAR, long, 0, +(H + long / 2));
-    mkBand(long, 2 * H, -(H + long / 2), 0);
-    mkBand(long, 2 * H, +(H + long / 2), 0);
+    }
+    this.configure(opts?.detailSegs ?? WATER_DEFAULTS.detailSegs, opts?.far ?? WATER_DEFAULTS.far);
+  }
+
+  /** Перестройка сетки воды под настройки качества/дальности (runtime) */
+  configure(detailSegs: number, far: number) {
+    this.segs = Math.max(48, Math.round(detailSegs));
+    this.far = Math.max(1200, far);
+    this.detailHalf = Math.min(450, this.far * 0.3);
+    const size = this.detailHalf * 2;
+
+    this.detail.geometry.dispose();
+    const dg = new THREE.PlaneGeometry(size, size, this.segs, this.segs);
+    dg.rotateX(-Math.PI / 2);
+    this.detail.geometry = dg;
+
+    // Дальняя вода: 4 полосы вокруг детального квадрата до горизонта.
+    // Внутренние кромки полос ВСЕГДА совпадают с кромками детальной сетки
+    // (двигаем их вместе с ней), стык бесшовный: вершины совпадают и
+    // смещаются одной функцией gerstner. Перекрытия нет вовсе.
+    const H = this.detailHalf;
+    const FAR = this.far;
+    const long = FAR - H;
+    const dims: [number, number, number, number][] = [
+      [2 * FAR, long, 0, -(H + long / 2)],   // север
+      [2 * FAR, long, 0, +(H + long / 2)],   // юг
+      [long, 2 * H, -(H + long / 2), 0],     // запад
+      [long, 2 * H, +(H + long / 2), 0],     // восток
+    ];
+    dims.forEach(([w, h, sx, sz], i) => {
+      const m = this.bands[i];
+      m.geometry.dispose();
+      const g = new THREE.PlaneGeometry(w, h, Math.max(2, Math.round(w / 64)), Math.max(2, Math.round(h / 64)));
+      g.rotateX(-Math.PI / 2);
+      m.geometry = g;
+      m.userData.off = { x: sx, z: sz };
+    });
+
+    (this.uniforms.uFarFade.value as THREE.Vector2).set(this.detailHalf + 180, this.far * 0.82);
+  }
+
+  setFoamQuality(q: number) {
+    this.uniforms.uFoamQ.value = q;
   }
 
   setEnvironment(sunDir: THREE.Vector3, sunColor: THREE.Color, sky: THREE.Color, horizon: THREE.Color, fogColor: THREE.Color, fogDensity: number) {
@@ -176,21 +238,26 @@ export class Water {
     (this.uniforms.uShift.value as THREE.Vector3).copy(worldShift);
     this.cam.copy(camScenePos);
     // снапим к шагу сетки, чтобы вершины не «плыли»
-    const step = 700 / 160;
+    const step = (this.detailHalf * 2) / this.segs;
     const sx = Math.round(camScenePos.x / step) * step;
     const sz = Math.round(camScenePos.z / step) * step;
     this.detail.position.set(sx, 0, sz);
     // полосы дальней воды прижаты к кромкам детального плана
-    const H = 350;
-    const off = H + (4500 - H) / 2;
-    this.bands[0].position.set(sx, 0, sz - off);
-    this.bands[1].position.set(sx, 0, sz + off);
-    this.bands[2].position.set(sx - off, 0, sz);
-    this.bands[3].position.set(sx + off, 0, sz);
+    for (const b of this.bands) {
+      const off = b.userData.off as { x: number; z: number };
+      b.position.set(sx + off.x, 0, sz + off.z);
+    }
   }
 
   heightAt(x: number, z: number, t: number) {
     return waterHeightAt(x, z, t);
+  }
+
+  dispose() {
+    this.detail.geometry.dispose();
+    for (const b of this.bands) b.geometry.dispose();
+    this.material.dispose();
+    (this.uniforms.uFoamTex.value as THREE.Texture | null)?.dispose();
   }
 }
 

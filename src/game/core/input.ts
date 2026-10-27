@@ -13,6 +13,12 @@ export class InputManager {
   rmbJust = false;
   private el: HTMLElement;
   private handlers: Array<[string, EventListener, EventTarget]> = [];
+  private preventCodes = new Set<string>(['Tab', 'Space', 'KeyF', 'KeyE', 'KeyQ', 'KeyR', 'KeyC']);
+
+  /** Обновить набор клавиш, которые не должен съедать браузер (из настроек) */
+  setPreventCodes(codes: Set<string>) {
+    this.preventCodes = codes;
+  }
 
   constructor(el: HTMLElement) {
     this.el = el;
@@ -26,7 +32,7 @@ export class InputManager {
       const code = ev.code;
       this.keys.add(code);
       this.justPressed.add(code);
-      if (['Tab', 'Space', 'KeyF', 'KeyE', 'KeyQ', 'KeyR', 'KeyC'].includes(code)) ev.preventDefault();
+      if (this.preventCodes.has(code)) ev.preventDefault();
     });
     bind(window, 'keyup', (e) => this.keys.delete((e as KeyboardEvent).code));
     bind(el, 'pointerdown', (e) => {

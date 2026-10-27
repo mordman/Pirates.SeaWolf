@@ -122,19 +122,20 @@ export class AIShip {
       target = this.waypoints[0];
     }
 
-    // руление к цели
+    // руление к цели. ВНИМАНИЕ: положительный руль = поворот ВПРАВО
+    // (штирборт), а err>0 — нужно довернуть ВЛЕВО (курс растёт) → минус
     const toT = new THREE.Vector3().subVectors(target, s.position).setY(0).normalize();
     const desiredHeading = Math.atan2(toT.x, toT.z);
     let err = mod2pi(desiredHeading - s.heading);
     if (this.avoidTimer > 0 && heightAt(look.x, look.z) > -1.5) {
       err = clamp(err + this.avoidDir * 1.1, -1.4, 1.4);
     }
-    s.rudderTarget = clamp(err * 1.8, -1, 1);
+    s.rudderTarget = clamp(-err * 1.8, -1, 1);
     // лавировка: если цель против ветра — идём галсами
     const windRel = Math.abs(mod2pi(Math.atan2(Math.cos(s.wind.from), Math.sin(s.wind.from)) - desiredHeading));
     if (windRel < 0.9) {
       const tack = Math.sin(time * 0.05 + s.position.x) > 0 ? 1 : -1;
-      s.rudderTarget = clamp(s.rudderTarget + tack * 0.3, -1, 1);
+      s.rudderTarget = clamp(s.rudderTarget - tack * 0.3, -1, 1);
     }
     s.sailTarget = desiredSail;
     void onMessage;
