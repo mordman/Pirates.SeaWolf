@@ -1,0 +1,498 @@
+'use client';
+
+import { useEffect, useRef, useState, useCallback } from 'react';
+import type { Game, HudState } from '@/game/game';
+import type { AmmoType } from '@/game/combat/combat';
+
+// ============================================================
+// Страница игры: canvas + HUD (панели, компас, карта, порт)
+// ============================================================
+
+const COMPASS = ['С', 'ССВ', 'СВ', 'ВСВ', 'В', 'ВЮВ', 'ЮВ', 'ЮЮВ', 'Ю', 'ЮЮЗ', 'ЮЗ', 'ЗЮЗ', 'З', 'ЗСЗ', 'СЗ', 'ССЗ'];
+const AMMO_ORDER: { key: AmmoType; label: string; hotkey: string }[] = [
+  { key: 'ball', label: 'Ядро', hotkey: '1' },
+  { key: 'chain', label: 'Книппель', hotkey: '2' },
+  { key: 'grape', label: 'Картечь', hotkey: '3' },
+  { key: 'fire', label: 'Зажигат.', hotkey: '4' },
+];
+
+function Panel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`pointer-events-auto rounded-lg border border-amber-900/60 bg-[#160f08]/80 backdrop-blur-sm shadow-lg shadow-black/40 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function Bar({ pct, color, bg = 'bg-stone-800' }: { pct: number; color: string; bg?: string }) {
+  return (
+    <div className={`h-2 w-full overflow-hidden rounded-sm ${bg}`}>
+      <div className={`h-full transition-all duration-300 ${color}`} style={{ width: `${Math.max(0, Math.min(1, pct)) * 100}%` }} />
+    </div>
+  );
+}
+
+function WindCompass({ hud }: { hud: HudState }) {
+  const rel = hud.windRelDeg;
+  return (
+    <div className="flex items-center gap-3 p-3">
+      <svg width="84" height="84" viewBox="0 0 100 100" className="shrink-0">
+        <circle cx="50" cy="50" r="46" fill="#0d0906" stroke="#7c5a2a" strokeWidth="2" />
+        <circle cx="50" cy="50" r="35" fill="none" stroke="#3d2e18" strokeWidth="1" />
+        {['С', 'В', 'Ю', 'З'].map((d, i) => {
+          const a = (i * 90 - 90) * (Math.PI / 180);
+          return (
+            <text key={d} x={50 + Math.cos(a) * 40} y={50 + Math.sin(a) * 40 + 4} textAnchor="middle"
+              fill={d === 'С' ? '#e8c87a' : '#8a734d'} fontSize="11" fontWeight="bold">{d}</text>
+          );
+        })}
+        {/* корабль (всегда носом вверх) */}
+        <polygon points="50,26 56,62 50,55 44,62" fill="#d8c9a8" />
+        {/* стрелка ветра: откуда дует относительно курса */}
+        <g transform={`rotate(${rel} 50 50)`}>
+          <line x1="50" y1="18" x2="50" y2="34" stroke="#7dd3fc" strokeWidth="3" strokeLinecap="round" />
+          <polygon points="50,10 45,22 55,22" fill="#7dd3fc" />
+        </g>
+      </svg>
+      <div className="grid grid-cols-[auto_auto] gap-x-3 gap-y-1 text-xs">
+        <span className="text-stone-400">Ветер</span>
+        <span className="text-sky-200 font-semibold">{hud.windSpeed.toFixed(1)} м/с</span>
+        <span className="text-stone-400">Курс</span>
+        <span className="text-amber-100 font-semibold">{COMPASS[Math.round(hud.headingDeg / 22.5) % 16]} {hud.headingDeg}°</span>
+        <span className="text-stone-400">Ход</span>
+        <span className="text-amber-100 font-semibold">{hud.speed.toFixed(1)} уз</span>
+        <span className="text-stone-400">Время</span>
+        <span className="text-amber-100 font-semibold">{hud.clock}</span>
+      </div>
+    </div>
+  );
+}
+
+export default function Home() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gameRef = useRef<Game | null>(null);
+  const mapCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [hud, setHud] = useState<HudState | null>(null);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [portMsg, setPortMsg] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let game: Game | null = null;
+    (async () => {
+      const { Game: GameClass } = await import('@/game/game');
+      if (disposed || !canvasRef.current) return;
+      game = new GameClass(canvasRef.current);
+      gameRef.current = game;
+      game.run();
+      setReady(true);
+      const iv = setInterval(() => setHud({ ...game!.hud }), 110);
+      return () => clearInterval(iv);
+    })();
+    return () => {
+      disposed = true;
+      game?.dispose();
+      gameRef.current = null;
+    };
+  }, []);
+
+  // Tab / H / Esc
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Tab') { e.preventDefault(); setMapOpen(v => !v); }
+      if (e.code === 'KeyH') setHelpOpen(v => !v);
+      if (e.code === 'Escape') { setMapOpen(false); setHelpOpen(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // отрисовка карты
+  useEffect(() => {
+    if (!mapOpen || !hud || !mapCanvasRef.current) return;
+    const cv = mapCanvasRef.current;
+    const ctx = cv.getContext('2d')!;
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0e2a33';
+    ctx.fillRect(0, 0, W, H);
+    // сетка
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    for (let x = 0; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = 0; y < H; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+    const scale = 0.055; // мир -> пиксели
+    const cx = W / 2, cy = H / 2;
+    const px = (x: number) => cx + x * scale;
+    const pz = (z: number) => cy + z * scale;
+    // острова
+    for (const isl of hud.mapIslands) {
+      const r = Math.max(4, isl.r * scale);
+      if (!isl.discovered) {
+        ctx.strokeStyle = 'rgba(220,200,150,0.25)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(220,200,150,0.35)';
+        ctx.font = '10px serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('?', px(isl.x), pz(isl.z) + 3);
+        continue;
+      }
+      const grad = ctx.createRadialGradient(px(isl.x), pz(isl.z), r * 0.2, px(isl.x), pz(isl.z), r);
+      grad.addColorStop(0, '#4a7a3a');
+      grad.addColorStop(0.75, '#c9b26a');
+      grad.addColorStop(1, '#1d5d6e');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f0e2c0';
+      ctx.font = 'bold 11px serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(isl.name, px(isl.x), pz(isl.z) + r + 14);
+    }
+    // корабли ИИ
+    for (const s of hud.mapShips) {
+      ctx.fillStyle = s.surrendered ? '#e8e4d8' : s.kind === 'brig' ? '#c23b3b' : '#d8a03c';
+      ctx.beginPath(); ctx.arc(px(s.x), pz(s.z), 4, 0, Math.PI * 2); ctx.fill();
+    }
+    // игрок
+    const p = hud.mapPlayer;
+    ctx.save();
+    ctx.translate(px(p.x), pz(p.z));
+    ctx.rotate(-p.h);
+    ctx.fillStyle = '#7dd3fc';
+    ctx.beginPath();
+    ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // роза ветров
+    ctx.fillStyle = '#e8c87a';
+    ctx.font = 'bold 12px serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Ветер: ${hud.windFromDeg}°, ${hud.windSpeed.toFixed(1)} м/с`, 12, H - 14);
+  }, [mapOpen, hud]);
+
+  const act = useCallback((fn: (g: Game) => string | null | void) => {
+    const g = gameRef.current;
+    if (!g) return;
+    const res = fn(g);
+    setPortMsg(typeof res === 'string' ? res : null);
+  }, []);
+
+  const g = gameRef.current;
+
+  return (
+    <main className="fixed inset-0 overflow-hidden bg-black select-none">
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0704]">
+          <div className="text-center">
+            <div className="mb-3 text-3xl font-serif text-amber-300">Морские волки</div>
+            <div className="text-stone-400">Грузим пушки, канаты и ром...</div>
+          </div>
+        </div>
+      )}
+
+      {hud && !hud.started && ready && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="max-w-lg rounded-xl border-2 border-amber-800/70 bg-[#1a120a] p-8 text-center shadow-2xl">
+            <h1 className="mb-1 font-serif text-4xl font-bold text-amber-300">Морские волки</h1>
+            <p className="mb-5 text-sm italic text-stone-400">Пиратская песочница на бесконечном море</p>
+            <div className="mb-6 grid grid-cols-2 gap-x-6 gap-y-1.5 text-left text-xs text-stone-300">
+              <span><b className="text-amber-200">W / S</b> — паруса 0–3</span>
+              <span><b className="text-amber-200">A / D</b> — руль</span>
+              <span><b className="text-amber-200">Q / E</b> — прицел борта</span>
+              <span><b className="text-amber-200">ЛКМ / Space</b> — выстрел / залп</span>
+              <span><b className="text-amber-200">1–4</b> — боеприпасы</span>
+              <span><b className="text-amber-200">C</b> — камера (изометрия и др.)</span>
+              <span><b className="text-amber-200">Колесо</b> — зум</span>
+              <span><b className="text-amber-200">F</b> — якорь</span>
+              <span><b className="text-amber-200">R</b> — ремонт / откачка</span>
+              <span><b className="text-amber-200">Tab</b> — карта · <b className="text-amber-200">H</b> — помощь</span>
+            </div>
+            <button
+              onClick={() => { gameRef.current?.start(); }}
+              className="pointer-events-auto rounded-lg border border-amber-600 bg-gradient-to-b from-amber-600 to-amber-800 px-8 py-3 font-serif text-lg font-bold text-amber-50 shadow-lg transition hover:from-amber-500 hover:to-amber-700 active:scale-95"
+            >
+              ⚓ Поднять флаг
+            </button>
+          </div>
+        </div>
+      )}
+
+      {hud && hud.started && !hud.dead && (
+        <div className="pointer-events-none absolute inset-0 z-10 font-sans text-stone-200">
+          {/* ---- статус корабля (лево-верх) ---- */}
+          <div className="absolute left-3 top-3 w-60">
+            <Panel className="p-3">
+              <div className="mb-2 flex items-baseline justify-between">
+                <span className="font-serif text-sm font-bold text-amber-200">Шлюп «Бриз»</span>
+                <span className="text-[10px] text-stone-500">{hud.fps} FPS</span>
+              </div>
+              <div className="space-y-1.5 text-[11px]">
+                <div className="flex justify-between"><span className="text-stone-400">Корпус</span>
+                  <span className={hud.hullPct < 0.35 ? 'text-red-400 font-bold' : ''}>{Math.round(hud.hullPct * 100)}%</span></div>
+                <Bar pct={hud.hullPct} color={hud.hullPct < 0.35 ? 'bg-red-500' : hud.hullPct < 0.7 ? 'bg-amber-500' : 'bg-emerald-600'} />
+                <div className="flex justify-between"><span className="text-stone-400">Паруса</span>
+                  <span className={hud.sailPct < 0.35 ? 'text-red-400 font-bold' : ''}>{Math.round(hud.sailPct * 100)}%</span></div>
+                <Bar pct={hud.sailPct} color="bg-sky-400" />
+                <div className="flex justify-between"><span className="text-stone-400">Команда</span><span>{hud.crew} / {hud.maxCrew}</span></div>
+                <Bar pct={hud.crew / hud.maxCrew} color="bg-amber-400" />
+                {hud.waterPct > 0.01 && (
+                  <>
+                    <div className="flex justify-between"><span className="text-stone-400">Вода в трюме</span>
+                      <span className={hud.waterPct > 0.4 ? 'text-red-400 font-bold' : 'text-sky-300'}>{Math.round(hud.waterPct * 100)}%</span></div>
+                    <Bar pct={hud.waterPct} color="bg-sky-500" />
+                  </>
+                )}
+                {hud.onFire && <div className="text-center text-[11px] font-bold text-orange-400">🔥 ПОЖАР! Держите R</div>}
+                {hud.sinking && <div className="text-center text-[11px] font-bold text-red-400">МЫ ТОНЕМ!</div>}
+              </div>
+            </Panel>
+          </div>
+
+          {/* ---- ветер/курс (право-верх) ---- */}
+          <div className="absolute right-3 top-3">
+            <Panel><WindCompass hud={hud} /></Panel>
+          </div>
+
+          {/* ---- сообщения ---- */}
+          <div className="absolute left-1/2 top-3 w-96 -translate-x-1/2 space-y-1">
+            {hud.messages.map(m => (
+              <div key={m.id} className="rounded border border-amber-900/50 bg-[#160f08]/85 px-3 py-1.5 text-center text-xs text-amber-100 shadow">
+                {m.text}
+              </div>
+            ))}
+          </div>
+
+          {/* ---- нижняя центральная панель ---- */}
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
+            <Panel className="flex items-end gap-4 p-3">
+              {/* паруса */}
+              <div className="text-center">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">Паруса (W/S)</div>
+                <div className="flex gap-1">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className={`h-7 w-6 rounded-sm border ${i <= hud.sailLevel ? 'border-amber-400 bg-amber-500/70' : 'border-stone-700 bg-stone-900'}`} />
+                  ))}
+                </div>
+              </div>
+              {/* руль */}
+              <div className="text-center">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">Руль (A/D)</div>
+                <div className="relative h-7 w-24 rounded-sm border border-stone-700 bg-stone-900">
+                  <div className="absolute left-1/2 top-0 h-full w-px bg-stone-600" />
+                  <div className="absolute top-1 h-5 w-2.5 rounded-sm bg-amber-400 transition-all duration-150"
+                    style={{ left: `calc(${50 + hud.rudder * 42}% - 5px)` }} />
+                </div>
+              </div>
+              {/* боеприпасы */}
+              <div>
+                <div className="mb-1 text-center text-[10px] uppercase tracking-wide text-stone-400">Боеприпасы (1–4)</div>
+                <div className="flex gap-1.5">
+                  {AMMO_ORDER.map(a => (
+                    <div key={a.key}
+                      className={`w-16 rounded-sm border px-1 py-1 text-center ${hud.ammoType === a.key ? 'border-amber-400 bg-amber-900/50' : 'border-stone-700 bg-stone-900/70'}`}>
+                      <div className="text-[9px] leading-tight text-stone-300">{a.label}</div>
+                      <div className={`text-xs font-bold ${hud.ammoCounts[a.key] > 0 ? 'text-amber-200' : 'text-red-400'}`}>{hud.ammoCounts[a.key] ?? 0}</div>
+                      <div className="text-[8px] text-stone-500">{a.hotkey}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Panel>
+          </div>
+
+          {/* ---- золото и груз (право-низ) ---- */}
+          <div className="absolute bottom-3 right-3">
+            <Panel className="p-3 text-right text-xs">
+              <div className="font-serif text-lg font-bold text-amber-300">🪙 {hud.gold}</div>
+              <div className="mt-1 text-stone-400">Доски: {hud.planks}</div>
+              {(hud.cargo.sugar > 0 || hud.cargo.rum > 0 || hud.cargo.timber > 0) && (
+                <div className="mt-1 text-[11px] text-stone-300">
+                  {hud.cargo.sugar > 0 && <div>Сахар ×{hud.cargo.sugar}</div>}
+                  {hud.cargo.rum > 0 && <div>Ром ×{hud.cargo.rum}</div>}
+                  {hud.cargo.timber > 0 && <div>Древесина ×{hud.cargo.timber}</div>}
+                </div>
+              )}
+              <div className="mt-1 text-[10px] text-stone-500">Камера: {hud.cameraLabel} (C)</div>
+            </Panel>
+          </div>
+
+          {/* ---- прицел ---- */}
+          {hud.aiming && (
+            <>
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                <svg width="46" height="46" viewBox="0 0 46 46">
+                  <circle cx="23" cy="23" r="14" fill="none" stroke="#ffd27a" strokeWidth="1.5" opacity="0.85" />
+                  <circle cx="23" cy="23" r="2" fill="#ffd27a" />
+                  <line x1="23" y1="0" x2="23" y2="12" stroke="#ffd27a" strokeWidth="1.5" />
+                  <line x1="23" y1="34" x2="23" y2="46" stroke="#ffd27a" strokeWidth="1.5" />
+                  <line x1="0" y1="23" x2="12" y2="23" stroke="#ffd27a" strokeWidth="1.5" />
+                  <line x1="34" y1="23" x2="46" y2="23" stroke="#ffd27a" strokeWidth="1.5" />
+                </svg>
+              </div>
+              <div className="absolute bottom-24 left-1/2 -translate-x-1/2">
+                <Panel className="px-4 py-2 text-center text-xs">
+                  <span className="text-amber-200 font-bold">{hud.aimSide}</span>
+                  <span className="mx-2 text-stone-500">|</span>
+                  <span>Дистанция <b className="text-amber-200">{hud.aimRange} м</b></span>
+                  <span className="mx-2 text-stone-500">|</span>
+                  <span>Орудия <b className={hud.gunsReadyPct > 0.99 ? 'text-emerald-400' : 'text-amber-200'}>{Math.round(hud.gunsReadyPct * 100)}%</b></span>
+                  {hud.targetName && <div className="mt-0.5 text-[11px] text-red-300">Цель: {hud.targetName}</div>}
+                </Panel>
+              </div>
+            </>
+          )}
+
+          {/* ---- подсказки взаимодействия ---- */}
+          <div className="absolute bottom-28 left-1/2 -translate-x-1/2 space-y-1 text-center">
+            {hud.canBoard && hud.boardedName && (
+              <div className="pointer-events-none rounded-lg border border-emerald-700 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
+                <b>E</b> — взять приз: {hud.boardedName} (сдался)
+              </div>
+            )}
+            {hud.canDock && !hud.aiming && (
+              <div className="rounded-lg border border-amber-600 bg-[#1f1608]/90 px-5 py-2 text-sm text-amber-200 shadow-lg animate-pulse">
+                <b>E</b> — пришвартоваться в Пальмовой гавани
+              </div>
+            )}
+            {hud.anchored && <div className="text-xs text-stone-300">⚓ Якорь отдан (F — поднять)</div>}
+            {hud.grounded && <div className="text-xs font-bold text-orange-400">Мель! Разворачивайтесь (S — задний ход)</div>}
+            {hud.repairAction && <div className="text-xs text-emerald-300">🔧 {hud.repairAction}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* ---- экран смерти ---- */}
+      {hud?.dead && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80">
+          <div className="rounded-xl border-2 border-red-900 bg-[#150a08] p-8 text-center">
+            <h2 className="mb-2 font-serif text-3xl font-bold text-red-400">Корабль затонул</h2>
+            <p className="mb-6 text-sm text-stone-400">Море забрало судно и половину золота...</p>
+            <button
+              onClick={() => gameRef.current?.respawn()}
+              className="pointer-events-auto rounded-lg border border-amber-600 bg-gradient-to-b from-amber-700 to-amber-900 px-6 py-2.5 font-serif font-bold text-amber-50 transition hover:from-amber-600 active:scale-95">
+              Новый корабль
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ---- меню порта ---- */}
+      {hud?.docked && g && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50">
+          <div className="w-[480px] rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 shadow-2xl">
+            <h2 className="mb-1 font-serif text-2xl font-bold text-amber-300">⚓ Пальмовая гавань</h2>
+            <p className="mb-4 text-xs text-stone-400">Верфь · Таверна · Рынок — всё в одном месте</p>
+            <div className="mb-3 rounded-lg border border-amber-900/50 bg-black/30 p-3 text-sm">
+              <div className="mb-2 flex justify-between">
+                <span className="text-stone-400">Золото</span>
+                <span className="font-bold text-amber-300">🪙 {hud.gold}</span>
+              </div>
+              <div className="flex justify-between text-xs text-stone-400">
+                <span>Корпус</span><span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span>
+              </div>
+              <div className="flex justify-between text-xs text-stone-400">
+                <span>Команда</span><span>{hud.crew} / {hud.maxCrew} · найм 30 зол.</span>
+              </div>
+            </div>
+            {portMsg && <div className="mb-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-1.5 text-xs text-red-300">{portMsg}</div>}
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <button onClick={() => act(gg => gg.portRepair())}
+                className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
+                🔨 Полный ремонт<div className="text-[11px] text-stone-400">корпус + паруса, {g.repairCost} зол.</div>
+              </button>
+              <button onClick={() => act(gg => gg.portSellCargo())}
+                className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
+                📦 Продать груз<div className="text-[11px] text-stone-400">сахар 24 · ром 46 · дерево 9</div>
+              </button>
+              <button onClick={() => act(gg => gg.portBuyAmmo('ball'))}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                ⚫ Ядра ×10<div className="text-[11px] text-stone-400">4 зол.</div>
+              </button>
+              <button onClick={() => act(gg => gg.portBuyAmmo('grape'))}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                🧨 Картечь ×10<div className="text-[11px] text-stone-400">5 зол.</div>
+              </button>
+              <button onClick={() => act(gg => gg.portBuyAmmo('chain'))}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                ⛓ Книппели ×5<div className="text-[11px] text-stone-400">9 зол. · рвут паруса</div>
+              </button>
+              <button onClick={() => act(gg => gg.portBuyAmmo('fire'))}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                🔥 Зажигательные ×10<div className="text-[11px] text-stone-400">12 зол. · поджигают</div>
+              </button>
+              <button onClick={() => act(gg => gg.portBuyPlanks())}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                🪵 Доски ×5<div className="text-[11px] text-stone-400">15 зол. · ремонт в море</div>
+              </button>
+              <button onClick={() => act(gg => gg.portHireCrew())}
+                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                🧑‍⚓ Нанять матроса<div className="text-[11px] text-stone-400">30 зол. · быстрее перезарядка</div>
+              </button>
+            </div>
+            <button onClick={() => { act(gg => gg.undock()); setPortMsg(null); }}
+              className="pointer-events-auto mt-4 w-full rounded-lg border border-amber-600 bg-gradient-to-b from-amber-600 to-amber-800 px-4 py-2.5 font-serif font-bold text-amber-50 transition hover:from-amber-500 active:scale-[0.98]">
+              Отдать швартовы!
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ---- карта ---- */}
+      {mapOpen && hud && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60" onClick={() => setMapOpen(false)}>
+          <div className="rounded-xl border-2 border-amber-800 bg-[#12222a] p-3 shadow-2xl">
+            <div className="mb-2 flex items-baseline justify-between px-1">
+              <span className="font-serif text-lg font-bold text-amber-200">Навигационная карта</span>
+              <span className="text-xs text-stone-400">Tab / клик — закрыть</span>
+            </div>
+            <canvas ref={mapCanvasRef} width={640} height={520} className="rounded-lg" />
+            <div className="mt-2 flex justify-center gap-4 text-[11px] text-stone-400">
+              <span><span className="text-sky-300">▲</span> — ваш корабль</span>
+              <span><span className="text-amber-400">●</span> — торговец</span>
+              <span><span className="text-red-400">●</span> — военный</span>
+              <span><span className="text-stone-200">●</span> — сдался</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---- помощь ---- */}
+      {helpOpen && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60" onClick={() => setHelpOpen(false)}>
+          <div className="w-[520px] rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 font-serif shadow-2xl">
+            <h2 className="mb-4 text-center text-xl font-bold text-amber-300">⚓ Судовой журнал</h2>
+            <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs text-stone-300">
+              <div><b className="text-amber-200">W / S</b> — поднять/убрать паруса (0–3)</div>
+              <div><b className="text-amber-200">A / D</b> — руль (инерция!)</div>
+              <div><b className="text-amber-200">S (держать)</b> — задний ход на вёслах</div>
+              <div><b className="text-amber-200">F</b> — якорь</div>
+              <div><b className="text-amber-200">Q</b> — прицел левый борт</div>
+              <div><b className="text-amber-200">E</b> — прицел правый борт / действие</div>
+              <div><b className="text-amber-200">Мышь</b> — наведение в прицеле</div>
+              <div><b className="text-amber-200">Колесо</b> — зум</div>
+              <div><b className="text-amber-200">ЛКМ</b> — выстрел орудия</div>
+              <div><b className="text-amber-200">Space</b> — залп всем бортом</div>
+              <div><b className="text-amber-200">1–4</b> — ядро/книппель/картечь/зажигат.</div>
+              <div><b className="text-amber-200">R (держать)</b> — тушить/откачивать/чинить</div>
+              <div><b className="text-amber-200">C</b> — камера: изометрия → корма → борт → свободная</div>
+              <div><b className="text-amber-200">ПКМ (в свободной)</b> — вращение камеры</div>
+              <div><b className="text-amber-200">Tab</b> — карта</div>
+              <div><b className="text-amber-200">H</b> — эта справка</div>
+            </div>
+            <div className="mt-4 border-t border-amber-900/50 pt-3 text-[11px] leading-relaxed text-stone-400">
+              <p><b className="text-amber-200">Мореходство:</b> против ветра (левентик) корабль почти не идёт — лавируйте галсами.
+              Лучший ход — галфвинд (ветер в борт). В шторм рифите паруса.</p>
+              <p className="mt-1.5"><b className="text-amber-200">Добыча:</b> дырявьте торговцам паруса книппелями, корпус — ядрами,
+              команду — картечью. Сдавшийся корабль — это приз: подойдите и нажмите E.</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
