@@ -115,41 +115,56 @@ export class Water {
           float glint = pow(max(dot(R, normalize(uSunDir)), 0.0), 24.0) * 0.25;
           col += uSunColor * (spec * 1.4 + glint);
 
-          // ===== ПЕНА: несколько независимых слоёв, чтобы не было однообразия =====
-          // (1) «поля пятнистости»: крупные медленные области, где пена вообще
-          //     появляется — одни гребни пенные, другие чистые
-          float patch = fbm(vWorldXZ * 0.013 + vec2(uTime * 0.011, -uTime * 0.008));
-          patch = smoothstep(0.30, 0.62, patch);
+          // ===== ПЕНА: независимые слои + сильная пятнистость =====
+          // (1) «поля пятнистости»: крупные медленные области, где пена
+          //     вообще появляется — часть гребней пенная, часть чистых;
+          //     контраст усилен (0..1.25): есть «пустыни» и «кипящие» зоны
+          float patch = fbm(vWorldXZ * 0.011 + vec2(uTime * 0.011, -uTime * 0.008));
+          patch = 0.15 + smoothstep(0.26, 0.74, patch) * 1.10;
+          // (1b) пятнистость СРЕДНЕГО масштаба (~6 м) — читается на дистанции,
+          //      где мелкая рябь пены уже сливается
+          float patchM = fbm(vWorldXZ * 0.16 + vec2(uTime * 0.05, -uTime * 0.033) + 5.1);
+          patchM = smoothstep(0.28, 0.72, patchM) * 0.9;
           // (2) гребень: высота волны + крутизна (нормаль)
           float crest = smoothstep(0.94, 1.3, vWorldPos.y * 0.42 + 0.5) * vFoamWave;
           float steep = clamp(1.0 - vNormal.y, 0.0, 1.0);
-          // (3) два слоя шума разного масштаба и скорости
+          // (3) три слоя шума разного масштаба и скорости
           float fn1 = fbm(vWorldXZ * 0.9 + vec2(uTime * 0.32, uTime * -0.21));
           float fn2 = fbm(vWorldXZ * 2.9 + vec2(-uTime * 0.5, uTime * 0.36) + 17.3);
+          float fn3 = fbm(vWorldXZ * 0.055 + vec2(uTime * 0.1, uTime * 0.07) + 31.7);
           // (4) «прожилки» — анизотропный шум, вытянутый вдоль главной волны
           vec2 wdir = normalize(vec2(1.0, 0.25));
           vec2 sp = vec2(dot(vWorldXZ, wdir) * 0.030, dot(vWorldXZ, vec2(-wdir.y, wdir.x)) * 0.40);
           float streak = fbm(sp + vec2(uTime * 0.05, uTime * 0.022));
-          float streakFoam = smoothstep(0.80, 1.02, streak * 0.5 + crest * 0.5 + fn2 * 0.25)
-                             * patch * crest * 1.5;
-          // (5) основная пена гребней: порог гуляет от пятнистости и fn1
-          float crestFoam = smoothstep(0.60, 0.96,
-            crest * (0.55 + 0.75 * patch) + fn1 * 0.34 * (0.45 + 0.55 * patch) + steep * 0.5);
+          float streakFoam = smoothstep(0.78, 1.04, streak * 0.5 + crest * 0.5 + fn2 * 0.25)
+                             * clamp(patch, 0.0, 1.0) * crest * 1.7;
+          // (5) основная пена гребней: порог гуляет от пятнистости обоих
+          //     масштабов, fn1 и медленного fn3 — рисунок всё время разный
+          float crestFoam = smoothstep(0.58, 0.97,
+            crest * (0.50 + 0.85 * clamp(patch, 0.0, 1.2))
+            + fn1 * 0.30 * (0.40 + 0.60 * clamp(patch, 0.0, 1.0))
+            + fn3 * 0.22 * patchM
+            + steep * 0.5);
+          crestFoam *= 0.55 + 0.45 * patchM + 0.25; // средние пятна дают «дыры» в пене
           // качество 0 — упрощённая пена (без прожилок и с одним слоем)
           if (uFoamQ < 0.5) {
             crestFoam = smoothstep(0.72, 0.98, crest * 0.8 + fn1 * 0.32);
             streakFoam = 0.0;
           } else if (uFoamQ < 1.5) {
             streakFoam *= 0.6;
+            crestFoam *= 0.8;
           }
           // (6) пузырьковая текстура в ДВА масштаба с разными скоростями
           float ft = texture2D(uFoamTex, vWorldXZ * 0.11 + vec2(uTime * 0.021, uTime * -0.014)).r;
           float ft2 = texture2D(uFoamTex, vWorldXZ * 0.037 - vec2(uTime * 0.012, uTime * 0.017)).r;
-          float texFoam = smoothstep(0.66, 1.05, ft * 0.6 + ft2 * 0.6 + crest * 0.35) * (0.10 + 0.14 * patch);
-          float foamAmt = crestFoam * (0.55 + 0.45 * fn2) + streakFoam * 0.6 + texFoam;
+          float texFoam = smoothstep(0.66, 1.05, ft * 0.6 + ft2 * 0.6 + crest * 0.35) * (0.10 + 0.14 * clamp(patch, 0.0, 1.2));
+          float foamAmt = crestFoam * (0.55 + 0.45 * fn2) + streakFoam * 0.65 + texFoam;
           foamAmt = clamp(foamAmt, 0.0, 1.0) * (0.35 + 0.65 * vFoamWave);
-          // яркость пены тоже варьируется — не плоско-белая
-          vec3 foamCol = mix(vec3(0.84, 0.89, 0.92), vec3(0.97, 0.99, 1.0), fn2);
+          // цвет пены: от голубовато-серой «отработанной» до свежей белой,
+          // яркость следует солнцу (ночью пена тускнеет)
+          vec3 foamCol = mix(vec3(0.78, 0.84, 0.88), vec3(0.97, 0.99, 1.0),
+                             clamp(fn2 * 0.55 + patchM * 0.45, 0.0, 1.0));
+          foamCol *= (uSunColor * 0.35 + 0.65);
           col = mix(col, foamCol, foamAmt * 0.8);
 
           // туман

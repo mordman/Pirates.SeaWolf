@@ -70,7 +70,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
           d.controls.ammo[binding.ammoIdx] = e.code;
         } else {
           const k = binding.key;
-          if (k !== 'ammo') d.controls[k] = e.code;
+          if (k !== 'ammo' && k !== 'invertRudder') d.controls[k] = e.code;
         }
       });
       setBinding(null);
@@ -82,6 +82,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
   // все занятые коды (для подсветки конфликтов)
   const usedCodes = new Map<string, string>();
   (Object.keys(s.controls) as (keyof ControlsSettings)[]).forEach(k => {
+    if (k === 'invertRudder') return;
     if (k === 'ammo') s.controls.ammo.forEach(c => usedCodes.set(c, 'Боеприпас'));
     else usedCodes.set(s.controls[k] as string, CONTROL_LABELS[k]);
   });
@@ -162,6 +163,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     <option value={2}>Богатая</option>
                   </select>
                 </Row>
+                <Row label="Высота волн" hint="предел волнения при штормовом ветре">
+                  <Slider value={g.waveHeight} min={0.6} max={1.3} step={0.05}
+                    onChange={v => update(d => { d.graphics.waveHeight = v; })}
+                    format={v => v <= 0.75 ? 'Спокойное' : v <= 1.05 ? 'Обычное' : v <= 1.2 ? 'Свежее' : 'Шторм'} />
+                </Row>
               </div>
               <div className="py-1">
                 <Row label="Тени" hint="тени кораблей и деревьев">
@@ -196,7 +202,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 {(Object.keys(CONTROL_LABELS) as (keyof ControlsSettings)[]).map(k => (
                   <div key={k} className="flex items-center justify-between py-1.5">
                     <span className="text-xs text-stone-200">{CONTROL_LABELS[k]}</span>
-                    {k === 'ammo' ? (
+                    {k === 'invertRudder' ? (
+                      <input type="checkbox" checked={s.controls.invertRudder}
+                        onChange={e => update(d => { d.controls.invertRudder = e.target.checked; })}
+                        className="h-4 w-4 accent-amber-500" />
+                    ) : k === 'ammo' ? (
                       <div className="flex gap-1.5">
                         {s.controls.ammo.map((code, i) => (
                           <span key={i}>{bindBtn(code, { key: k, ammoIdx: i })}</span>

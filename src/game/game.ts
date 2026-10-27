@@ -416,8 +416,10 @@ export class Game {
     if (p.reverseThrust) this.lastSOffset += dt; else this.lastSOffset = 0;
 
     // руль: A — влево, D — вправо (положительный руль = поворот вправо,
-    // ползунок HUD при D уходит вправо — и корабль поворачивает вправо)
-    const steer = (inp.isDown(c.steerRight) ? 1 : 0) - (inp.isDown(c.steerLeft) ? 1 : 0);
+    // ползунок HUD при D уходит вправо — и корабль поворачивает вправо).
+    // invertRudder — настройка для тех, кто привык к обратной схеме
+    let steer = (inp.isDown(c.steerRight) ? 1 : 0) - (inp.isDown(c.steerLeft) ? 1 : 0);
+    if (c.invertRudder) steer = -steer;
     if (this.docked) p.rudderTarget = 0;
     else p.rudderTarget = steer; // D — штирборт (право), A — порт (лево)
 
@@ -600,8 +602,10 @@ export class Game {
     const gust = Math.sin(this.gustT * 0.5) * 0.9 + Math.sin(this.gustT * 1.7 + 2) * 0.5;
     this.wind.speed += (this.windTargetSpeed + gust - this.wind.speed) * Math.min(1, dt * 0.3);
     this.wind.from += dt * 0.008 * Math.sin(this.time * 0.037 + 1.3);
-    // амплитуда волн: 0.4 штиль .. 1.3 шторм (при 1.5 гребни накрывали палубу)
-    SEA.amplitude = clamp(0.45 + (this.wind.speed - 3) * 0.085, 0.4, 1.3);
+    // амплитуда волн: 0.4 штиль .. waveHeight шторм (из настроек графики;
+    // 1.15 по умолчанию — гребни не накрывают палубу, борт не тонет)
+    const waveCap = this.settings.graphics.waveHeight;
+    SEA.amplitude = clamp(0.45 + (this.wind.speed - 3) * 0.085, 0.4, waveCap);
   }
 
   // ---------- кадр ----------
@@ -642,22 +646,31 @@ export class Game {
       furlMax = Math.max(furlMax, sv.furl);
     }
     // минимальный надводный борт: высота палубы у планширя минус вода
-    // в носу/корме/миделе (учитываем крен/дифферент кватернионом)
+    // по носу/корме/миделю И ПО КРАЯМ ПАЛУБЫ (крен топит борт) —
+    // учитываем крен/дифферент кватернионом
     let freeboard = Infinity;
     const deckLocal = this.player.preset.freeboard * 0.82 - 1.0;
     for (const lz of [-this.player.preset.length * 0.38, 0, this.player.preset.length * 0.38]) {
-      this._v3.set(0, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
-      freeboard = Math.min(freeboard, this._v3.y - waterHeightAt(this._v3.x, this._v3.z, this.time));
+      for (const lx of [0, -this.player.halfWidthAt(lz), this.player.halfWidthAt(lz)]) {
+        this._v3.set(lx, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
+        freeboard = Math.min(freeboard, this._v3.y - waterHeightAt(this._v3.x, this._v3.z, this.time));
+      }
     }
+    // доля постановки парусов (0..1): уровень W/S, ограниченный фактическим ходом
+    const p = this.player;
+    const windPow = Math.pow(clamp(this.wind.speed / 8.0, 0.05, 1.6), 1.6);
+    const attainable = p.preset.maxSpeed * 0.85 * Math.sqrt(clamp(Ship.polar(p.apparentWindAngle()) * windPow, 0, 1.5));
+    const setTot = Math.min(p.sailFrac, attainable > 1.5 ? clamp(p.speed() / attainable, 0, 1) : 1);
     dbg.__sea = {
       fps: this.fpsSmooth,
-      x: this.player.position.x, y: this.player.position.y, z: this.player.position.z,
-      waterY: waterHeightAt(this.player.position.x, this.player.position.z, this.time),
-      roll: this.player.euler.z, pitch: this.player.euler.x,
-      heading: this.player.heading,
-      rudder: this.player.rudder, angY: this.player.angular.y,
-      speed: this.player.speedKnots(),
-      sailLevel: this.player.sailTarget, sailFrac: this.player.sailFrac,
+      x: p.position.x, y: p.position.y, z: p.position.z,
+      waterY: waterHeightAt(p.position.x, p.position.z, this.time),
+      roll: p.euler.z, pitch: p.euler.x,
+      heading: p.heading,
+      rudder: p.rudder, angY: p.angular.y,
+      speed: p.speedKnots(),
+      sailLevel: p.sailTarget, sailFrac: p.sailFrac,
+      setTot,
       furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
       sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
@@ -702,6 +715,16 @@ export class Game {
     this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, fogD);
     (this.scene.fog as THREE.FogExp2).color.copy(env.fog);
     (this.scene.fog as THREE.FogExp2).density = fogD;
+    // реальное солнце — в материалы парусов (иначе «пузо» не заливается
+    // светом и паруса читаются плоскими при любом ветре)
+    {
+      const sd = this.sky.sunDir;
+      for (const ship of [this.player, ...this.aiShips.map(a => a.ship)]) {
+        for (const sv of ship.visual.sails.sails) {
+          (sv.mat.uniforms.uSunDir.value as THREE.Vector3).copy(sd);
+        }
+      }
+    }
 
     // фонарь игрока ночью
     if (this.player.visual.lantern) {

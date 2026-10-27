@@ -101,8 +101,11 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         vDmgU = uDamage;
         vec3 p = position;
         // «пузо» паруса: синус по ширине и высоте, кромки закреплены.
-        // uBelly задан на CPU с учётом ветра и степени постановки
-        float belly = uBelly * sin(uv.x * 3.14159) * sin(uv.y * 3.14159);
+        // асимметрия по высоте: максимум ниже середины — наполненное
+        // полотно не выглядит плоским мешком. uBelly задан на CPU с
+        // учётом ветра и степени постановки
+        float belly = uBelly * sin(uv.x * 3.14159) * sin(uv.y * 3.14159)
+                    * (0.72 + 0.28 * (1.0 - uv.y));
         // трепет свободной кромки: две волны, сильнее при слабом пузе (флюктер)
         float flut = uFlutter * (
           sin(uv.x * 9.0 + uTime * 7.3) * 0.6 +
@@ -110,10 +113,11 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         ) * sin(uv.y * 3.14159) * (1.0 - uv.y * 0.75);
         float dz = belly + flut;
         p.z += dz;
-        // нормаль аналитически (по пуза)
+        // нормаль аналитически (по пуза) — с полным наклоном, чтобы
+        // выпуклость читалась и в освещении, а не только в силуэте
         float dzu = uBelly * cos(uv.x * 3.14159) * 3.14159 * sin(uv.y * 3.14159);
         float dzv = uBelly * sin(uv.x * 3.14159) * 3.14159 * cos(uv.y * 3.14159);
-        vN = normalize(vec3(-dzu * 0.35, -dzv * 0.35, 1.0));
+        vN = normalize(vec3(-dzu * 0.8, -dzv * 0.8, 1.0));
         // рифление: при uFurl парус собирается к рее/штагу
         p.y *= mix(1.0, 0.10, uFurl);
         p.x *= mix(1.0, 0.55, uFurl);

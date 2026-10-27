@@ -200,14 +200,31 @@ export class WaterlineFoam {
           return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
         float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<3;i++){ s+=a*vnoise(p); p*=2.2; a*=0.5; } return s; }
         void main() {
-          // шумовая рваная кромка
-          float n = fbm(vXY * 1.4 + vec2(uTime * 0.7, uTime * -0.5));
           float band = 1.0 - vInner; // 0 у корпуса, 1 снаружи
-          float edge = smoothstep(0.75 + n * 0.45, 0.15, band);
-          // у носа (x > 0 в локальных координатах) пена сильнее от скорости
-          float bowBoost = 1.0 + uSpeed * 1.8 * smoothstep(2.0, 14.0, vXY.x);
-          float a = edge * (0.45 + uSpeed * 0.75) * bowBoost;
-          a *= 0.85 + 0.15 * sin(uTime * 9.0 + vXY.y * 2.0); // лёгкое «дыхание»
+          // ОСИ: vXY.y — ВДОЛЬ корпуса (+ = нос), vXY.x — поперёк (борт).
+          // (старый шейдер считал носом vXY.x и подсвечивал мидель —
+          //  получалась сплошная одинаковая полоса вдоль всего борта)
+          float lon = vXY.y;
+          // (1) крупная пятнистость ВДОЛЬ корпуса: пенные секции чередуются
+          //     с «дырами» — воротник не сплошной
+          float lane = fbm(vec2(lon * 0.24, vXY.x * 0.4) + vec2(uTime * 0.10, -uTime * 0.06));
+          float laneM = 0.30 + 0.90 * smoothstep(0.28, 0.72, lane);
+          // (2) рваная кромка — два масштаба с разными скоростями
+          float n1 = fbm(vXY * 1.6 + vec2(uTime * 0.7, uTime * -0.5));
+          float n2 = fbm(vXY * 0.5 - vec2(uTime * 0.25, uTime * 0.18) + 7.3);
+          // (3) нос: бурун сильнее и РАСХОДИТСЯ клином на ходу; корма тише
+          float bowNear = smoothstep(-2.0, 12.0, lon);
+          float bowSpread = uSpeed * 1.3 * bowNear;          // шире у носа
+          float bowGlow = 0.7 + 0.6 * bowNear * uSpeed;      // ярче у носа
+          float sternFade = mix(0.45, 1.0, smoothstep(-15.0, 2.0, lon));
+          // (4) кромка: изнутри пена прижата к борту, снаружи сходит на нет
+          float edgeIn = 0.10 + n2 * 0.30;
+          float edgeOut = 0.85 + n1 * 0.35 + bowSpread;
+          float edge = smoothstep(edgeOut, edgeIn, band);
+          // (5) интенсивность: скорость + пятнистость + нос/корма
+          float a = edge * (0.16 + uSpeed * 0.85) * laneM * sternFade * bowGlow;
+          a *= 0.85 + 0.15 * sin(uTime * 8.0 + lon * 2.2 + n1 * 4.0);
+          a *= 0.75 + 0.5 * n1; // пузырьковая фактура
           if (a < 0.02) discard;
           gl_FragColor = vec4(vec3(0.93, 0.97, 0.99), clamp(a, 0.0, 0.95));
         }

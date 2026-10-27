@@ -14,6 +14,7 @@ export interface GraphicsSettings {
   shadowRes: number;      // 512 | 1024 | 2048
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
   foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
+  waveHeight: number;     // множитель высоты волн 0.6..1.3 (погода всё равно меняет море)
 }
 
 export interface ControlsSettings {
@@ -21,6 +22,7 @@ export interface ControlsSettings {
   sailsDown: string;      // убрать паруса / задний ход
   steerLeft: string;
   steerRight: string;
+  invertRudder: boolean;  // инверсия A/D (для тех, кто привык наоборот)
   anchor: string;
   camera: string;
   aimPort: string;        // прицел левый борт
@@ -43,10 +45,10 @@ export interface GameSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
-  low:    { drawDistance: 2600, waterDetail: 88,  shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0 },
-  medium: { drawDistance: 4000, waterDetail: 128, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1 },
-  high:   { drawDistance: 5600, waterDetail: 176, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2 },
-  ultra:  { drawDistance: 7800, waterDetail: 208, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2 },
+  low:    { drawDistance: 2600, waterDetail: 88,  shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15 },
+  medium: { drawDistance: 4000, waterDetail: 128, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15 },
+  high:   { drawDistance: 5600, waterDetail: 176, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15 },
+  ultra:  { drawDistance: 7800, waterDetail: 208, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15 },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     sailsDown: 'KeyS',
     steerLeft: 'KeyA',
     steerRight: 'KeyD',
+    invertRudder: false,
     anchor: 'KeyF',
     camera: 'KeyC',
     aimPort: 'KeyQ',
@@ -91,12 +94,17 @@ export function loadSettings(): GameSettings {
       if (typeof g.shadowRes === 'number') s.graphics.shadowRes = [512, 1024, 2048].includes(g.shadowRes) ? g.shadowRes : 1024;
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
+      if (typeof g.waveHeight === 'number') s.graphics.waveHeight = Math.min(1.3, Math.max(0.6, g.waveHeight));
     }
     if (isObj(data.controls)) {
       const c = data.controls;
       const keys = Object.keys(s.controls) as (keyof ControlsSettings)[];
       for (const k of keys) {
         if (k === 'ammo') continue;
+        if (k === 'invertRudder') {
+          if (typeof c.invertRudder === 'boolean') s.controls.invertRudder = c.invertRudder;
+          continue;
+        }
         const v = c[k];
         if (typeof v === 'string' && v.length > 0) s.controls[k] = v;
       }
@@ -134,6 +142,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   sailsDown: 'Паруса: убрать / задний ход',
   steerLeft: 'Руль влево',
   steerRight: 'Руль вправо',
+  invertRudder: 'Инверсия руля (A/D наоборот)',
   anchor: 'Якорь',
   camera: 'Камера',
   aimPort: 'Прицел: левый борт',

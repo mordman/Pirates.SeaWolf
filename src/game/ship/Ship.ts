@@ -157,10 +157,12 @@ export class Ship {
         rn++;
       }
     }
-    const rkTotal = this.mass * G / 0.22; // полный вес запаса на 22 см погружения борта
+    // жёстче прежнего: полный вес запаса уже на 15 см погружения борта —
+    // волна не может накрыть палубу, корпус «всплывает» на гребень
+    const rkTotal = this.mass * G / 0.15;
     for (const p of this.reserve) {
       p.k = rkTotal / rn;
-      p.c = 2 * Math.sqrt(p.k * (this.mass / rn)) * 1.05;
+      p.c = 2 * Math.sqrt(p.k * (this.mass / rn)) * 1.3;
     }
 
     this.foam = new WaterlineFoam(this.visual.outline);
@@ -297,8 +299,9 @@ export class Ship {
     this.torque.y -= rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
     // крен на повороте (отцентробежный)
     this.torque.z += this.angular.y * spd * m * 0.35;
-    // зарывание носа на скорости
-    this.torque.x += spd * spd * m * 0.0035;
+    // лёгкое зарывание носа на скорости (слабое: сильное топило борт
+    // в волну на 3+ метра — см. жалобы «корабль погружается по борт»)
+    this.torque.x += spd * spd * m * 0.0012;
 
     // --- сопротивление (по связным осям) ---
     const vLocal = this.velocity.clone();
@@ -327,10 +330,12 @@ export class Ship {
     this.angular.copy(ab.applyQuaternion(this.quaternion));
 
     // --- ограничение крена/дифферента (мягкие стопы) ---
+    // дифферент жёстко: 0.14 рад (8°) — нос не может нырнуть под гребень;
+    // крен 0.36 рад (20°) — подветренный борт остаётся над водой
     const roll = e.z, pitch = e.x;
-    const rollLim = 0.55, pitchLim = 0.30;
-    if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 6.0;
-    if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 8.0;
+    const rollLim = 0.36, pitchLim = 0.14;
+    if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
+    if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
     if (this.sinking) {
       this.sinkT += dt;
       this.force.y -= m * G * Math.min(0.9, this.sinkT / 9); // неотвратимое погружение
@@ -512,11 +517,21 @@ export class Ship {
     v.group.position.copy(this.position);
     v.group.quaternion.copy(this.quaternion);
 
-    // паруса: рифление по уровню тяги (уровень 0 — всё убрано, 3 — всё
-    // поставлено), брасопка реев и «пузо» — по кажущемуся ветру
+    // паруса: количество поставленных парусов соответствует ФАКТИЧЕСКОЙ
+    // СКОРОСТИ — экипаж ставит паруса по мере разгона и убирает по мере
+    // остановки; уровень W/S задаёт максимум. Рея брасопится по ветру,
+    // «пузо» — по кажущемуся ветру
     const awa = this.apparentWindAngle();
     const polar = Ship.polar(awa);
     const windClamp = clamp(this.wind.speed / 9, 0.3, 1.4);
+    // скорость, достижимая под полным парусным вооружением в этот ветер
+    // (корень из тяги — сопротивление квадратично): ~0.85·maxSpeed
+    const windPow = Math.pow(clamp(this.wind.speed / 8.0, 0.05, 1.6), 1.6);
+    const attainable = this.preset.maxSpeed * 0.85 * Math.sqrt(clamp(polar * windPow, 0, 1.5));
+    // в левентик/штиль паруса остаются на мачтах и трепещут (не убираются
+    // механически) — убираются только когда есть чем идти, но нет хода
+    const spdSetFrac = attainable > 1.5 ? clamp(this.speed() / attainable, 0, 1) : 1;
+    const setTotal = Math.min(this.sailFrac, spdSetFrac);
     // локальный вектор «откуда дует» (x — борт, z — нос): ψ = φ + курс
     const psi = this.wind.from + this.heading;
     const wlX = Math.cos(psi); // >0 — ветер с порта (левый борт)
@@ -524,12 +539,12 @@ export class Ship {
     let bt = Math.atan2(wlX, Math.sin(psi)) - Math.PI;
     bt = Math.atan2(Math.sin(bt), Math.cos(bt)); // кратчайшая дуга
     const braceTarget = clamp(bt, -0.96, 0.96);
-    const bellyBase = (0.18 + 0.6 * windClamp) * (0.15 + 0.85 * polar);
+    const bellyBase = (0.35 + 0.95 * windClamp) * (0.15 + 0.85 * polar);
     const flutterBase = 0.012 * windClamp * (1 + (1 - polar) * 2.2);
     for (const s of v.sails.sails) {
-      // доля постановки этого паруса при текущем уровне тяги
-      const setFrac = smoothstep(s.setAt - 0.38, s.setAt, this.sailFrac);
-      s.furl += ((1 - setFrac) - s.furl) * Math.min(1, dt * 1.5);
+      // доля постановки этого паруса при текущей скорости хода
+      const setFrac = smoothstep(s.setAt - 0.38, s.setAt, setTotal);
+      s.furl += ((1 - setFrac) - s.furl) * Math.min(1, dt * 1.1);
       const sf = 1 - s.furl;
       s.mat.uniforms.uTime.value = time;
       s.mat.uniforms.uFurl.value = s.furl;
