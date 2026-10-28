@@ -386,6 +386,20 @@ export default function Home() {
                   ))}
                 </div>
                 <div className="mb-1.5">
+                  <div className="mb-0.5 flex items-center justify-between text-[10px]">
+                    <span className="text-stone-400">Дистанция</span>
+                    <span className="font-semibold text-amber-200">{settings.gameplay.provingDistance} м</span>
+                  </div>
+                  <input
+                    type="range" min={50} max={400} step={5}
+                    value={settings.gameplay.provingDistance}
+                    onChange={e => {
+                      const v = Number(e.target.value);
+                      applySettings({ ...structuredClone(settings), gameplay: { provingDistance: v } });
+                    }}
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-stone-700 accent-amber-500" />
+                </div>
+                <div className="mb-1.5">
                   <button
                     onClick={() => act(gg => gg.setPgReturnFire(!hud.target!.returnFire))}
                     className={`pointer-events-auto w-full rounded border px-2 py-1 text-[10px] transition ${

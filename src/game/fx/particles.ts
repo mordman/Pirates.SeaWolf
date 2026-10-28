@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 
 // ============================================================
-// Частицы: брызги, дым, всплески, огонь — пул на Points
+// Частицы: брызги, дым, всплески, огонь, кровь — пул на Points
 // ============================================================
-export type PKind = 0 | 1 | 2; // 0=брызги, 1=дым, 2=огонь
+export type PKind = 0 | 1 | 2 | 3; // 0=брызги, 1=дым, 2=огонь, 3=кровь
 
 export class Particles {
   points: THREE.Points;
@@ -59,8 +59,10 @@ export class Particles {
           vLife = aLifeFrac;
           vKind = aKind;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          // дым растёт со временем, брызги сжимаются
-          float grow = aKind < 0.5 ? mix(1.6, 0.6, aLifeFrac) : mix(0.5, 2.2, aLifeFrac);
+          // дым растёт со временем, брызги/кровь сжимаются
+          float grow = aKind < 0.5 ? mix(1.6, 0.6, aLifeFrac)
+                    : aKind < 2.5 ? mix(0.5, 2.2, aLifeFrac)
+                    : mix(1.5, 0.45, aLifeFrac);
           gl_PointSize = aSize * grow * 320.0 / -mv.z;
           gl_Position = projectionMatrix * mv;
         }
@@ -75,7 +77,8 @@ export class Particles {
           vec3 col = vec3(1.0);
           if (vKind < 0.5) col = vec3(0.95, 0.98, 1.0);          // брызги
           else if (vKind < 1.5) col = mix(vec3(0.25, 0.25, 0.27), vec3(0.75), t.r * 0.5); // дым
-          else col = mix(vec3(1.0, 0.45, 0.1), vec3(1.0, 0.95, 0.6), t.r); // огонь
+          else if (vKind < 2.5) col = mix(vec3(1.0, 0.45, 0.1), vec3(1.0, 0.95, 0.6), t.r); // огонь
+          else col = mix(vec3(0.34, 0.015, 0.01), vec3(0.62, 0.07, 0.03), t.r); // кровь
           if (a < 0.01) discard;
           gl_FragColor = vec4(col, a);
         }
@@ -122,6 +125,17 @@ export class Particles {
   fire(x: number, y: number, z: number) {
     this.spawn(x, y, z, (Math.random() - 0.5) * 0.6, 1.5 + Math.random() * 2, (Math.random() - 0.5) * 0.6,
       0.5 + Math.random() * 0.4, 0.8 + Math.random() * 1.2, 2, 0.8, -2.0);
+  }
+
+  /** Кровь: веер тёмно-красных капель (n — количество, power — разлёт) */
+  blood(x: number, y: number, z: number, vx: number, vy: number, vz: number, n = 10, power = 1) {
+    for (let i = 0; i < n; i++) {
+      this.spawn(x, y + 0.5 + Math.random() * 0.9, z,
+        vx + (Math.random() - 0.5) * 5 * power,
+        vy + 0.5 + Math.random() * 3.5 * power,
+        vz + (Math.random() - 0.5) * 5 * power,
+        0.5 + Math.random() * 0.45, 0.28 + Math.random() * 0.3, 3, 0.7, 11);
+    }
   }
 
   update(dt: number) {

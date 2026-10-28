@@ -10,6 +10,8 @@ export interface GraphicsSettings {
   preset: QualityPreset;
   drawDistance: number;   // м: радиус дальней воды/видимости (2400..8000)
   waterDetail: number;    // сегментов детальной сетки воды по стороне (64..208)
+  waterChunkSize: number; // м: сторона детального «чанка» воды вокруг корабля (300..2000)
+  waterLodStep: number;   // плотность дальних LOD-колец: 0 плавные (ячейка x2), 1 баланс (x4), 2 экономно (x8)
   shadows: boolean;
   shadowRes: number;      // 512 | 1024 | 2048
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
@@ -38,17 +40,22 @@ export interface AudioSettings {
   volume: number;         // 0..1
 }
 
+export interface GameplaySettings {
+  provingDistance: number; // м: дистанция до мишени на полигоне (50..400)
+}
+
 export interface GameSettings {
   graphics: GraphicsSettings;
   controls: ControlsSettings;
   audio: AudioSettings;
+  gameplay: GameplaySettings;
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
-  low:    { drawDistance: 2600, waterDetail: 88,  shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15 },
-  medium: { drawDistance: 4000, waterDetail: 128, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15 },
-  high:   { drawDistance: 5600, waterDetail: 176, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15 },
-  ultra:  { drawDistance: 7800, waterDetail: 208, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15 },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15 },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15 },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15 },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15 },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -70,6 +77,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
   },
   audio: { volume: 0.55 },
+  gameplay: { provingDistance: 90 },
 };
 
 const STORAGE_KEY = 'seawolves.settings.v1';
@@ -89,7 +97,9 @@ export function loadSettings(): GameSettings {
       const g = data.graphics;
       if (typeof g.preset === 'string' && g.preset in QUALITY_PRESETS) s.graphics.preset = g.preset as QualityPreset;
       if (typeof g.drawDistance === 'number') s.graphics.drawDistance = Math.min(8000, Math.max(2000, g.drawDistance));
-      if (typeof g.waterDetail === 'number') s.graphics.waterDetail = Math.min(208, Math.max(64, Math.round(g.waterDetail)));
+      if (typeof g.waterDetail === 'number') s.graphics.waterDetail = Math.min(208, Math.max(64, Math.round(g.waterDetail / 16) * 16));
+      if (typeof g.waterChunkSize === 'number') s.graphics.waterChunkSize = Math.min(2000, Math.max(300, Math.round(g.waterChunkSize / 50) * 50));
+      if (typeof g.waterLodStep === 'number') s.graphics.waterLodStep = Math.min(2, Math.max(0, Math.round(g.waterLodStep)));
       if (typeof g.shadows === 'boolean') s.graphics.shadows = g.shadows;
       if (typeof g.shadowRes === 'number') s.graphics.shadowRes = [512, 1024, 2048].includes(g.shadowRes) ? g.shadowRes : 1024;
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
@@ -116,6 +126,9 @@ export function loadSettings(): GameSettings {
     }
     if (isObj(data.audio)) {
       if (typeof data.audio.volume === 'number') s.audio.volume = Math.min(1, Math.max(0, data.audio.volume));
+    }
+    if (isObj(data.gameplay)) {
+      if (typeof data.gameplay.provingDistance === 'number') s.gameplay.provingDistance = Math.min(400, Math.max(50, Math.round(data.gameplay.provingDistance)));
     }
     return s;
   } catch {

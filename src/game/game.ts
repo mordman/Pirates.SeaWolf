@@ -9,6 +9,8 @@ import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt } from './world/world';
 import { Particles } from './fx/particles';
+import { GibPool } from './fx/gibs';
+import { setCrewFx } from './ship/crew';
 import { SkySystem } from './fx/sky';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
@@ -95,6 +97,8 @@ export class Game {
   sky: SkySystem;
   world: World;
   particles = new Particles(1400);
+  /** куски тел, разорванных ядрами (мировые координаты) */
+  gibs = new GibPool();
   audio = new AudioSys();
 
   player!: Ship;
@@ -157,7 +161,12 @@ export class Game {
     this.scene.add(this.worldGroup);
     this.scene.fog = new THREE.FogExp2(0x9fb6bd, this.fogBase());
 
-    this.water = new Water({ detailSegs: g.waterDetail, far: g.drawDistance });
+    this.water = new Water({
+      detailSegs: g.waterDetail,
+      chunkSize: g.waterChunkSize,
+      far: g.drawDistance,
+      lodSkip: g.waterLodStep,
+    });
     this.water.setFoamQuality(g.foamQuality);
     this.scene.add(this.water.group);
     this.sky = new SkySystem(this.scene);
@@ -166,6 +175,8 @@ export class Game {
     this.world = new World();
     this.worldGroup.add(this.world.group);
     this.worldGroup.add(this.particles.points);
+    this.gibs.addTo(this.worldGroup);
+    setCrewFx(this.gibs, this.particles);
     this.world.onDiscover = (isl) => this.pushMessage(`Открыт остров: ${isl.name}!`);
 
     this.spawnShips();
@@ -197,8 +208,17 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
     if (prev.graphics.shadows !== g.shadows) this.setShadows(g.shadows);
     if (prev.graphics.shadowRes !== g.shadowRes) this.sky.setShadowRes(g.shadowRes);
-    if (prev.graphics.waterDetail !== g.waterDetail || prev.graphics.drawDistance !== g.drawDistance) {
-      this.water.configure(g.waterDetail, g.drawDistance);
+    if (prev.graphics.waterDetail !== g.waterDetail || prev.graphics.drawDistance !== g.drawDistance
+      || prev.graphics.waterChunkSize !== g.waterChunkSize || prev.graphics.waterLodStep !== g.waterLodStep) {
+      this.water.configure(g.waterDetail, g.waterChunkSize, g.drawDistance, g.waterLodStep);
+    }
+    // дистанция мишени на полигоне — переставить цель без сброса повреждений
+    if (prev.gameplay.provingDistance !== s.gameplay.provingDistance
+      && this.proving && this.pgTarget) {
+      const t = this.pgTarget.ship;
+      t.position.copy(this.pgTargetPos());
+      t.position.y = 0;
+      this.pushMessage(`Мишень переставлена: ${s.gameplay.provingDistance} м`);
     }
     this.water.setFoamQuality(g.foamQuality);
     this.rig.camera.far = g.drawDistance * 2 + 4000;
@@ -315,7 +335,8 @@ export class Game {
   // ===== Полигон: чистое море + корабль-мишень на якоре =====
   /** Мишень на траверзе ПРАВОГО борта игрока (курс игрока — восток, right = +Z) */
   private pgTargetPos(): THREE.Vector3 {
-    return this.PG_ANCHOR.clone().add(new THREE.Vector3(0, 0, 165));
+    // дистанция до мишени — настраивается (Настройки → Игра)
+    return this.PG_ANCHOR.clone().add(new THREE.Vector3(0, 0, this.settings.gameplay.provingDistance));
   }
 
   private spawnProvingTarget(modelId: string) {
@@ -366,7 +387,7 @@ export class Game {
     this.combat.aim.active = false;
     this.docked = false;
     this.spawnProvingTarget(modelId);
-    this.pushMessage('Полигон: чистое море, мишень на якоре с правого борта');
+    this.pushMessage(`Полигон: чистое море, мишень на якоре с правого борта (${this.settings.gameplay.provingDistance} м)`);
   }
 
   pgSetModel(modelId: string) {
@@ -800,7 +821,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, number> };
+    const dbg = window as unknown as { __sea: Record<string, unknown> };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -848,7 +869,20 @@ export class Game {
       tgtSinking: tgt && tgt.sinking ? 1 : 0,
       tgtSunk: tgt && tgt.sunk ? 1 : 0,
       tgtShown: tgt ? tgt.crew3d.shown : -1,
+      tgtCrewDead: tgt ? tgt.crew3d.dead : -1,
+      gibsAlive: this.gibs.alive,
       crewShown: p.crew3d.shown,
+      crewDead: p.crew3d.dead,
+      // сетка воды (e2e/диагностика «квадратов»): чанк + LOD-кольца
+      water: (() => {
+        const w = this.water.getInfo();
+        return {
+          chunk: w.chunkSize, segs: w.segs, step: +w.step.toFixed(3),
+          rings: w.rings.map(r => ({ i: Math.round(r.inner), o: Math.round(r.outer), c: +r.cell.toFixed(2), q: r.quads })),
+          farEff: Math.round(w.farEff),
+          pgDist: this.settings.gameplay.provingDistance,
+        };
+      })(),
     };
 
     // действия команды (R)
@@ -881,6 +915,7 @@ export class Game {
     // системы
     this.combat.update(dt, this.time, waterHeightAt);
     this.particles.update(dt);
+    this.gibs.update(dt);
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
 
     // небо и свет

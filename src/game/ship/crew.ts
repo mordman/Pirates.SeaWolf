@@ -1,16 +1,31 @@
 import * as THREE from 'three';
 import { ShipPreset, hullProfile } from './buildShip';
+import type { GibPool } from '../fx/gibs';
+import type { Particles } from '../fx/particles';
 
 // ============================================================
 // Экипаж на палубе: процедурные типажи «наугад» — бороды,
 // крюки вместо руки, деревянные ноги, повязки на глаз, тель-
 // нявки/банданы/треуголки. Роли: капитан (шкафут у штурвала),
 // боцман (у шпиля), канониры у пушек, вахтенные у мачт,
-// «ходоки» — бродят по палубе. Потери команды скрывают
-// фигуры; при затоплении экипаж «покидает» корабль.
+// «ходоки» — бродят по палубе.
+// ПОТЕРИ: картечь ВАЛИТ фигуры (падают трупами на палубу),
+// ядро насквозь РАЗРЫВАЕТ на куски (гибы + кровь); абстракт-
+// ные потери тоже обращаются в трупы. При затоплении экипаж
+// «покидает» корабль.
 // ============================================================
 
+// глобальные эффекты для смертей (один экземпляр на игру)
+let FX: { gibs: GibPool | null; particles: Particles | null } = { gibs: null, particles: null };
+/** Вызывается один раз из game.ts после создания GibPool */
+export function setCrewFx(gibs: GibPool, particles: Particles) {
+  FX = { gibs, particles };
+}
+
 type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker';
+type DeathMode = 'fall' | 'gib';
+/** способ поражения: картечь валит, ядро разрывает */
+type KillMode = 'grape' | 'ball';
 
 interface CrewFigure {
   group: THREE.Group;
@@ -25,6 +40,16 @@ interface CrewFigure {
   walkSpeed: number;
   xPath?: number;
   phase: number;              // фаза покачивания
+  // --- смерть ---
+  dead: boolean;
+  deadT: number;              // сек с момента смерти
+  deathMode: DeathMode;       // 'fall' — труп, 'gib' — разорвало
+  corpseLife: number;         // сколько труп лежит, сек
+  fallDir: number;            // ±1: упасть вперёд/назад
+  fallRoll: number;           // боковой наклон при падении
+  // цвета/протезы — для кусков при разрыве
+  skin: number; shirt: number; pants: number;
+  hasHook: boolean; hasPeg: boolean;
 }
 
 function mulberry32(seed: number) {
@@ -231,12 +256,23 @@ function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewFigure {
       leg.geometry.translate(0, -off, 0);
       leg.position.y = off;
     }
-    return { group, role, legL, legR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, walkSpeed: 0.55 + rnd() * 0.5, phase: rnd() * 6.28 };
+    return {
+      group, role, legL, legR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1,
+      walkSpeed: 0.55 + rnd() * 0.5, phase: rnd() * 6.28,
+      dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
+      skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
+      hasHook: traits.hook !== 0, hasPeg: traits.pegLeg !== 0,
+    };
   }
   // статичные: ноги вторым мешом (деревянная нога заменяет одну из них)
   const legsStatic = new THREE.Mesh(bakeGeom(t2legs(traits, legH)), CREW_MAT);
   group.add(legsStatic);
-  return { group, role, seed, walkT: 0, walkDir: 1, walkSpeed: 0, phase: rnd() * 6.28 };
+  return {
+    group, role, seed, walkT: 0, walkDir: 1, walkSpeed: 0, phase: rnd() * 6.28,
+    dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
+    skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
+    hasHook: traits.hook !== 0, hasPeg: traits.pegLeg !== 0,
+  };
 }
 
 /** ноги для статичной фигуры отдельным мешом */
@@ -253,12 +289,27 @@ function t2legs(traits: Traits, legH: number): { pos: number[]; col: number[] } 
   return t;
 }
 
+/** Состояние корабля для анимации экипажа */
+export interface CrewShipState {
+  crew: number; maxCrew: number; sinking: boolean; sunk: boolean;
+  position: THREE.Vector3; quaternion: THREE.Quaternion;
+}
+
 export interface CrewVisual {
   group: THREE.Group;
   total: number;
-  shown: number;
-  update(dt: number, time: number, ship: { crew: number; maxCrew: number; sinking: boolean; sunk: boolean }): void;
+  shown: number;          // живые видимые фигуры
+  dead: number;           // потери (трупы + разорванные)
+  update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
+  /** Поражение экипажа вдоль пути снаряда (a→b в ЛОКАЛЬНЫХ координатах
+   *  корабля). grape — фигуры падают; ball — разрывает на куски.
+   *  Возвращает число убитых. */
+  killNearPath(a: THREE.Vector3, b: THREE.Vector3, mode: KillMode,
+    maxCount: number, radius: number,
+    shipPos: THREE.Vector3, shipQuat: THREE.Quaternion): number;
+  /** Оживить всех (полигон/сброс повреждений) */
+  reset(): void;
 }
 
 /** Собрать экипаж для корабля (local coords: +Z нос, +X порт) */
@@ -325,30 +376,144 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   // масштаб по высоте применяем к группе (высота фигурки внутри)
   for (const f of figures) f.group.scale.setScalar(1);
 
+  // --- убийство фигуры: картечь валит трупом, ядро разрывает ---
+  const killFigure = (f: CrewFigure, mode: KillMode,
+    a: THREE.Vector3, b: THREE.Vector3,
+    shipPos: THREE.Vector3, shipQuat: THREE.Quaternion) => {
+    f.dead = true;
+    f.deadT = 0;
+    f.deathMode = mode === 'grape' ? 'fall' : 'gib';
+    // мировые координаты центра тела
+    const lp = f.group.position;
+    const wpos = new THREE.Vector3(lp.x, lp.y + 0.75, lp.z).applyQuaternion(shipQuat).add(shipPos);
+    // мировое направление пути снаряда
+    const wdir = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
+    if (wdir.lengthSq() < 1e-6) wdir.set(0, 0, 1);
+    wdir.applyQuaternion(shipQuat).normalize();
+
+    if (mode === 'grape') {
+      // картечь: осел — падает на палубу трупом
+      f.corpseLife = 28 + Math.random() * 27;
+      f.fallDir = Math.random() < 0.5 ? 1 : -1;
+      f.fallRoll = (Math.random() - 0.5) * 0.8;
+      FX.particles?.blood(wpos.x, wpos.y - 0.35, wpos.z, wdir.x * 1.5, 0.4, wdir.z * 1.5, 7, 0.7);
+    } else {
+      // ядро насквозь: фигуры больше нет — куски летят вдоль пути
+      f.group.visible = false;
+      f.corpseLife = 0;
+      const gibs = FX.gibs;
+      if (gibs) {
+        const mk = (sx: number, sy: number, sz: number, hex: number, extra = 1) => {
+          const push = (2.6 + Math.random() * 3.6) * extra;
+          gibs.spawnPart(
+            new THREE.Vector3(
+              wpos.x + (Math.random() - 0.5) * 0.35,
+              wpos.y + (Math.random() - 0.5) * 0.7,
+              wpos.z + (Math.random() - 0.5) * 0.35),
+            new THREE.Vector3(
+              wdir.x * push + (Math.random() - 0.5) * 3.4,
+              1.5 + Math.random() * 3.0,
+              wdir.z * push + (Math.random() - 0.5) * 3.4),
+            sx, sy, sz, hex, 1.5 + Math.random() * 1.1);
+        };
+        mk(0.14, 0.14, 0.14, f.skin);        // голова
+        mk(0.24, 0.2, 0.16, f.shirt, 1.15);  // торс
+        mk(0.09, 0.3, 0.09, f.shirt, 0.9);   // рука
+        mk(0.09, 0.28, 0.09, f.skin, 0.85);  // рука
+        mk(0.11, 0.44, 0.12, f.pants, 0.8);  // нога
+        if (f.hasPeg) mk(0.09, 0.48, 0.09, 0x8a6a42, 0.75); // деревянная нога
+        if (f.hasHook) mk(0.09, 0.09, 0.09, 0x3a3f46, 1.3); // крюк
+      }
+      FX.particles?.blood(wpos.x, wpos.y, wpos.z, wdir.x * 4, 1.1, wdir.z * 4, 16, 1.4);
+    }
+  };
+
   const vis: CrewVisual = {
-    group, total: figures.length, shown: figures.length,
+    group, total: figures.length, shown: figures.length, dead: 0,
     setVisible(v: boolean) { group.visible = v; },
+    killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
+      // кандидаты: живые видимые фигуры у пути снаряда
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len2 = dx * dx + dz * dz;
+      const cands: { f: CrewFigure; d: number }[] = [];
+      for (const f of figures) {
+        if (f.dead || !f.group.visible) continue;
+        const p = f.group.position;
+        let t = len2 > 1e-9 ? ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t));
+        if (d > radius) continue;
+        // путь должен проходить на высоте тела (не под палубой и не над головами)
+        const yPath = a.y + (b.y - a.y) * t;
+        if (yPath < p.y - 0.15 || yPath > p.y + 2.05) continue;
+        cands.push({ f, d });
+      }
+      if (!cands.length) return 0;
+      cands.sort((u, v) => u.d - v.d);
+      const n = Math.min(maxCount, cands.length);
+      for (let i = 0; i < n; i++) killFigure(cands[i].f, mode, a, b, shipPos, shipQuat);
+      vis.dead = figures.filter(f => f.dead).length;
+      vis.shown = figures.filter(f => !f.dead && f.group.visible).length;
+      return n;
+    },
+    reset() {
+      for (const f of figures) {
+        f.dead = false;
+        f.deadT = 0;
+        f.corpseLife = 0;
+        f.deathMode = 'fall';
+        f.group.visible = true;
+        f.group.rotation.x = 0;
+        f.group.rotation.z = 0;
+        f.group.scale.setScalar(1);
+      }
+      vis.dead = 0;
+      vis.shown = figures.length;
+    },
     update(dt, time, ship) {
       if (ship.sunk) { group.visible = false; return; }
       group.visible = !ship.sinking;
       if (ship.sinking) return;
-      // потери команды: скрываем фигуры (ходоки первыми, капитан последним)
-      const frac = Math.max(ship.crew, 0) / Math.max(ship.maxCrew, 1);
-      const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'captain'];
-      let budget = Math.max(2, Math.ceil(figures.length * Math.min(1, frac * 1.25)));
-      let shownNow = 0;
-      for (const role of order) {
-        for (const f of figures) {
-          if (f.role !== role) continue;
-          const on = budget > 0;
-          f.group.visible = on;
-          if (on) { budget--; shownNow++; }
+
+      // --- трупы: падение и истлевание ---
+      for (const f of figures) {
+        if (!f.dead || f.deathMode !== 'fall') continue;
+        f.deadT += dt;
+        const k = Math.min(1, f.deadT / 0.5);
+        const e = 1 - (1 - k) * (1 - k); // easeOut
+        f.group.rotation.x = f.fallDir * (Math.PI / 2 - 0.07) * e;
+        f.group.rotation.z = f.fallRoll * e;
+        if (f.deadT > f.corpseLife) {
+          // истлел: усох за 1.2 с
+          const fade = Math.max(0, 1 - (f.deadT - f.corpseLife) / 1.2);
+          f.group.scale.setScalar(Math.max(0.01, fade));
+          if (fade <= 0) f.group.visible = false;
         }
       }
-      vis.shown = shownNow;
-      // анимация
+
+      // --- потери команды: недостающие фигуры становятся трупами ---
+      const frac = Math.max(ship.crew, 0) / Math.max(ship.maxCrew, 1);
+      const nAlive = figures.reduce((a, f) => a + (f.dead ? 0 : 1), 0);
+      const budget = Math.max(1, Math.ceil(nAlive * Math.min(1, frac * 1.3)));
+      const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'captain'];
+      let shownAlive = 0;
+      let excess: CrewFigure | null = null; // одна «потеря» за кадр
+      for (const role of order) {
+        for (const f of figures) {
+          if (f.role !== role || f.dead) continue;
+          if (shownAlive < budget) shownAlive++;
+          else if (!excess) excess = f;
+        }
+      }
+      if (excess) killFigure(excess, 'grape', excess.group.position,
+        excess.group.position.clone().add(new THREE.Vector3(0, 0, 1)),
+        ship.position, ship.quaternion);
+      vis.dead = figures.reduce((a, f) => a + (f.dead ? 1 : 0), 0);
+      vis.shown = shownAlive;
+
+      // --- анимация живых ---
       for (const f of figures) {
-        if (!f.group.visible) continue;
+        if (!f.group.visible || f.dead) continue;
         if (f.role === 'walker' && f.xPath !== undefined && f.walkA !== undefined && f.walkB !== undefined) {
           const span = f.walkB - f.walkA;
           f.walkT += (f.walkDir * f.walkSpeed * dt) / span;

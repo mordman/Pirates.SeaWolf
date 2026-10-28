@@ -580,6 +580,7 @@ export class Ship {
     }
     this.hullHoles = [];
     this.crew = Math.round(this.preset.maxCrew * 0.8);
+    this.crew3d.reset();
     this.visual.group.visible = true;
     this.velocity.set(0, 0, 0);
     this.angular.set(0, 0, 0);
@@ -732,10 +733,11 @@ export class Ship {
       }
     }
 
-    // экипаж: анимация, потери (фигуры скрываются), эвакуация при потоплении
+    // экипаж: анимация, потери (трупы/разрывы), эвакуация при потоплении
     this.crew3d.update(dt, time, {
       crew: this.crew, maxCrew: this.preset.maxCrew,
       sinking: this.sinking, sunk: this.sunk,
+      position: this.position, quaternion: this.quaternion,
     });
   }
 

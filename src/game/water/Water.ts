@@ -13,24 +13,32 @@ interface OceanUniforms {
 }
 
 // Настройки качества воды по умолчанию (переопределяется из GameSettings)
-export const WATER_DEFAULTS = { detailSegs: 176, far: 5600 };
+export const WATER_DEFAULTS = { detailSegs: 176, chunkSize: 900, far: 5600, lodSkip: 0 };
+
+// Параметр одного LOD-кольца (для телеметрии/отладки)
+export interface RingInfo { inner: number; outer: number; cell: number; quads: number; }
 
 export class Water {
   group = new THREE.Group();
   material: THREE.ShaderMaterial;
   private detail: THREE.Mesh;
-  // Дальняя вода — 4 полосы ВСТЫК к детальной сетке (не сплошное полотно!):
-  // сплошной план с ячейками 100м рисовался под кораблём и его линейная
-  // интерполяция резала корпус («корабль внутри волны»)
-  private bands: THREE.Mesh[] = [];
+  // Дальняя вода — LOD-КОЛЬЦА ВСТЫК к детальному чанку (clipmap):
+  // сторона каждого кольца вдвое больше, ячейка — в 2/4/8 раз крупнее
+  // (настройка «Дальние кольца»), все вершины лежат на ОБЩЕЙ решётке
+  // детального чанка → стыки без T-швов, сетка не читается как «квадраты».
+  // (Раньше: 4 полосы с ячейкой 64 м — волны короче 128 м алиасились
+  // в гигантские фасетки, а на границе чанка был виден шов.)
+  private rings: THREE.Mesh[] = [];
   private cam = new THREE.Vector3();
   uniforms: OceanUniforms;
 
   private segs = WATER_DEFAULTS.detailSegs;
+  private chunk = WATER_DEFAULTS.chunkSize;
   private far = WATER_DEFAULTS.far;
-  private detailHalf = 450;
+  private lodSkip = WATER_DEFAULTS.lodSkip;
+  private step = WATER_DEFAULTS.chunkSize / WATER_DEFAULTS.detailSegs;
 
-  constructor(opts?: { detailSegs?: number; far?: number }) {
+  constructor(opts?: { detailSegs?: number; chunkSize?: number; far?: number; lodSkip?: number }) {
     this.uniforms = {
       uTime: { value: 0 },
       uAmp: { value: SEA.amplitude },
@@ -178,59 +186,68 @@ export class Water {
     });
     this.material = mat;
 
-    // Детальный план: следует за камерой с шагом сетки (размер/сегменты из настроек)
+    // детальный чанк следует за камерой с шагом сетки; LOD-кольца
+    // создаются в configure()
     const dg = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
     this.detail = new THREE.Mesh(dg, mat);
     this.detail.frustumCulled = false;
     this.detail.renderOrder = 1;
     this.group.add(this.detail);
 
-    // полосы дальней воды создаются в configure()
-    for (let i = 0; i < 4; i++) {
-      const m = new THREE.Mesh(new THREE.BufferGeometry(), mat);
-      m.frustumCulled = false;
-      m.renderOrder = 0;
-      this.bands.push(m);
-      this.group.add(m);
-    }
-    this.configure(opts?.detailSegs ?? WATER_DEFAULTS.detailSegs, opts?.far ?? WATER_DEFAULTS.far);
+    this.configure(
+      opts?.detailSegs ?? WATER_DEFAULTS.detailSegs,
+      opts?.chunkSize ?? WATER_DEFAULTS.chunkSize,
+      opts?.far ?? WATER_DEFAULTS.far,
+      opts?.lodSkip ?? WATER_DEFAULTS.lodSkip,
+    );
   }
 
   /** Перестройка сетки воды под настройки качества/дальности (runtime) */
-  configure(detailSegs: number, far: number) {
-    this.segs = Math.max(48, Math.round(detailSegs));
-    this.far = Math.max(1200, far);
-    this.detailHalf = Math.min(450, this.far * 0.3);
-    const size = this.detailHalf * 2;
+  configure(detailSegs: number, chunkSize: number, far: number, lodSkip = 0) {
+    // Сегменты кратно 16: все размеры LOD-колец остаются целыми кратными
+    // своей ячейки при любом режиме плотности (x2/x4/x8) — решётка общая.
+    this.segs = Math.max(64, Math.round(detailSegs / 16) * 16);
+    this.chunk = Math.min(2000, Math.max(300, chunkSize));
+    this.lodSkip = Math.min(2, Math.max(0, Math.round(lodSkip)));
+    this.step = this.chunk / this.segs;
+    this.far = Math.max(this.chunk + 600, far);
 
     this.detail.geometry.dispose();
-    const dg = new THREE.PlaneGeometry(size, size, this.segs, this.segs);
+    const dg = new THREE.PlaneGeometry(this.chunk, this.chunk, this.segs, this.segs);
     dg.rotateX(-Math.PI / 2);
     this.detail.geometry = dg;
 
-    // Дальняя вода: 4 полосы вокруг детального квадрата до горизонта.
-    // Внутренние кромки полос ВСЕГДА совпадают с кромками детальной сетки
-    // (двигаем их вместе с ней), стык бесшовный: вершины совпадают и
-    // смещаются одной функцией gerstner. Перекрытия нет вовсе.
-    const H = this.detailHalf;
-    const FAR = this.far;
-    const long = FAR - H;
-    const dims: [number, number, number, number][] = [
-      [2 * FAR, long, 0, -(H + long / 2)],   // север
-      [2 * FAR, long, 0, +(H + long / 2)],   // юг
-      [long, 2 * H, -(H + long / 2), 0],     // запад
-      [long, 2 * H, +(H + long / 2), 0],     // восток
-    ];
-    dims.forEach(([w, h, sx, sz], i) => {
-      const m = this.bands[i];
-      m.geometry.dispose();
-      const g = new THREE.PlaneGeometry(w, h, Math.max(2, Math.round(w / 64)), Math.max(2, Math.round(h / 64)));
-      g.rotateX(-Math.PI / 2);
-      m.geometry = g;
-      m.userData.off = { x: sx, z: sz };
-    });
+    // LOD-кольца: от половины чанка до дальности, сторона удваивается,
+    // ячейка растёт в 2^(1+lodSkip) раз за уровень. Кромки колец — точные
+    // кратные ячейки (математика выше), совпадают с вершинами соседа.
+    for (const r of this.rings) { r.geometry.dispose(); this.group.remove(r); }
+    this.rings = [];
+    let half = this.chunk / 2;
+    let level = 0;
+    while (half < this.far - 0.5) {
+      const outer = half * 2;
+      const cell = this.step * Math.pow(2, level + 1 + this.lodSkip);
+      const m = new THREE.Mesh(makeRingGeometry(half, outer, cell), this.material);
+      m.frustumCulled = false;
+      m.renderOrder = 0;
+      m.userData.ring = { inner: half, outer, cell, quads: m.geometry.index!.count / 6 } as RingInfo;
+      this.rings.push(m);
+      this.group.add(m);
+      half = outer;
+      level++;
+    }
 
-    (this.uniforms.uFarFade.value as THREE.Vector2).set(this.detailHalf + 180, this.far * 0.82);
+    // затухание волн к горизонту: начинается за чанком, гаснет задолго до кромки
+    (this.uniforms.uFarFade.value as THREE.Vector2).set(this.chunk / 2 + 180, this.far * 0.82);
+  }
+
+  /** Сводка сетки для HUD/телеметрии: чанк, кольца, ячейки */
+  getInfo(): { chunkSize: number; segs: number; step: number; rings: RingInfo[]; farEff: number } {
+    return {
+      chunkSize: this.chunk, segs: this.segs, step: this.step,
+      rings: this.rings.map(r => r.userData.ring as RingInfo),
+      farEff: this.rings.length ? (this.rings[this.rings.length - 1].userData.ring as RingInfo).outer : this.chunk / 2,
+    };
   }
 
   setFoamQuality(q: number) {
@@ -252,16 +269,13 @@ export class Water {
     this.uniforms.uAmp.value = SEA.amplitude;
     (this.uniforms.uShift.value as THREE.Vector3).copy(worldShift);
     this.cam.copy(camScenePos);
-    // снапим к шагу сетки, чтобы вершины не «плыли»
-    const step = (this.detailHalf * 2) / this.segs;
+    // снапим к шагу СЕТКИ (общая решётка чанка и всех колец): вершины
+    // не «плывут», кромки остаются совмещёнными
+    const step = this.step;
     const sx = Math.round(camScenePos.x / step) * step;
     const sz = Math.round(camScenePos.z / step) * step;
     this.detail.position.set(sx, 0, sz);
-    // полосы дальней воды прижаты к кромкам детального плана
-    for (const b of this.bands) {
-      const off = b.userData.off as { x: number; z: number };
-      b.position.set(sx + off.x, 0, sz + off.z);
-    }
+    for (const r of this.rings) r.position.set(sx, 0, sz);
   }
 
   heightAt(x: number, z: number, t: number) {
@@ -270,10 +284,53 @@ export class Water {
 
   dispose() {
     this.detail.geometry.dispose();
-    for (const b of this.bands) b.geometry.dispose();
+    for (const r of this.rings) r.geometry.dispose();
     this.material.dispose();
     (this.uniforms.uFoamTex.value as THREE.Texture | null)?.dispose();
   }
+}
+
+/**
+ * Геометрия LOD-кольца: квадратный «пончик» между inner и outer,
+ * разбитый на 4 прямоугольника с шагом ~cell. Размеры прямоугольников —
+ * целые кратные cell (гарантия configure), поэтому вершины кромок
+  * совпадают с вершинами соседнего (более мелкого) уровня.
+ */
+function makeRingGeometry(inner: number, outer: number, cell: number): THREE.BufferGeometry {
+  const rects: [number, number, number, number][] = [
+    [-outer, -outer, outer, -inner], // север (во всю ширину)
+    [-outer, inner, outer, outer],   // юг
+    [-outer, -inner, -inner, inner], // запад (между С и Ю)
+    [inner, -inner, outer, inner],   // восток (x от +inner до +outer!)
+  ];
+  const pos: number[] = [];
+  const idx: number[] = [];
+  let vBase = 0;
+  for (const [x0, z0, x1, z1] of rects) {
+    const nx = Math.max(1, Math.round((x1 - x0) / cell));
+    const nz = Math.max(1, Math.round((z1 - z0) / cell));
+    const dx = (x1 - x0) / nx;
+    const dz = (z1 - z0) / nz;
+    for (let j = 0; j <= nz; j++) {
+      for (let i = 0; i <= nx; i++) {
+        pos.push(x0 + i * dx, 0, z0 + j * dz);
+      }
+    }
+    for (let j = 0; j < nz; j++) {
+      for (let i = 0; i < nx; i++) {
+        const a = vBase + j * (nx + 1) + i;
+        const b = a + 1;
+        const c = a + nx + 1;
+        const d = c + 1;
+        idx.push(a, c, b, b, c, d); // нормаль +Y (как у повёрнутого PlaneGeometry)
+      }
+    }
+    vBase += (nx + 1) * (nz + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
 }
 
 /** Текстура пены: тайлящийся шум */

@@ -10,7 +10,7 @@ import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPrese
 // сразу и сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'controls' | 'audio';
+type Tab = 'graphics' | 'gameplay' | 'controls' | 'audio';
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
@@ -114,7 +114,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
         <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
           <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
           <div className="flex gap-1">
-            {([['graphics', 'Графика'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-3 py-1 text-xs font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -150,10 +150,23 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={v => update(d => { d.graphics.drawDistance = v; })}
                     format={v => `${(v / 1000).toFixed(1)} км`} />
                 </Row>
-                <Row label="Детализация воды" hint="плотность сетки волн вокруг корабля">
-                  <Slider value={g.waterDetail} min={64} max={208} step={8}
+                <Row label="Детализация воды" hint="сегментов на сторону чанка (шаг 16)">
+                  <Slider value={g.waterDetail} min={64} max={208} step={16}
                     onChange={v => update(d => { d.graphics.waterDetail = v; })}
                     format={v => `${v}²`} />
+                </Row>
+                <Row label="Размер чанка воды" hint="сторона детального участка моря вокруг корабля">
+                  <Slider value={g.waterChunkSize} min={300} max={2000} step={50}
+                    onChange={v => update(d => { d.graphics.waterChunkSize = v; })}
+                    format={v => `${v} м`} />
+                </Row>
+                <Row label="Дальние кольца воды" hint="рост ячейки за кольцо: плавнее или экономнее">
+                  <select value={g.waterLodStep} onChange={e => update(d => { d.graphics.waterLodStep = Number(e.target.value); })}
+                    className={inputCls}>
+                    <option value={0}>Плавные (×2)</option>
+                    <option value={1}>Баланс (×4)</option>
+                    <option value={2}>Экономные (×8)</option>
+                  </select>
                 </Row>
                 <Row label="Качество пены" hint="слои шума и прожилки на гребнях">
                   <select value={g.foamQuality} onChange={e => update(d => { d.graphics.foamQuality = Number(e.target.value); })}
@@ -188,6 +201,22 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={v => update(d => { d.graphics.pixelRatio = v; })}
                     format={v => `×${v.toFixed(2)}`} />
                 </Row>
+              </div>
+            </div>
+          )}
+
+          {tab === 'gameplay' && (
+            <div className="divide-y divide-stone-800/60">
+              <div className="py-2">
+                <Row label="Дистанция до мишени на полигоне" hint="расстояние между кораблями, м (применяется сразу)">
+                  <Slider value={s.gameplay.provingDistance} min={50} max={400} step={5}
+                    onChange={v => update(d => { d.gameplay.provingDistance = v; })}
+                    format={v => `${v} м`} />
+                </Row>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  Полигон доступен из главного меню — корабли стоят параллельно,
+                  мишень на якоре с правого борта.
+                </div>
               </div>
             </div>
           )}
