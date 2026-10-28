@@ -44,6 +44,9 @@ interface Projectile {
   shooter: Ship;
   age: number;
   trailT: number;        // накопитель дымного следа (ядро видно в полёте)
+  spin: number;          // вращение книппеля вокруг оси полёта, рад
+  /** мачты, уже разорванные этим книппелем, по кораблям (сквозной полёт) */
+  pierced: Map<Ship, number[]>;
 }
 
 export interface AimPublicState {
@@ -69,7 +72,12 @@ export class CombatSystem {
 
   private projectiles: Projectile[] = [];
   private projMesh: THREE.InstancedMesh;
+  /** книппели: отдельный пул мешей (два полушара на цепи, кувыркаются) */
+  private chainMeshes: THREE.Group[] = [];
+  private chainGeoCache: THREE.Group | null = null;
   private dummy = new THREE.Object3D();
+  private chainDummy = new THREE.Object3D();
+  private xAxis = new THREE.Vector3(1, 0, 0);
   private trajLine: THREE.Points;
   private impactRing: THREE.Mesh;
   private leadMarker: THREE.Mesh;
@@ -91,7 +99,13 @@ export class CombatSystem {
     this.projMesh.frustumCulled = false;
     this.projMesh.count = 0;
     for (let i = 0; i < 128; i++) {
-      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0 });
+      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0, spin: 0, pierced: new Map() });
+    }
+    // пул мешей книппелей (строятся лениво в addTo, чтобы шарить геометрию)
+    for (let i = 0; i < 24; i++) {
+      const g = this.makeChainMesh();
+      g.visible = false;
+      this.chainMeshes.push(g);
     }
 
     // траектория: цепочка ярких точек-трассеров
@@ -124,9 +138,47 @@ export class CombatSystem {
 
   addTo(parent: THREE.Object3D) {
     parent.add(this.projMesh);
+    for (const c of this.chainMeshes) parent.add(c);
     parent.add(this.trajLine);
     parent.add(this.impactRing);
     parent.add(this.leadMarker);
+  }
+
+  /** Книппель: два полушара ядра на цепи — кувыркается в полёте */
+  private makeChainMesh(): THREE.Group {
+    if (!this.chainGeoCache) {
+      // прототип: ось X — ось полёта, полушария по краям, цепь между ними
+      const proto = new THREE.Group();
+      const ballMat = new THREE.MeshStandardMaterial({ color: 0x1b1b20, roughness: 0.5, metalness: 0.72 });
+      const linkMat = new THREE.MeshStandardMaterial({ color: 0x454b54, roughness: 0.55, metalness: 0.85 });
+      const R = 0.34;
+      // полусфера (z≥0) + плоская крышка
+      const hemi = new THREE.SphereGeometry(R, 12, 8, 0, Math.PI);
+      const cap = new THREE.CircleGeometry(R, 12);
+      for (const dir of [1, -1] as const) {
+        const half = new THREE.Group();
+        const dome = new THREE.Mesh(hemi, ballMat);
+        dome.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2; // купол наружу по X
+        half.add(dome);
+        const c = new THREE.Mesh(cap, ballMat);
+        c.rotation.y = dir > 0 ? -Math.PI / 2 : Math.PI / 2; // крышка к центру
+        half.add(c);
+        half.position.x = dir * 0.62;
+        proto.add(half);
+      }
+      // цепь: 4 звена-тора перпендикулярно друг другу
+      for (let i = 0; i < 4; i++) {
+        const link = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.03, 5, 12), linkMat);
+        link.position.x = -0.23 + i * 0.155;
+        link.rotation.y = i % 2 === 0 ? 0 : Math.PI / 2;
+        proto.add(link);
+      }
+      this.chainGeoCache = proto;
+    }
+    // копируем прототип (меши шарят геометрию/материал)
+    const g = new THREE.Group();
+    for (const child of this.chainGeoCache.children) g.add(child.clone());
+    return g;
   }
 
   toggleAim(side: -1 | 1): boolean {
@@ -234,6 +286,8 @@ export class CombatSystem {
       pr.shooter = ship;
       pr.age = 0;
       pr.trailT = 0;
+      pr.spin = Math.random() * Math.PI * 2;
+      pr.pierced = new Map();
       const spread = this.ammo === 'grape' ? 0.035 : 0.008;
       const dir = this.aimDir.clone();
       dir.x += (Math.random() - 0.5) * spread * 2;
@@ -275,6 +329,7 @@ export class CombatSystem {
     pr.shooter = shooter;
     pr.age = 0;
     pr.trailT = 0;
+    pr.pierced = new Map();
     pr.vel.copy(dirTo).multiplyScalar(110).add(shooter.velocity);
     this.emit(GameEvents.CANNON_FIRED, { pos: pr.pos.clone(), power: 0.6 });
   }
@@ -299,6 +354,7 @@ export class CombatSystem {
       pr.shooter = shooter;
       pr.age = 0;
       pr.trailT = 0;
+      pr.pierced = new Map();
       const dir = aim.clone();
       dir.x += (Math.random() - 0.5) * 0.05;
       dir.y += 0.04 + (Math.random() - 0.5) * 0.03;
@@ -318,7 +374,9 @@ export class CombatSystem {
   }
 
   // ---------- обновление ----------
-  update(dt: number, time: number, waterHeight: (x: number, z: number, t: number) => number) {
+  update(dt: number, time: number, waterHeight: (x: number, z: number, t: number) => number,
+    groundHeight: ((x: number, z: number) => number) | null = null,
+    onGroundHit: ((x: number, y: number, z: number, radius: number) => number) | null = null) {
     // перезарядка
     for (let i = 0; i < this.reloads.length; i++) {
       if (this.reloads[i] > 0) this.reloads[i] -= dt;
@@ -326,6 +384,7 @@ export class CombatSystem {
 
     // снаряды
     let count = 0;
+    let chainIdx = 0;
     for (const pr of this.projectiles) {
       if (!pr.active) continue;
       pr.age += dt;
@@ -336,6 +395,8 @@ export class CombatSystem {
       pr.vel.multiplyScalar(dragF);
       pr.vel.y -= 9.81 * dt;
       pr.pos.addScaledVector(pr.vel, dt);
+      // книппель кувыркается вокруг оси полёта
+      if (pr.type === 'chain') pr.spin += dt * 22;
 
       // дымный след — ядро видно в полёте (кроме картечи — её дробин много)
       pr.trailT += dt;
@@ -352,28 +413,72 @@ export class CombatSystem {
         this.emit(GameEvents.PROJECTILE_SPLASH, { pos: pr.pos.clone() });
         continue;
       }
+
+      // земля (острова): фугасный удар + повал деревьев
+      if (groundHeight && pr.pos.y < groundHeight(pr.pos.x, pr.pos.z)) {
+        pr.active = false;
+        const r = pr.type === 'ball' || pr.type === 'chain' ? 2.6 : pr.type === 'fire' ? 3.2 : 1.6;
+        const trees = onGroundHit ? onGroundHit(pr.pos.x, pr.pos.y, pr.pos.z, r) : 0;
+        // пыль/земля + щепа, если деревья сломаны
+        this.particles.smoke(pr.pos.x, pr.pos.y + 0.4, pr.pos.z, 0, 0.6, 0, 1.6, 1.2);
+        if (trees > 0) this.particles.debris(pr.pos.x, pr.pos.y + 1, pr.pos.z, 10, 1.1);
+        this.emit(GameEvents.TERRAIN_HIT, { pos: pr.pos.clone(), trees });
+        continue;
+      }
+
       // цели: мачты проверяем ПЕРВЫМИ (рангоут перекрывает корпус),
-      // корпус — сегментом от prev до pos (быстрое ядро не «проскакивает»)
+      // корпус — сегментом от prev до pos (быстрое ядро не «проскакивает»);
+      // КНИППЕЛЬ пробивает рангоут насквозь: круг его разлёта ШИРЕ корпуса
+      // (3.2 м > полуширины) — летя вдоль борта, сносит ВСЕ мачты коридором
       let hit: HitInfo | null = null;
+      let piercedMast = false;
       const targets: Ship[] = pr.shooter === this.player ? this.others : [this.player];
       for (const t of targets) {
         if (t.sunk) continue;
-        hit = this.hitTest(pr, t);
+        const done = pr.type === 'chain' ? (pr.pierced.get(t) ?? []) : [];
+        hit = this.hitTest(pr, t, done);
         if (hit) {
           this.applyHit(pr, t, info, hit);
+          if (pr.type === 'chain' && hit.mast >= 0) {
+            // сквозной пролёт: пометить разорванные мачты, летим дальше
+            const masts = pr.pierced.get(t) ?? [];
+            for (const mi of this.chainMasts) masts.push(mi);
+            pr.pierced.set(t, masts);
+            piercedMast = true;
+          }
           break;
         }
       }
-      if (hit || pr.age > 12) { pr.active = false; continue; }
+      if (hit && !piercedMast) { pr.active = false; continue; }
+      if (!hit && pr.age > 12) { pr.active = false; continue; }
 
       // визуал
-      this.dummy.position.copy(pr.pos);
-      this.dummy.updateMatrix();
-      this.projMesh.setMatrixAt(count, this.dummy.matrix);
-      count++;
+      if (pr.type === 'chain') {
+        const mesh = this.chainMeshes[chainIdx];
+        if (mesh) {
+          mesh.visible = true;
+          mesh.position.copy(pr.pos);
+          // ось полёта → локальная X, затем кувырок вокруг неё
+          const vlen = pr.vel.length();
+          if (vlen > 0.01) {
+            this.chainDummy.position.copy(pr.pos);
+            this._vN.copy(pr.vel).divideScalar(vlen);
+            this.chainDummy.quaternion.setFromUnitVectors(this.xAxis, this._vN);
+            this.chainDummy.rotateX(pr.spin);
+            mesh.quaternion.copy(this.chainDummy.quaternion);
+          }
+          chainIdx++;
+        }
+      } else {
+        this.dummy.position.copy(pr.pos);
+        this.dummy.updateMatrix();
+        this.projMesh.setMatrixAt(count, this.dummy.matrix);
+        count++;
+      }
     }
     this.projMesh.count = count;
     this.projMesh.instanceMatrix.needsUpdate = true;
+    for (let i = chainIdx; i < this.chainMeshes.length; i++) this.chainMeshes[i].visible = false;
 
     // прицеливание: траектория и упреждение
     if (this.aim.active) {
@@ -390,9 +495,14 @@ export class CombatSystem {
   private invQ = new THREE.Quaternion();
   private hitDir = new THREE.Vector3();
   private pathB = new THREE.Vector3();
+  private _vN = new THREE.Vector3();
+  /** мачты в круге разлёта книппеля (заполняет hitTest) */
+  private chainMasts: number[] = [];
 
-  /** Проверка попадания: мачты (стоячие, swept) → корпус */
-  private hitTest(pr: Projectile, t: Ship): HitInfo | null {
+  /** Проверка попадания: мачты (стоячие, swept) → корпус.
+   *  Книппель ловит мачты ВЕСЬ СВОЙ КРУГ (радиус 3.2 м — шире корпуса);
+   *  skipMasts — уже разорванные этим снарядом (сквозной полёт). */
+  private hitTest(pr: Projectile, t: Ship, skipMasts: number[] = []): HitInfo | null {
     this.invQ.copy(t.quaternion).invert();
     this.lprev.subVectors(pr.prev, t.position).applyQuaternion(this.invQ);
     this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
@@ -403,15 +513,22 @@ export class CombatSystem {
 
     // --- мачты: вертикальный цилиндр в XZ, путь ядра — отрезок prev→pos ---
     const masts = t.visual.masts;
+    this.chainMasts.length = 0;
+    const mastR = pr.type === 'chain' ? 3.2 : 0.8; // книппель бьёт кругом разлёта (шире корпуса!)
+    let first = -1;
     for (let i = 0; i < masts.length; i++) {
-      if (t.mastFall[i] >= 0) continue; // сломанная/падающая не ловит снаряды
+      if (t.mastFall[i] >= 0 || skipMasts.includes(i)) continue;
       const mz = masts[i].position.z;
       const h = ((masts[i].userData.height as number) || 20) - t.preset.draft * 0.3;
       const d = distPointSeg2D(0, mz, this.lprev.x, this.lprev.z, this.lcur.x, this.lcur.z);
-      if (d < 0.8 && Math.max(this.lprev.y, this.lcur.y) > 0.7
+      if (d < mastR && Math.max(this.lprev.y, this.lcur.y) > 0.7
         && Math.min(this.lprev.y, this.lcur.y) < h + 0.4) {
-        return { mast: i, lp: this.lcur.clone(), dir: this.hitDir.clone() };
+        if (first < 0) first = i;
+        if (pr.type === 'chain') this.chainMasts.push(i);
       }
+    }
+    if (first >= 0) {
+      return { mast: first, lp: this.lcur.clone(), dir: this.hitDir.clone() };
     }
 
     // --- корпус (бокс в связных координатах) ---
@@ -429,14 +546,24 @@ export class CombatSystem {
     const P = this.particles;
     if (hit.mast >= 0) {
       // --- попадание в РАНГОУТ: мачта трещит и ломается ---
-      // книппель — специализированный «обрыватель» такелажа: 1 попадание
-      // почти всегда калечит мачту, ядро — за 2-3
-      const dmg = pr.type === 'chain' ? 30 + Math.random() * 12
-        : pr.type === 'ball' ? 11 + Math.random() * 8
-        : pr.type === 'fire' ? 6 : 1.6;
-      const broke = t.damageMast(hit.mast, dmg);
-      if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
-      else if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount });
+      // книппель — специализированный «обрыватель» такелажа: бьёт
+      // ВСЕМ КРУГОМ разлёта (ломает несколько мачт за раз),
+      // ядро — одну, за 2-3 попадания
+      if (pr.type === 'chain') {
+        const hitSet = this.chainMasts.length ? this.chainMasts : [hit.mast];
+        for (const mi of hitSet) {
+          const dmg = mi === hit.mast ? 30 + Math.random() * 12 : 22 + Math.random() * 10;
+          const broke = t.damageMast(mi, dmg);
+          t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount * (mi === hit.mast ? 1 : 0.7) });
+          if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: mi, pos: pr.pos.clone() });
+        }
+      } else {
+        const dmg = pr.type === 'ball' ? 11 + Math.random() * 8
+          : pr.type === 'fire' ? 6 : 1.6;
+        const broke = t.damageMast(hit.mast, dmg);
+        if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount });
+        if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
+      }
       // щепа летит вдоль мачты
       for (let i = 0; i < 9; i++) {
         P.spawn(pr.pos.x, pr.pos.y + i * 0.35, pr.pos.z,
@@ -444,7 +571,6 @@ export class CombatSystem {
           0.8, 0.3, 0, 0.6, 10);
       }
       P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.8, 0, 1.0, 1.3);
-      if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
     } else {
       // --- попадание в КОРПУС: пробоина, у ватерлинии/ниже — течь ---
       // (порог 0.6 м: при качке «у самой воды» дыры также дают течь)

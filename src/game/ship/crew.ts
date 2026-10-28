@@ -22,7 +22,7 @@ export function setCrewFx(gibs: GibPool, particles: Particles) {
   FX = { gibs, particles };
 }
 
-type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker';
+type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker' | 'helmsman';
 type DeathMode = 'fall' | 'gib';
 /** способ поражения: картечь валит, ядро разрывает */
 type KillMode = 'grape' | 'ball';
@@ -165,6 +165,19 @@ function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewFigure {
   for (const side of [-1, 1] as const) {
     const isHook = traits.hook === side;
     const sh = new THREE.Vector3(side * (torsoW / 2 + 0.05), hipY + torsoH - 0.06, 0);
+    if (role === 'helmsman') {
+      // рулевой: руки вытянуты ВПЕРЁД к штурвалу (+Z — нос)
+      const rot = new THREE.Euler(-1.15, 0, side * -0.22);
+      bake(t, new THREE.BoxGeometry(0.1, armLen * 0.55, 0.11), traits.shirt,
+        sh.x * 0.8, sh.y - 0.06, 0.16, rot);
+      if (!isHook) {
+        bake(t, new THREE.BoxGeometry(0.09, 0.24, 0.1), traits.skin,
+          sh.x * 1.0, sh.y - 0.02, 0.42, rot);
+      } else {
+        bake(t, new THREE.BoxGeometry(0.085, 0.2, 0.09), WOOD, sh.x * 1.0, sh.y - 0.02, 0.4, rot);
+      }
+      continue;
+    }
     const rot = new THREE.Euler(0, 0, side * -0.35);
     bake(t, new THREE.BoxGeometry(0.1, armLen * 0.55, 0.11), role === 'captain' ? COAT[0] : traits.shirt,
       sh.x * 0.75, sh.y - armLen * 0.26, 0.03, rot);
@@ -337,6 +350,11 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
 
   // капитан — у штурвала, лицом к носу
   place(buildFigure('captain', rollTraits(rot, 'captain'), nextSeed()), 0.55, -L * 0.245, 0.3);
+  // РУЛЕВОЙ — за штурвалом (руки на ободе), лицом к носу;
+  // та же формула позиции штурвала, что в buildShip (wheelT)
+  const wheelT = P.castleH ? 0.29 : 0.2;
+  const wheelZ = THREE.MathUtils.lerp(-L / 2, L / 2, wheelT);
+  place(buildFigure('helmsman', rollTraits(rot, 'helmsman'), nextSeed()), 0, wheelZ - 0.52, 0);
   // боцман — у шпиля (шпиль на -L*0.16), спиной к ветру, лицом к носу-борту
   place(buildFigure('boatswain', rollTraits(rot, 'boatswain'), nextSeed()), -0.75, -L * 0.115, 0.5);
 
@@ -496,7 +514,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       const frac = Math.max(ship.crew, 0) / Math.max(ship.maxCrew, 1);
       const nAlive = figures.reduce((a, f) => a + (f.dead ? 0 : 1), 0);
       const budget = Math.max(1, Math.ceil(nAlive * Math.min(1, frac * 1.3)));
-      const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'captain'];
+      const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'helmsman', 'captain'];
       let shownAlive = 0;
       let excess: CrewFigure | null = null; // одна «потеря» за кадр
       for (const role of order) {

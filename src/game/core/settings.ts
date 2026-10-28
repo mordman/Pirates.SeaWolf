@@ -160,7 +160,7 @@ export function loadSettings(): GameSettings {
       if (typeof data.audio.volume === 'number') s.audio.volume = Math.min(1, Math.max(0, data.audio.volume));
     }
     if (isObj(data.gameplay)) {
-      if (typeof data.gameplay.provingDistance === 'number') s.gameplay.provingDistance = Math.min(400, Math.max(50, Math.round(data.gameplay.provingDistance)));
+      if (typeof data.gameplay.provingDistance === 'number') s.gameplay.provingDistance = Math.min(400, Math.max(10, Math.round(data.gameplay.provingDistance)));
     }
     if (isObj(data.weather)) {
       const w = data.weather;

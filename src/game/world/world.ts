@@ -184,6 +184,16 @@ export class World {
   private tmpQ = new THREE.Quaternion();
   private tmpE = new THREE.Euler();
 
+  // ломающаяся растительность: позиции инстансов по видам
+  private vegSlots: {
+    inst: THREE.InstancedMesh;
+    positions: THREE.Vector3[];
+    broken: boolean[];
+    breakable: boolean;
+  }[] = [];
+  /** счётчик поваленных деревьев (телеметрия) */
+  treesBroken = 0;
+
   constructor() {
     this.buildIslands();
     this.buildVegetation();
@@ -193,9 +203,16 @@ export class World {
 
   // ---------- острова ----------
   private buildIslands() {
-    for (const isl of this.islands) {
-      const size = isl.r * 3.2;
+    this.islands.forEach((isl, islIdx) => {
+      // размер квадрата: с запасом за всю зону влияния рельефа
+      // (rEff·1.5 до ~1.9r) — раньше 3.2r обрезали отмель НА КВАДРАТЕ,
+      // и под водой читался «квадрат под островом»; теперь кромка
+      // уходит на глубину -14 и не видна
+      const size = isl.r * 4.3;
       const seg = 110;
+      // у каждого острова своё дно с крошечным сдвигом: перекрывающиеся
+      // плоскости не мерцают z-fight в открытом море
+      const deep = -14 - islIdx * 0.06;
       const g = new THREE.PlaneGeometry(size, size, seg, seg);
       g.rotateX(-Math.PI / 2);
       const pos = g.getAttribute('position') as THREE.BufferAttribute;
@@ -209,7 +226,8 @@ export class World {
       for (let i = 0; i < pos.count; i++) {
         const wx = pos.getX(i) + isl.cx;
         const wz = pos.getZ(i) + isl.cz;
-        const h = heightAt(wx, wz);
+        let h = heightAt(wx, wz);
+        if (h < deep) h = deep;
         pos.setY(i, h);
         // цвет по высоте и уклону (уклон приблизим после)
         if (h < -0.4) c.copy(cUnder).lerp(cSand, clamp((h + 3) / 2.6, 0, 1));
@@ -234,7 +252,7 @@ export class World {
       mesh.receiveShadow = true;
       mesh.castShadow = true;
       this.group.add(mesh);
-    }
+    });
   }
 
   // ---------- растительность ----------
@@ -297,7 +315,48 @@ export class World {
       inst.receiveShadow = false;
       inst.frustumCulled = false; // острова распределены широко — оставляем всегда видимыми
       this.group.add(inst);
+      // позиции для ломания (камни не ломаются)
+      const positions = list.map((p) => {
+        const v = new THREE.Vector3();
+        v.setFromMatrixPosition(p.m);
+        return v;
+      });
+      this.vegSlots.push({
+        inst, positions,
+        broken: new Array(list.length).fill(false),
+        breakable: kind !== 'rock',
+      });
     }
+  }
+
+  /** Ядро/книппель валят деревья: ломает экземпляры в радиусе,
+   *  возвращает количество поваленных (0 = промах/камни) */
+  breakTrees(x: number, y: number, z: number, radius: number,
+    fx?: { debris: (x: number, y: number, z: number, n?: number, power?: number) => void }): number {
+    let broke = 0;
+    const r2 = radius * radius;
+    for (const slot of this.vegSlots) {
+      if (!slot.breakable) continue;
+      for (let i = 0; i < slot.positions.length; i++) {
+        if (slot.broken[i]) continue;
+        const p = slot.positions[i];
+        const dx = p.x - x, dz = p.z - z, dy = p.y - y;
+        if (dx * dx + dz * dz > r2 || dy < -3 || dy > 9) continue;
+        slot.broken[i] = true;
+        // спрятать экземпляр: сдвинуть под дно + сжать в точку
+        this.dummy.position.set(p.x, -40, p.z);
+        this.dummy.quaternion.identity();
+        this.dummy.scale.setScalar(0.001);
+        this.dummy.updateMatrix();
+        slot.inst.setMatrixAt(i, this.dummy.matrix);
+        slot.inst.instanceMatrix.needsUpdate = true;
+        // щепа и листва из точки удара
+        fx?.debris(p.x, p.y + 1.6, p.z, 12, 1.2);
+        broke++;
+      }
+    }
+    this.treesBroken += broke;
+    return broke;
   }
 
   // ---------- порт ----------

@@ -43,6 +43,8 @@ export class CameraRig {
   private freeAzim = Math.PI * 0.75;
   private freeElev = 0.45;
   private isoAzim = Math.PI * 0.25;
+  /** отклонение камеры стрелками (iso/rear/side), плавно возвращается к 0 */
+  private userAzim = 0;
   // изометрия следует за курсом (нос «вверх экрана») — тогда A/D всегда
   // соответствуют лево/право НА ЭКРАНЕ, инверсии при разных курсах нет
   private isoFollow = 1.6; // скорость доворота, рад/с
@@ -67,7 +69,12 @@ export class CameraRig {
 
   addShake(v: number) { this.shake = Math.min(1.2, this.shake + v); }
 
-  update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean }) {
+  // ---- отладочные сеттеры (E2E/съёмка): поза свободной камеры ----
+  freeAzimSet(a: number) { this.freeAzim = a; }
+  freeElevSet(e: number) { this.freeElev = clamp(e, 0.08, 1.45); }
+  distSet(d: number) { this.dist.free = clamp(d, 14, 70); this.dist.iso = clamp(d, 35, 420); }
+
+  update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean; arrowX?: number; arrowY?: number }) {
     // зум
     const wheel = input.wheel;
     if (ctx.active) {
@@ -83,6 +90,21 @@ export class CameraRig {
         this.freeAzim -= input.mouseDX * 0.005;
         this.freeElev = clamp(this.freeElev + input.mouseDY * 0.004, 0.08, 1.45);
       }
+    }
+
+    // СТРЕЛКИ — вращение камеры: в свободном режиме напрямую
+    // (азимут + высота), в остальных — отклонение с плавным возвратом
+    {
+      const spd = 1.7 * dt;
+      const ax = input.arrowX ?? 0, ay = input.arrowY ?? 0;
+      if (this.mode === 'free' && !ctx.active) {
+        this.freeAzim -= ax * spd;
+        this.freeElev = clamp(this.freeElev - ay * spd * 0.6, 0.08, 1.45);
+      } else {
+        this.userAzim -= ax * spd;
+      }
+      // отклонение медленно возвращается за корму (полужизнь ~1.6 с)
+      if (this.mode !== 'free') this.userAzim *= Math.exp(-dt * 0.45);
     }
 
     const t = 1 - Math.exp(-5.0 * dt);
@@ -111,7 +133,7 @@ export class CameraRig {
       switch (this.mode) {
         case 'iso': {
           const d = this.dist.iso;
-          const az = this.isoAzim;
+          const az = this.isoAzim + this.userAzim;
           const el = 0.62; // ~35°
           target.set(
             ship.scenePos.x + Math.cos(az) * Math.cos(el) * d,
@@ -123,7 +145,7 @@ export class CameraRig {
         }
         case 'rear': {
           const d = this.dist.rear;
-          const az = ship.heading + Math.PI; // сзади
+          const az = ship.heading + Math.PI + this.userAzim; // сзади
           const el = 0.30 + 0.1 * ship.speedFrac;
           target.set(
             ship.scenePos.x + Math.sin(az) * Math.cos(el) * d,
@@ -135,7 +157,7 @@ export class CameraRig {
         }
         case 'side': {
           const d = this.dist.side;
-          const az = ship.heading + Math.PI / 2; // сбоку (правый борт)
+          const az = ship.heading + Math.PI / 2 + this.userAzim; // сбоку (правый борт)
           const el = 0.18;
           target.set(
             ship.scenePos.x + Math.sin(az) * Math.cos(el) * d,

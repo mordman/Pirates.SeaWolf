@@ -18,7 +18,7 @@ import * as THREE from 'three';
 // gl_PointSize = size·uScale/дистанция, uScale зависит от
 // высоты буфера и fov → одинаково на любых разрешениях.
 // ============================================================
-export type PKind = 0 | 1 | 2 | 3; // 0=брызги, 1=дым, 2=огонь, 3=кровь
+export type PKind = 0 | 1 | 2 | 3 | 4; // 0=брызги, 1=дым, 2=огонь, 3=кровь, 4=щепа/листва
 
 /** Настройки эффектов дыма/огня (применяются на лету) */
 export interface FxParams {
@@ -48,7 +48,8 @@ const VERT = /* glsl */`
     float grow = aKind < 0.5 ? mix(1.3, 0.55, aLifeFrac)
               : aKind < 1.5 ? mix(0.6, 1.9, aLifeFrac)
               : aKind < 2.5 ? mix(1.3, 0.55, aLifeFrac)
-              : mix(1.4, 0.5, aLifeFrac);
+              : aKind < 3.5 ? mix(1.4, 0.5, aLifeFrac)
+              : mix(1.2, 0.45, aLifeFrac);
     gl_PointSize = aSize * grow * uScale / max(0.5, -mv.z);
     gl_Position = projectionMatrix * mv;
   }
@@ -86,9 +87,13 @@ const FRAG = /* glsl */`
       col = mix(vec3(1.0, 0.87, 0.5), vec3(1.0, 0.27, 0.04), smoothstep(0.08, 0.42, r));
       col *= 0.7 + 0.55 * t.a;
       a = t.a * pow(vLife, 0.65) * 0.9 * uFireGain;
-    } else {
+    } else if (vKind < 3.5) {
       // кровь
       col = mix(vec3(0.30, 0.012, 0.008), vec3(0.58, 0.06, 0.03), t.a);
+      a = t.a * pow(vLife, 0.6) * 0.95;
+    } else {
+      // щепа/листва: древесно-зелёная масса (поваленные деревья)
+      col = mix(vec3(0.38, 0.26, 0.13), vec3(0.28, 0.42, 0.16), t.a);
       a = t.a * pow(vLife, 0.6) * 0.95;
     }
     if (a < 0.008) discard;
@@ -324,6 +329,17 @@ export class Particles {
         vy + 0.5 + Math.random() * 3.5 * power,
         vz + (Math.random() - 0.5) * 5 * power,
         0.5 + Math.random() * 0.45, 0.25 + Math.random() * 0.25, 3, 0.7, 11);
+    }
+  }
+
+  /** Щепа и листва: разлёт древесно-зелёной массы (поваленные деревья) */
+  debris(x: number, y: number, z: number, n = 10, power = 1) {
+    for (let i = 0; i < n; i++) {
+      this.spawn(x + (Math.random() - 0.5) * 0.8, y + Math.random() * 2.4, z + (Math.random() - 0.5) * 0.8,
+        (Math.random() - 0.5) * 8 * power,
+        2.5 + Math.random() * 5 * power,
+        (Math.random() - 0.5) * 8 * power,
+        0.8 + Math.random() * 0.6, 0.16 + Math.random() * 0.16, 4, 0.8, 9.5);
     }
   }
 

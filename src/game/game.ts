@@ -202,7 +202,7 @@ export class Game {
     const c = this.settings.controls;
     return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
       c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help,
-      ...c.ammo, 'Tab', 'Space']);
+      ...c.ammo, 'Tab', 'Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
   }
 
   /** Применить настройки эффектов дыма/огня */
@@ -363,6 +363,14 @@ export class Game {
     });
     this.bus.on(GameEvents.PROJECTILE_SPLASH, (p) => {
       this.audio.splash(distToPlayer((p as { pos: THREE.Vector3 }).pos));
+    });
+    this.bus.on(GameEvents.TERRAIN_HIT, (p) => {
+      const d = p as { pos: THREE.Vector3; trees: number };
+      this.audio.woodHit(distToPlayer(d.pos));
+      if (d.trees > 0) {
+        this.rig.addShake(Math.min(0.3, 0.12 * d.trees));
+        this.pushMessage(`Снаряд повалил деревьев: ${d.trees}`);
+      }
     });
     this.bus.on(GameEvents.PROJECTILE_HIT, (p) => {
       const d = (p as { pos: THREE.Vector3; target: Ship });
@@ -648,9 +656,10 @@ export class Game {
     }
 
     // прицеливание: наведение мышью
+    // мышь ОТ СЕБЯ (вверх экрана, mouseDY<0) — стволы ПОДНИМАЮТСЯ
     if (this.combat.aim.active) {
       this.combat.aim.azimuth = clamp(this.combat.aim.azimuth - inp.mouseDX * 0.0022, -0.62, 0.62);
-      this.combat.aim.elevation = clamp(this.combat.aim.elevation + inp.mouseDY * 0.0016, 0.01, 0.24);
+      this.combat.aim.elevation = clamp(this.combat.aim.elevation - inp.mouseDY * 0.0016, 0.01, 0.24);
     }
 
     // борта; «правый борт» ещё и взаимодействие
@@ -995,8 +1004,9 @@ export class Game {
     for (const ai of this.aiShips) this.setDetailLod(ai.ship, camPos, lodD);
     if (this.pgTarget) this.setDetailLod(this.pgTarget.ship, camPos, lodD);
 
-    // системы
-    this.combat.update(dt, this.time, waterHeightAt);
+    // системы (земля: рельеф островов + повал деревьев от снарядов)
+    this.combat.update(dt, this.time, waterHeightAt, heightAt,
+      (x, y, z, r) => this.world.breakTrees(x, y, z, r, this.particles));
     this.particles.update(dt);
     this.gibs.update(dt);
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
@@ -1041,6 +1051,13 @@ export class Game {
       speedFrac: clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1),
     };
     const aimDir = this.combat.aim.active ? this.combat.aimDirection(this._v2) : null;
+    // стрелки — вращение камеры (в свободном режиме напрямую,
+    // в остальных — отклонение с плавным возвратом за корму)
+    let arrX = 0, arrY = 0;
+    if (this.input.isDown('ArrowLeft')) arrX -= 1;
+    if (this.input.isDown('ArrowRight')) arrX += 1;
+    if (this.input.isDown('ArrowUp')) arrY -= 1;
+    if (this.input.isDown('ArrowDown')) arrY += 1;
     this.rig.update(dt, {
       active: this.combat.aim.active,
       side: this.combat.aim.side,
@@ -1048,6 +1065,7 @@ export class Game {
     }, shipInfo, {
       mouseDX: this.input.mouseDX, mouseDY: this.input.mouseDY,
       wheel: this.input.wheelDelta, rmb: this.input.rmb,
+      arrowX: arrX, arrowY: arrY,
     });
 
     // вода

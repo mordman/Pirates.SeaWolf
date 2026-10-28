@@ -53,7 +53,9 @@ export class Water {
       uFogDensity: { value: 0.00035 },
       uFoamTex: { value: null },
       uFoamQ: { value: 2.0 },                       // качество/сложность пены 0..2
-      uFarFade: { value: new THREE.Vector2(600, 4600) }, // диапазон затухания волн
+      uFarFade: { value: new THREE.Vector2(600, 4600) }, // диапазон затухания зыби
+      uHiFade: { value: new THREE.Vector2(270, 440) },   // затухание коротких волн (к краю чанка)
+      uEdge: { value: 7200 },                       // дистанция кромки воды (растворение в небо)
     };
 
     // Процедурная текстура пены
@@ -71,20 +73,25 @@ export class Water {
         ${gerstnerGLSL()}
         uniform vec3 uShift; // = -worldGroup.position (сцена -> мир)
         uniform vec2 uFarFade;
+        uniform vec2 uHiFade;
         void main() {
           vec3 sceneP = (modelMatrix * vec4(position, 1.0)).xyz;
           vec2 worldXZ = sceneP.xz + uShift.xz; // мировые координаты вершины
           float d = length(sceneP.xz - cameraPosition.xz);
-          float farFade = 1.0 - smoothstep(uFarFade.x, uFarFade.y, d);
+          // два диапазона: короткие волны гаснут к краю чанка (у дальних
+          // колец крупная ячейка — иначе граница читается как «квадрат»),
+          // длинная зыбь живёт до горизонта
+          float fadeLo = 1.0 - smoothstep(uFarFade.x, uFarFade.y, d);
+          float fadeHi = 1.0 - smoothstep(uHiFade.x, uHiFade.y, d);
           vec3 disp; vec3 nrm;
-          gerstner(worldXZ, uAmp * farFade, disp, nrm);
+          gerstner(worldXZ, uAmp * fadeLo, uAmp * fadeHi, disp, nrm);
           vec3 p = sceneP + disp;
           vNormal = nrm;
           vScenePos = p;
           vWorldPos = vec3(worldXZ.x + disp.x, disp.y, worldXZ.y + disp.z);
           vWorldXZ = worldXZ + disp.xz;
           vDist = d;
-          vFoamWave = farFade;
+          vFoamWave = fadeLo;
           gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
         }
       `,
@@ -96,7 +103,7 @@ export class Water {
         varying float vFoamWave;
         varying vec2 vWorldXZ;
         uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uFogColor;
-        uniform float uTime, uFogDensity, uFoamQ;
+        uniform float uTime, uFogDensity, uFoamQ, uEdge;
         uniform sampler2D uFoamTex;
         ${NOISE_GLSL}
 
@@ -179,7 +186,12 @@ export class Water {
           float fog = 1.0 - exp(-uFogDensity * uFogDensity * vDist * vDist);
           col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-          gl_FragColor = vec4(col, 0.94);
+          // кромка воды: цвет и альфа растворяются в небо у горизонта —
+          // внешний квадрат дальних колец НЕ читается (раньше 9% контраста)
+          float edge = smoothstep(uEdge * 0.72, uEdge * 0.99, vDist);
+          col = mix(col, uFogColor, edge);
+
+          gl_FragColor = vec4(col, 0.94 * (1.0 - edge));
         }
       `,
       transparent: true,
@@ -237,8 +249,11 @@ export class Water {
       level++;
     }
 
-    // затухание волн к горизонту: начинается за чанком, гаснет задолго до кромки
+    // затухание волн: короткие — к краю чанка (до границы с кольцами),
+    // длинная зыбь — к горизонту; кромка воды растворяется в небо
     (this.uniforms.uFarFade.value as THREE.Vector2).set(this.chunk / 2 + 180, this.far * 0.82);
+    (this.uniforms.uHiFade.value as THREE.Vector2).set(this.chunk * 0.28, this.chunk * 0.485);
+    this.uniforms.uEdge.value = this.getInfo().farEff * 0.99;
   }
 
   /** Сводка сетки для HUD/телеметрии: чанк, кольца, ячейки */

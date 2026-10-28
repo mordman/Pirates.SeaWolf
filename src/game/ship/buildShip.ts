@@ -341,18 +341,22 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
       const a = s * rowLen + r * 2, b = a + 1, c = a + 2, d = a + 3;
       const e = a + rowLen, f = e + 1, g = e + 2, h = e + 3;
       idx.push(a, c, e, c, g, e);
-      idx.push(b, e + 1, d, b, f, d); // зеркальная сторона (обратный порядок)
+      // зеркальная сторона (обратный порядок): два РАЗНЫХ треугольника квада —
+      // раньше (b,f,d) пушлся дважды (e+1===f!), второй (f,h,d) отсутствовал →
+      // левый борт был решетом из чередующихся треугольников
+      idx.push(b, f, d, f, h, d);
     }
   }
-  // транцевая корма: веер
+  // транцевая корма: веер от центра к ПОСЛЕДОВАТЕЛЬНЫМ граничным вершинам
+  // (правые снизу вверх, затем левые сверху вниз) — без дыр между хордами
   const st0 = stations[0];
   const centerIdx = pos.length / 3;
   pushPoint(0, -st0.draft * 0.55, st0.z - 0.01);
-  for (let r = 0; r <= R; r++) {
-    const i0 = r * 2;
-    if (r < R) {
-      idx.push(centerIdx, i0 + 1, i0); // ориентация наружу (-Z)
-    }
+  const boundary: number[] = [];
+  for (let r = R; r >= 0; r--) boundary.push(r * 2);      // правые: верх → низ
+  for (let r = 0; r <= R; r++) boundary.push(r * 2 + 1);  // левые: низ → верх
+  for (let i = 0; i < boundary.length - 1; i++) {
+    idx.push(centerIdx, boundary[i], boundary[i + 1]); // нормаль наружу (−Z)
   }
   // днище: замыкаем корпус снизу (r=0 — нижняя кромка шпангоутов),
   // нормали вниз — при крене/под водой не «просвечивает»

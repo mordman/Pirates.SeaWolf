@@ -63,14 +63,19 @@ export function waterNormalAt(x: number, z: number, t: number, out: [number, num
   return out;
 }
 
-/** GLSL-фрагмент с теми же константами — вставляется в вершинный шейдер воды */
+/** GLSL-фрагмент с теми же константами — вставляется в вершинный шейдер воды.
+ *  Два диапазона амплитуд: ampLo — длинная зыбь (110/55 м),
+ *  ampHi — короткие волны (28/15/8 м). Дальние LOD-кольца с крупной
+ *  ячейкой теряют только короткий диапазон — переход на границе
+ *  детального чанка не читается как «квадрат». */
 export function gerstnerGLSL(): string {
   return `
 #define N_WAVES ${WAVES.length}
+#define N_LO ${Math.ceil(WAVES.length / 2)}
 uniform float uTime;
 uniform float uAmp; // общий множитель погоды ( SEA.amplitude )
 // Основная функция: смещение вершины и нормаль
-void gerstner(vec2 p, float amp, out vec3 disp, out vec3 normal) {
+void gerstner(vec2 p, float ampLo, float ampHi, out vec3 disp, out vec3 normal) {
   disp = vec3(0.0);
   vec3 tang = vec3(1.0, 0.0, 0.0);
   vec3 bino = vec3(0.0, 0.0, 1.0);
@@ -80,7 +85,7 @@ void gerstner(vec2 p, float amp, out vec3 disp, out vec3 normal) {
   float cph[N_WAVES] = float[N_WAVES](${WAVES.map((w) => (K(w) * C(w)).toFixed(6)).join(', ')});
   for (int i = 0; i < N_WAVES; i++) {
     float k = ks[i];
-    float a = as_[i] * amp;
+    float a = as_[i] * (i < N_LO ? ampLo : ampHi);
     float f = k * (dot(dirs[i], p) - cph[i] * uTime);
     float sf = sin(f), cf = cos(f);
     disp += vec3(dirs[i].x * a * cf, a * sf, dirs[i].y * a * cf);

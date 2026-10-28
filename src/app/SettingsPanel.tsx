@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode } from '@/game/core/settings';
 import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS } from '@/game/core/settings';
 
@@ -57,15 +57,18 @@ export default function SettingsPanel({ initial, onApply, onClose }:
   const [s, setS] = useState<GameSettings>(() => structuredClone(initial));
   const [tab, setTab] = useState<Tab>('graphics');
   const [binding, setBinding] = useState<{ key: keyof ControlsSettings; ammoIdx?: number } | null>(null);
+  // зеркало актуального состояния — обновление из обработчиков событий
+  // (НЕ из фазы рендера: вызов onApply внутри setS(prev=>...) —
+  // setState-в-рендере, React ругается «Cannot update a component…»)
+  const sRef = useRef(s);
 
   // применяем сразу при каждом изменении
   const update = (patch: (draft: GameSettings) => void) => {
-    setS(prev => {
-      const next = structuredClone(prev);
-      patch(next);
-      onApply(next);
-      return next;
-    });
+    const next = structuredClone(sRef.current);
+    patch(next);
+    sRef.current = next;
+    setS(next);
+    onApply(next);
   };
 
   // захват клавиши для переназначения
@@ -287,7 +290,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
             <div className="divide-y divide-stone-800/60">
               <div className="py-2">
                 <Row label="Дистанция до мишени на полигоне" hint="расстояние между кораблями, м (применяется сразу)">
-                  <Slider value={s.gameplay.provingDistance} min={50} max={400} step={5}
+                  <Slider value={s.gameplay.provingDistance} min={10} max={400} step={5}
                     onChange={v => update(d => { d.gameplay.provingDistance = v; })}
                     format={v => `${v} м`} />
                 </Row>

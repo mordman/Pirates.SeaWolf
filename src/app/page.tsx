@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import type { Game, HudState } from '@/game/game';
 import type { AmmoType } from '@/game/combat/combat';
 import SettingsPanel from './SettingsPanel';
+import { ENCYCLOPEDIA } from '@/game/ship/encyclopedia';
 import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings } from '@/game/core/settings';
 
 // ============================================================
@@ -78,6 +79,8 @@ export default function Home() {
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [encyOpen, setEncyOpen] = useState(false);
+  const [encyId, setEncyId] = useState(ENCYCLOPEDIA[0].id);
   const [settings, setSettings] = useState<GameSettings>(() =>
     typeof window === 'undefined' ? structuredClone(DEFAULT_SETTINGS) : loadSettings());
   const [portMsg, setPortMsg] = useState<string | null>(null);
@@ -253,6 +256,12 @@ export default function Home() {
             >
               🎯 Полигон разрушений
             </button>
+            <button
+              onClick={() => setEncyOpen(true)}
+              className="pointer-events-auto mt-2 rounded-lg border border-stone-500 bg-gradient-to-b from-stone-600 to-stone-800 px-8 py-2 font-serif text-sm font-bold text-stone-100 shadow-lg transition hover:from-stone-500 hover:to-stone-700 active:scale-95"
+            >
+              📖 Энциклопедия кораблей
+            </button>
             <p className="mt-2 text-[11px] text-stone-500">Чистое море · мишень на якоре · проверка урона</p>
           </div>
         </div>
@@ -392,7 +401,7 @@ export default function Home() {
                     <span className="font-semibold text-amber-200">{settings.gameplay.provingDistance} м</span>
                   </div>
                   <input
-                    type="range" min={50} max={400} step={5}
+                    type="range" min={10} max={400} step={5}
                     value={settings.gameplay.provingDistance}
                     onChange={e => {
                       const v = Number(e.target.value);
@@ -625,6 +634,73 @@ export default function Home() {
       {settingsOpen && (
         <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings} />
       )}
+      {/* ---- энциклопедия кораблей ---- */}
+      {encyOpen && (() => {
+        const e = ENCYCLOPEDIA.find(s => s.id === encyId) ?? ENCYCLOPEDIA[0];
+        return (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            onClick={() => setEncyOpen(false)}>
+            <div className="w-[720px] max-h-[88vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
+              onClick={ev => ev.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
+                <h2 className="font-serif text-xl font-bold text-amber-300">📖 Энциклопедия кораблей</h2>
+                <button onClick={() => setEncyOpen(false)}
+                  className="rounded border border-stone-600 bg-stone-900 px-3 py-1 text-xs text-stone-300 hover:border-amber-600 hover:text-amber-200">
+                  Закрыть
+                </button>
+              </div>
+              <div className="flex max-h-[74vh]">
+                {/* список судов */}
+                <div className="w-52 shrink-0 overflow-y-auto border-r border-amber-900/40 py-2">
+                  {ENCYCLOPEDIA.map(s => (
+                    <button key={s.id} onClick={() => setEncyId(s.id)}
+                      className={`block w-full px-4 py-2 text-left text-xs leading-tight transition ${
+                        s.id === encyId
+                          ? 'bg-amber-700/50 text-amber-100'
+                          : 'text-stone-400 hover:bg-stone-800/60 hover:text-amber-200'}`}>
+                      <span className="block font-semibold">{s.name}</span>
+                      <span className="text-[10px] text-stone-500">{s.era}</span>
+                    </button>
+                  ))}
+                </div>
+                {/* статья */}
+                <div className="flex-1 overflow-y-auto px-5 py-4">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <h3 className="font-serif text-lg font-bold text-amber-200">{e.name}</h3>
+                    <span className="rounded border border-amber-800/60 bg-stone-900/70 px-2 py-0.5 text-[10px] text-amber-300/90">{e.role}</span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-stone-500">{e.type} · {e.era}</div>
+                  {/* ТТХ */}
+                  <div className="mt-3 grid grid-cols-4 gap-1.5">
+                    {([
+                      ['Длина', `${e.stats.length} м`],
+                      ['Ширина', `${e.stats.beam} м`],
+                      ['Мачты', `${e.stats.masts}`],
+                      ['Орудий/борт', `${e.stats.guns}`],
+                      ['Экипаж', `${e.stats.crew}`],
+                      ['Ход', `${e.stats.speed.toFixed(1)} уз`],
+                      ['Корпус', `${e.stats.hullHP}`],
+                      ['Трюм', `${e.stats.cargo}`],
+                    ] as [string, string][]).map(([k, v]) => (
+                      <div key={k} className="rounded border border-stone-700/70 bg-stone-900/50 px-2 py-1.5">
+                        <div className="text-[9px] uppercase tracking-wide text-stone-500">{k}</div>
+                        <div className="text-xs font-bold text-amber-200">{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 rounded border border-stone-700/60 bg-stone-900/40 px-3 py-2 text-[11px] leading-relaxed text-stone-300">
+                    <span className="text-amber-300/80">Парусное вооружение: </span>{e.rigging}
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-stone-300">{e.desc}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-stone-400">
+                    <span className="font-semibold text-amber-300/90">⚓ Тактика: </span>{e.tactics}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </main>
   );
 }
