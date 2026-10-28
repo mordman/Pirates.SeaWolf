@@ -412,6 +412,8 @@ export class Game {
     this.worldGroup.add(ship.wake.mesh);
     const ai = new AIShip(ship, [], 'anchored');
     ai.returnFire = this.pgReturnFire;
+    // мишень с поставленным рангоутом: стрелять есть по чему — и по парусам
+    ship.sailOverride = 0.85;
     this.pgTarget = ai;
     this.combat.others.push(ship);
   }

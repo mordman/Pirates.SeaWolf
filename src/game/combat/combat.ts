@@ -332,6 +332,8 @@ export class CombatSystem {
   // ---------- ИИ ответный огонь (картечь торговца — роем пуль) ----------
   aiGrapeBurst(shooter: Ship) {
     const dirTo = new THREE.Vector3().subVectors(this.player.position, shooter.position).normalize();
+    const muzzle = shooter.position.clone().addScaledVector(dirTo, shooter.preset.beam * 0.6);
+    muzzle.y += 1.2;
     for (let i = 0; i < 8; i++) {
       const pr = this.projectiles.find(q => !q.active);
       if (!pr) break;
@@ -351,7 +353,7 @@ export class CombatSystem {
       dir.normalize();
       pr.vel.copy(dir).multiplyScalar(100 + Math.random() * 18).add(shooter.velocity);
     }
-    this.emit(GameEvents.CANNON_FIRED, { pos: pr ? pr.pos.clone() : shooter.position.clone(), power: 0.6 });
+    this.emit(GameEvents.CANNON_FIRED, { pos: muzzle, power: 0.6 });
   }
 
   /** Залп ИИ ядрами по игроку (с упреждением и разбросом) */
@@ -534,6 +536,89 @@ export class CombatSystem {
   private _vN = new THREE.Vector3();
   /** мачты в круге разлёта книппеля (заполняет hitTest) */
   private chainMasts: number[] = [];
+  // temporaries for sailPass
+  private sqA = new THREE.Vector3();
+  private sqB = new THREE.Vector3();
+  private sqC0 = new THREE.Vector3();
+  private sqE1 = new THREE.Vector3();
+  private sqE2 = new THREE.Vector3();
+  private sqN = new THREE.Vector3();
+  private sqW = new THREE.Vector3();
+  private sqP = new THREE.Vector3();
+
+  /** Прострел ПАРУСОВ насквозь: путь снаряда (prev→pos) против
+   *  полотен-квадов (с поворотом брасопки). Попадание — пробоина
+   *  (sailAddHole) + урон такелажу; снаряд ЛЕТИТ ДАЛЬШЕ — паруса
+   *  не останавливают ни картучь, ни ядро. Возвращает true, если
+   *  хотя бы одно полотно прошито (для звука/телеметрии). */
+  private sailPass(pr: Projectile, t: Ship): boolean {
+    if (t.sinking || t.sunk) return false;
+    const sails = t.visual.sails.sails;
+    if (!sails.length) return false;
+    // путь снаряда в СВЯЗНЫХ координатах цели
+    this.invQ.copy(t.quaternion).invert();
+    this.sqA.subVectors(pr.prev, t.position).applyQuaternion(this.invQ);
+    this.sqB.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
+    let torn = false;
+    for (const s of sails) {
+      // мачта сломана — парус обвис: не простреливаем
+      if (s.mastIndex !== undefined && t.mastFall[s.mastIndex] >= 0) continue;
+      // сильно убран (собран у реи) — полотно мало, пропускаем
+      if (s.furl > 0.72) continue;
+      const q = s.quad;
+      // углы полотна в координатах КОРАБЛЯ (+текущая брасопка реи)
+      const ba = q.rotates ? s.braceAngle : 0;
+      const cb = Math.cos(ba), sb = Math.sin(ba);
+      // C0 = uv(0,0), E1 → uv(1,0), E2 → uv(0,1) (параллелограмм)
+      const loc = (i: number, out: THREE.Vector3): THREE.Vector3 => {
+        const c = q.corners[i];
+        // поворот вокруг оси мачты (Y) на угол брасопки
+        const rx = c.x * cb + c.z * sb;
+        const rz = -c.x * sb + c.z * cb;
+        out.set(q.pivot.x + rx, q.pivot.y + c.y, q.pivot.z + rz);
+        return out;
+      };
+      loc(0, this.sqC0);
+      loc(1, this.sqE1).sub(this.sqC0);
+      loc(3, this.sqE2).sub(this.sqC0);
+      // плоскость полотна
+      this.sqN.crossVectors(this.sqE1, this.sqE2);
+      const nLen2 = this.sqN.lengthSq();
+      if (nLen2 < 1e-9) continue;
+      const dA = this.sqW.subVectors(this.sqA, this.sqC0).dot(this.sqN);
+      const dB = this.sqW.subVectors(this.sqB, this.sqC0).dot(this.sqN);
+      if (dA * dB > 0) continue;              // обе точки по одну сторону
+      const k = dA / (dA - dB);               // 0..1 — точка пересечения
+      if (k < 0 || k > 1) continue;
+      this.sqP.lerpVectors(this.sqA, this.sqB, k).sub(this.sqC0);
+      // билинейные координаты в параллелограмме: P = u·E1 + v·E2
+      const e11 = this.sqE1.dot(this.sqE1), e22 = this.sqE2.dot(this.sqE2);
+      const e12 = this.sqE1.dot(this.sqE2);
+      const pu = this.sqP.dot(this.sqE1), pv = this.sqP.dot(this.sqE2);
+      const det = e11 * e22 - e12 * e12;
+      if (Math.abs(det) < 1e-9) continue;
+      const u = (pu * e22 - pv * e12) / det;
+      const v = (pv * e11 - pu * e12) / det;
+      const tri = q.uvs[2].equals(q.uvs[3]);  // латинский/кливер — треугольник
+      if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) continue;
+      if (tri && u + v > 1.04) continue;
+      // === ПОПАДАНИЕ В ПОЛОТНО ===
+      torn = true;
+      const uu = clamp(u, 0, 1), vv = clamp(v, 0, 1);
+      // радиус пробоины (в долях ВЫСОТЫ полотна — см. шейдер uHoles)
+      let r: number;
+      if (pr.type === 'grape') r = 0.035 + Math.random() * 0.025;   // россыпь малых дыр
+      else if (pr.type === 'chain') r = 0.11 + Math.random() * 0.07; // широкая прореха
+      else if (pr.type === 'fire') r = 0.045;
+      else r = 0.055 + Math.random() * 0.03;                         // ядро
+      sailAddHole(s, uu, vv, r);
+      // урон такелажу: учесть долю поставленного полотна
+      const setFrac = (1 - s.furl) * 0.6 + 0.4;
+      const dmg = AMMO_INFO[pr.type].dmgSail * setFrac * (0.8 + Math.random() * 0.4);
+      t.damageSails(dmg);
+    }
+    return torn;
+  }
 
   /** Проверка попадания: мачты (стоячие, swept) → корпус.
    *  Книппель ловит мачты ВЕСЬ СВОЙ КРУГ (радиус 3.2 м — шире корпуса);

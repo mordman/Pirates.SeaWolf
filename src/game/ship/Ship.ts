@@ -40,7 +40,6 @@ export class Ship {
   inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
   private probes: Probe[] = [];
   private reserve: Probe[] = [];   // запас плавучести надводного борта
-  private kHeave = 0;              // жёсткость подъёма «на гребень» (Н/м)
   private force = new THREE.Vector3();
   private torque = new THREE.Vector3();
   private _f = new THREE.Vector3();
@@ -53,9 +52,13 @@ export class Ship {
   private tmpQ = new THREE.Quaternion();
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
+  private _e2 = new THREE.Euler();   // разбор кватерниона для посадки на волну
 
   // --- управление ---
   sailTarget = 0;          // 0..3
+  /** Принудительная доля постановки парусов (0..1) — мишень полигона
+   *  стоит на якоре с поставленным рангоутом; null = обычная логика */
+  sailOverride: number | null = null;
   sailFrac = 0;            // плавное 0..1
   rudder = 0;              // -1..1 (реальный угол)
   rudderTarget = 0;
@@ -148,8 +151,7 @@ export class Ship {
       }
     }
     const neutral = D * 0.38;
-    this.kHeave = this.mass * G / neutral;
-    const kTotal = this.kHeave * 1.35;
+    const kTotal = this.mass * G / neutral * 1.35;
     for (const p of this.probes) {
       p.k = kTotal / n;
       p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.62; // демпфер качки
@@ -253,13 +255,9 @@ export class Ship {
     this.force.y -= m * G;
 
     // --- плавучесть по зондам (τ = r × F, F = (0, fl, 0)) ---
-    // попутно считаем статистику поверхности: подъём «на гребень»
-    let wMax = -Infinity, wSum = 0, wN = 0;
     for (const p of this.probes) {
       const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
       const wy = waterHeightAt(wp.x, wp.z, time);
-      if (wy > wMax) wMax = wy;
-      wSum += wy; wN++;
       const depth = wy - wp.y;
       if (depth > 0) {
         const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
@@ -270,15 +268,6 @@ export class Ship {
         this.force.y += fl;
         this.torque.x += -rz * fl;
         this.torque.z += rx * fl;
-      }
-    }
-    // --- «езда по гребню»: равновесие зондов — СРЕДНЯЯ высота воды
-    // под корпусом, из-за чего на гребне корабль сидел глубоко внутри
-    // волны. Добавка поднимает корпус К ГРЕБНЮ — корабль едет ПО волне ---
-    if (!this.sinking && !this.grounded) {
-      const crest = wMax - wSum / Math.max(1, wN);
-      if (crest > 0.04) {
-        this.force.y += this.kHeave * Math.min(crest, 1.6) * 0.45;
       }
     }
     // --- запас плавучести бортов (пока не тонем) ---
@@ -401,6 +390,39 @@ export class Ship {
       this.quaternion.z + this.dq.z * qs,
       this.quaternion.w + this.dq.w * qs
     ).normalize();
+
+    // === КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ ===
+    // Пружины зондов дают равновесие на СРЕДНЕМ уровне воды — корпус
+    // «сидел» ВНУТРИ гребня. Здесь корпус прямо следует ПОВЕРХНОСТИ:
+    // вертикаль — к уровню 4 точек (нос/корма/оба борта), дифферент —
+    // к плоскости волны вдоль корпуса. Крен ОСТАЁТСЯ динамическим
+    // (ветер, течь, поворот) — зондов-пружин на крен достаточно.
+    // Скорости λy 3.2/с и λp 2.4/с: успевают за зыбью (период 4–8 с),
+    // короткую рябь усредняют; поправка ограничена 8 м/с и 0.5 рад/с.
+    if (!this.sinking && !this.sunk && !this.grounded) {
+      const Lh = this.preset.length * 0.36, Bh = this.preset.beam * 0.36;
+      const hB = waterHeightAt(this.position.x + f.x * Lh, this.position.z + f.z * Lh, time);
+      const hS = waterHeightAt(this.position.x - f.x * Lh, this.position.z - f.z * Lh, time);
+      const hR = waterHeightAt(this.position.x + right.x * Bh, this.position.z + right.z * Bh, time);
+      const hP = waterHeightAt(this.position.x - right.x * Bh, this.position.z - right.z * Bh, time);
+      const surfY = (hB + hS + hR + hP) * 0.25;
+      // равновесие пружин: осадка зондов 0.28·D → центр на 0.10·D над водой;
+      // затопленный трюм садит корпус ниже (до 30 см)
+      const sink = clamp(this.water / Math.max(1, this.holdCap), 0, 1) * 0.30;
+      const targetY = surfY + this.preset.draft * 0.10 - sink;
+      const kY = 1 - Math.exp(-dt * 3.2);
+      const corrY = clamp((targetY - this.position.y) * kY, -8 * dt, 8 * dt);
+      this.position.y += corrY;
+      // согласованное затухание вертикальной скорости — пружины
+      // не раскачивают корпус вокруг кинематической посадки
+      this.velocity.y *= Math.exp(-dt * 3.0);
+      // дифферент: нос/корма по склону волны (вода выше у носа → нос вверх)
+      const wPitch = -Math.atan2(hB - hS, 2 * Lh);
+      const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
+      const kP = 1 - Math.exp(-dt * 2.4);
+      e2.x += clamp((wPitch - e2.x) * kP, -0.5 * dt, 0.5 * dt);
+      this.quaternion.setFromEuler(e2);
+    }
 
     // --- посадка на мель / столкновение с землёй ---
     this.checkGrounding(dt);
@@ -657,7 +679,7 @@ export class Ship {
     // в левентик/штиль паруса остаются на мачтах и трепещут (не убираются
     // механически) — убираются только когда есть чем идти, но нет хода
     const spdSetFrac = attainable > 1.5 ? clamp(this.speed() / attainable, 0, 1) : 1;
-    const setTotal = Math.min(this.sailFrac, spdSetFrac);
+    const setTotal = this.sailOverride ?? Math.min(this.sailFrac, spdSetFrac);
     // локальный вектор «откуда дует» (x — борт, z — нос): ψ = φ + курс
     const psi = this.wind.from + this.heading;
     const wlX = Math.cos(psi); // >0 — ветер с порта (левый борт)
