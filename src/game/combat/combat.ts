@@ -243,19 +243,21 @@ export class CombatSystem {
       pr.vel.copy(dir).multiplyScalar(info.muzzle * (0.94 + Math.random() * 0.12));
       pr.vel.add(ship.velocity);
     }
-    // вспышка выстрела (короткая) + лёгкий пороховой дым
+    // вспышка выстрела: короткая и компактная (аддитивное свечение)
     this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z,
-      this.aimDir.x * 9, 1.2, this.aimDir.z * 9, 0.14, 1.5, 2, 2.2, -1.5);
-    this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z, 0, 0.5, 0, 0.1, 0.7, 2, 0.1, 0.7);
-    for (let s = 0; s < 3; s++) {
+      this.aimDir.x * 7, 1.0, this.aimDir.z * 7, 0.11, 1.15, 2, 2.4, -1.5);
+    // пороховой дым: два небольших полупрозрачных клубка у дула,
+    // разнесённых по высоте и направлению — не сливаются в одно облако
+    for (let s = 0; s < 2; s++) {
+      const jx = (Math.random() - 0.5) * 1.1;
       this.particles.smoke(
-        this.muzzleWorld.x + this.aimDir.x * s * 0.7,
-        this.muzzleWorld.y + this.aimDir.y * s * 0.7 + 0.15,
-        this.muzzleWorld.z + this.aimDir.z * s * 0.7,
-        this.aimDir.x * (2.6 - s * 0.7) + (Math.random() - 0.5) * 0.9 + ship.velocity.x * 0.4,
-        0.35 + Math.random() * 0.4,
-        this.aimDir.z * (2.6 - s * 0.7) + (Math.random() - 0.5) * 0.9 + ship.velocity.z * 0.4,
-        0.75 + Math.random() * 0.45, 1.0 + Math.random() * 0.4);
+        this.muzzleWorld.x + this.aimDir.x * (0.3 + s * 0.85) + jx,
+        this.muzzleWorld.y + 0.1 + s * 0.3,
+        this.muzzleWorld.z + this.aimDir.z * (0.3 + s * 0.85) + jx,
+        this.aimDir.x * (1.5 - s * 0.5) + (Math.random() - 0.5) * 1.1 + ship.velocity.x * 0.25,
+        0.3 + Math.random() * 0.35,
+        this.aimDir.z * (1.5 - s * 0.5) + (Math.random() - 0.5) * 1.1 + ship.velocity.z * 0.25,
+        0.95 + Math.random() * 0.3, 0.9 + Math.random() * 0.4);
     }
     this.emit(GameEvents.CANNON_FIRED, { pos: this.muzzleWorld.clone(), power: info.muzzle / 175 });
   }
@@ -309,8 +311,8 @@ export class CombatSystem {
     muzzle.y += 1.2;
     for (let s = 0; s < 2; s++) {
       this.particles.smoke(muzzle.x, muzzle.y, muzzle.z,
-        aim.x * 2 + (Math.random() - 0.5) * 0.8, 0.4 + Math.random() * 0.3,
-        aim.z * 2 + (Math.random() - 0.5) * 0.8, 0.85 + Math.random() * 0.3, 1.1);
+        aim.x * 1.6 + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.25,
+        aim.z * 1.6 + (Math.random() - 0.5) * 0.6, 1.05 + Math.random() * 0.25, 1.0 + Math.random() * 0.2);
     }
     this.emit(GameEvents.CANNON_FIRED, { pos: muzzle, power: 0.9 });
   }
@@ -337,9 +339,9 @@ export class CombatSystem {
 
       // дымный след — ядро видно в полёте (кроме картечи — её дробин много)
       pr.trailT += dt;
-      if (pr.trailT > 0.14 && pr.type !== 'grape') {
+      if (pr.trailT > 0.18 && pr.type !== 'grape') {
         pr.trailT = 0;
-        this.particles.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.1, 0, 0.32, 0.42);
+        this.particles.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.08, 0, 0.42, 0.5);
       }
 
       // вода
@@ -441,7 +443,7 @@ export class CombatSystem {
           (Math.random() - 0.5) * 7, 2 + Math.random() * 5, (Math.random() - 0.5) * 7,
           0.8, 0.3, 0, 0.6, 10);
       }
-      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 1.0, 0, 0.9, 1.4);
+      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.8, 0, 1.0, 1.3);
       if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
     } else {
       // --- попадание в КОРПУС: пробоина, у ватерлинии/ниже — течь ---
@@ -479,7 +481,7 @@ export class CombatSystem {
           (Math.random() - 0.5) * 6, 2 + Math.random() * 4, (Math.random() - 0.5) * 6,
           0.7, 0.28, 0, 0.6, 10);
       }
-      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.9, 0, 0.8, 1.3);
+      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.7, 0, 0.95, 1.2);
     }
     this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
   }

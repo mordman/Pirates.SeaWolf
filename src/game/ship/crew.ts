@@ -340,8 +340,9 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   // боцман — у шпиля (шпиль на -L*0.16), спиной к ветру, лицом к носу-борту
   place(buildFigure('boatswain', rollTraits(rot, 'boatswain'), nextSeed()), -0.75, -L * 0.115, 0.5);
 
-  // канониры: за орудиями обоих бортов (через одно — чтобы не толпиться)
-  const gunZ0 = -L * 0.22, gunZ1 = L * 0.24;
+  // канониры: за орудиями обоих бортов (через одно — чтобы не толпиться);
+  // на кораблях с «замками» нос занят надстройкой — орудия сдвинуты к корме
+  const gunZ0 = -L * 0.22, gunZ1 = P.castleH ? L * 0.18 : L * 0.24;
   const nGuns = P.gunsPerSide;
   let gi = 0;
   for (let i = 0; i < nGuns; i += 2) {
@@ -365,8 +366,8 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   for (let i = 0; i < nWalk; i++) {
     const f = buildFigure('walker', rollTraits(rot, 'walker'), nextSeed());
     f.xPath = (i % 2 ? 1 : -1) * Math.max(0.55, halfW(0) * 0.34);
-    f.walkA = -L * 0.3;
-    f.walkB = L * 0.28;
+    f.walkA = P.castleH ? -L * 0.22 : -L * 0.3;
+    f.walkB = P.castleH ? L * 0.2 : L * 0.28;
     f.walkT = rot();
     figures.push(f);
     group.add(f.group);

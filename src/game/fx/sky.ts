@@ -16,6 +16,9 @@ export class SkySystem {
   dayLength = 480;    // сек на полные сутки
 
   sunDir = new THREE.Vector3(0.4, 0.7, 0.35);
+  /** вспышка молнии 0..1 и дымка тумана — из погоды */
+  flash = 0;
+  haze = 0;
   private uniforms;
 
   constructor(scene: THREE.Scene) {
@@ -23,6 +26,8 @@ export class SkySystem {
       uSunDir: { value: this.sunDir },
       uTime: { value: 0 },
       uCloud: { value: 0.4 },
+      uFlash: { value: 0 },
+      uHaze: { value: 0 },
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -37,7 +42,7 @@ export class SkySystem {
       fragmentShader: /* glsl */`
         varying vec3 vDir;
         uniform vec3 uSunDir;
-        uniform float uTime, uCloud;
+        uniform float uTime, uCloud, uFlash, uHaze;
         float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
         float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
           return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
@@ -95,6 +100,13 @@ export class SkySystem {
           float mdisc = smoothstep(0.9994, 0.9998, mdot);
           col += vec3(0.82, 0.87, 0.95) * (mdisc * 1.4 + pow(max(mdot, 0.0), 120.0) * 0.2) * night;
 
+          // дымка тумана: небо у горизонта уходит в молочно-серый
+          vec3 hazeCol = vec3(0.78, 0.81, 0.84) * (0.25 + 0.75 * dayF);
+          col = mix(col, hazeCol, uHaze * (1.0 - pow(clamp(h, 0.0, 1.0), 0.45)));
+
+          // вспышка молнии: небо вспыхивает холодным светом
+          col += vec3(0.52, 0.58, 0.75) * uFlash * (0.3 + 0.7 * smoothstep(0.0, 0.3, d.y));
+
           gl_FragColor = vec4(col, 1.0);
         }`,
     });
@@ -139,13 +151,17 @@ export class SkySystem {
     this.sunDir.set(Math.cos(th), Math.sin(th) * 0.92 + 0.03, 0.35).normalize();
     this.uniforms.uTime.value = time;
     this.uniforms.uCloud.value = cloudiness;
+    this.uniforms.uFlash.value = this.flash;
+    this.uniforms.uHaze.value = this.haze;
 
     this.dome.position.copy(camPos);
 
     // свет
     const dayF = smoothstep(-0.05, 0.25, this.sunDir.y);
     const duskF = smoothstep(0.30, 0.0, Math.abs(this.sunDir.y)) * smoothstep(-0.15, 0.1, this.sunDir.y);
-    this.sun.intensity = 2.8 * dayF;
+    // погода приглушает солнце (облачность/туман) + вспышка молнии
+    const weatherDim = this.weatherDim * (1 - this.flash * 0.7);
+    this.sun.intensity = 2.8 * dayF * weatherDim + this.flash * 3.5;
     this.sun.color.setRGB(1, 0.94 - duskF * 0.25, 0.85 - duskF * 0.45);
     this.sun.position.copy(playerPos).addScaledVector(this.sunDir, 400);
     this.sun.target.position.copy(playerPos);
@@ -153,9 +169,16 @@ export class SkySystem {
     this.moon.intensity = 0.35 * (1 - dayF);
     this.moon.position.copy(playerPos).addScaledVector(this.sunDir, -400);
 
-    this.hemi.intensity = 0.25 + 0.75 * dayF;
+    this.hemi.intensity = (0.25 + 0.75 * dayF) * (0.55 + 0.45 * this.weatherDim) + this.flash * 1.6;
     this.hemi.color.setRGB(0.62 + 0.15 * dayF, 0.72 + 0.12 * dayF, 0.82);
     return { dayF, duskF };
+  }
+
+  /** Приглушение солнца от погоды (0..1) и дымка тумана (0..1) */
+  weatherDim = 1;
+  setWeather(dim: number, haze: number) {
+    this.weatherDim = dim;
+    this.haze = haze;
   }
 
   /** Цвета для воды/тумана */
@@ -172,6 +195,12 @@ export class SkySystem {
       0.86 - (1 - dayF) * 0.35 - duskF * 0.42,
     );
     const fog = horizon.clone().lerp(sky, 0.35);
+    // в пасмурную погоду краски выцветают к серому
+    const gray = 1 - this.weatherDim;
+    const overcast = new THREE.Color(0.6, 0.645, 0.69);
+    sky.lerp(overcast, gray * 0.7);
+    horizon.lerp(overcast, gray * 0.7);
+    fog.lerp(overcast, gray * 0.7);
     const sun = new THREE.Color(1.0, 0.92 - duskF * 0.2, 0.78 - duskF * 0.35).multiplyScalar(clamp(dayF + duskF * 0.6, 0.15, 1));
     return { sky, horizon, fog, sun };
   }

@@ -6,6 +6,24 @@
 
 export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 
+// ============================================================
+// Погода: режим явлений + ветер. От силы ветра зависят волны.
+// ============================================================
+export type WeatherMode = 'clear' | 'rain' | 'storm' | 'fog';
+
+export interface WeatherSettings {
+  mode: WeatherMode;   // ясно / дождь / гроза / туман
+  windSpeed: number;   // 0..24 м/с — сила ветра (задаёт и волнение)
+  windDir: number;     // 0..355° — направление ОТКУДА дует (компас)
+}
+
+export interface FxSettings {
+  smokeVisible: boolean;      // видимость дыма (и огня выстрелов)
+  smokeSize: number;          // 0.3..2.5× — размер клубов
+  smokeDensity: number;       // 0..2× — количество клубов
+  smokeTransparency: number;  // 0..0.95 — прозрачность (выше = прозрачнее)
+}
+
 export interface GraphicsSettings {
   preset: QualityPreset;
   drawDistance: number;   // м: радиус дальней воды/видимости (2400..8000)
@@ -17,6 +35,7 @@ export interface GraphicsSettings {
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
   foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
   waveHeight: number;     // множитель высоты волн 0.6..1.3 (погода всё равно меняет море)
+  detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
 }
 
 export interface ControlsSettings {
@@ -49,13 +68,15 @@ export interface GameSettings {
   controls: ControlsSettings;
   audio: AudioSettings;
   gameplay: GameplaySettings;
+  weather: WeatherSettings;
+  fx: FxSettings;
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15 },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15 },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15 },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15 },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15, detailLod: 150 },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15, detailLod: 210 },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15, detailLod: 270 },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15, detailLod: 340 },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -78,6 +99,16 @@ export const DEFAULT_SETTINGS: GameSettings = {
   },
   audio: { volume: 0.55 },
   gameplay: { provingDistance: 90 },
+  weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
+  fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
+};
+
+/** Рекомендуемые параметры погоды по режиму (кнопка режима подтягивает ветер) */
+export const WEATHER_PRESETS: Record<WeatherMode, { windSpeed: number; label: string }> = {
+  clear: { windSpeed: 7, label: 'Ясно' },
+  rain: { windSpeed: 10, label: 'Дождь' },
+  storm: { windSpeed: 19, label: 'Гроза' },
+  fog: { windSpeed: 3, label: 'Туман' },
 };
 
 const STORAGE_KEY = 'seawolves.settings.v1';
@@ -105,6 +136,7 @@ export function loadSettings(): GameSettings {
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
       if (typeof g.waveHeight === 'number') s.graphics.waveHeight = Math.min(1.3, Math.max(0.6, g.waveHeight));
+      if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
     }
     if (isObj(data.controls)) {
       const c = data.controls;
@@ -129,6 +161,19 @@ export function loadSettings(): GameSettings {
     }
     if (isObj(data.gameplay)) {
       if (typeof data.gameplay.provingDistance === 'number') s.gameplay.provingDistance = Math.min(400, Math.max(50, Math.round(data.gameplay.provingDistance)));
+    }
+    if (isObj(data.weather)) {
+      const w = data.weather;
+      if (typeof w.mode === 'string' && ['clear', 'rain', 'storm', 'fog'].includes(w.mode)) s.weather.mode = w.mode as WeatherMode;
+      if (typeof w.windSpeed === 'number') s.weather.windSpeed = Math.min(24, Math.max(0, w.windSpeed));
+      if (typeof w.windDir === 'number') s.weather.windDir = ((Math.round(w.windDir) % 360) + 360) % 360;
+    }
+    if (isObj(data.fx)) {
+      const f = data.fx;
+      if (typeof f.smokeVisible === 'boolean') s.fx.smokeVisible = f.smokeVisible;
+      if (typeof f.smokeSize === 'number') s.fx.smokeSize = Math.min(2.5, Math.max(0.3, f.smokeSize));
+      if (typeof f.smokeDensity === 'number') s.fx.smokeDensity = Math.min(2, Math.max(0, f.smokeDensity));
+      if (typeof f.smokeTransparency === 'number') s.fx.smokeTransparency = Math.min(0.95, Math.max(0, f.smokeTransparency));
     }
     return s;
   } catch {

@@ -12,9 +12,10 @@ import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { setCrewFx } from './ship/crew';
 import { SkySystem } from './fx/sky';
+import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
-import { GameSettings, loadSettings } from './core/settings';
+import { GameSettings, loadSettings, type FxSettings } from './core/settings';
 
 // ============================================================
 // Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
@@ -95,6 +96,7 @@ export class Game {
   rig: CameraRig;
   water: Water;
   sky: SkySystem;
+  weather: WeatherSystem;
   world: World;
   particles = new Particles(1400);
   /** куски тел, разорванных ядрами (мировые координаты) */
@@ -110,9 +112,6 @@ export class Game {
   private negShift = new THREE.Vector3();  // для воды
 
   wind = { from: 0.7, speed: 7.5 };
-  private windTargetSpeed = 7.5;
-  private windTimer = 12;
-  private gustT = 0;
 
   docked = false;
   dead = false;
@@ -172,9 +171,15 @@ export class Game {
     this.sky = new SkySystem(this.scene);
     this.sky.setShadowRes(g.shadowRes);
     this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
+    this.weather = new WeatherSystem(this.scene);
+    this.weather.applySettings(this.settings.weather);
+    this.weather.onThunder = (dist) => this.audio.thunder(dist);
+    this.applyFx(this.settings.fx);
+    this.updateParticleScale();
     this.world = new World();
     this.worldGroup.add(this.world.group);
     this.worldGroup.add(this.particles.points);
+    this.worldGroup.add(this.particles.firePoints); // огонь — аддитивный пул
     this.gibs.addTo(this.worldGroup);
     setCrewFx(this.gibs, this.particles);
     this.world.onDiscover = (isl) => this.pushMessage(`Открыт остров: ${isl.name}!`);
@@ -198,6 +203,18 @@ export class Game {
     return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
       c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help,
       ...c.ammo, 'Tab', 'Space']);
+  }
+
+  /** Применить настройки эффектов дыма/огня */
+  private applyFx(fx: FxSettings) {
+    // прозрачность ↑ → непрозрачность ↓ (пик альфы клуба)
+    const alpha = 0.55 * (1 - fx.smokeTransparency);
+    this.particles.applyFx({
+      smokeVisible: fx.smokeVisible,
+      smokeSize: fx.smokeSize,
+      smokeDensity: fx.smokeDensity,
+      smokeAlpha: Math.max(0.03, alpha),
+    });
   }
 
   /** Применить новые настройки на лету (вызывается экраном настроек) */
@@ -227,6 +244,12 @@ export class Game {
     (this.scene.fog as THREE.FogExp2).density = this.fogBase();
     this.audio.setVolume(s.audio.volume);
     this.input.setPreventCodes(this.preventCodes());
+    this.applyFx(s.fx);
+    if (prev.weather.mode !== s.weather.mode
+      || prev.weather.windSpeed !== s.weather.windSpeed
+      || prev.weather.windDir !== s.weather.windDir) {
+      this.weather.applySettings(s.weather);
+    }
   }
 
   private setShadows(on: boolean) {
@@ -244,7 +267,8 @@ export class Game {
 
   /** Отладочный хук для E2E: принудительный ветер (→ состояние моря) */
   debugSetWind(speed: number) {
-    this.windTargetSpeed = speed;
+    this.settings.weather.windSpeed = speed;
+    this.weather.applySettings(this.settings.weather);
     this.wind.speed = speed;
   }
 
@@ -270,8 +294,9 @@ export class Game {
       [new THREE.Vector3(-1350, 0, -260), new THREE.Vector3(-900, 0, -520), new THREE.Vector3(-380, 0, -740), new THREE.Vector3(-700, 0, -60)],
     ];
     const safeSpawns = [new THREE.Vector3(820, 0, -150), new THREE.Vector3(-1000, 0, -350)];
+    const traderModels = ['fluyt', 'pinnace']; // флейт и пинасс — торговые суда эпохи
     routes.forEach((route, i) => {
-      const trader = new Ship('fluyt', false, this.wind, terrain, this.particles);
+      const trader = new Ship(traderModels[i], false, this.wind, terrain, this.particles);
       trader.position.copy(safeSpawns[i]);
       trader.quaternion.setFromEuler(new THREE.Euler(0, i * 1.3, 0));
       trader.gold = 260 + i * 190;
@@ -282,6 +307,33 @@ export class Game {
       const ai = new AIShip(trader, route, 'route');
       this.aiShips.push(ai);
     });
+
+    // каравелла — быстрый торговец северными путями (латинские паруса)
+    const caravelRoute = [
+      new THREE.Vector3(1200, 0, 600), new THREE.Vector3(0, 0, 950),
+      new THREE.Vector3(-1100, 0, 850), new THREE.Vector3(-500, 0, 150),
+    ];
+    const caravel = new Ship('caravel', false, this.wind, terrain, this.particles);
+    caravel.position.copy(caravelRoute[0]);
+    caravel.quaternion.setFromEuler(new THREE.Euler(0, -1.2, 0));
+    caravel.gold = 340;
+    caravel.cargo = { sugar: 14, rum: 9, timber: 30 };
+    this.worldGroup.add(caravel.visual.group);
+    this.worldGroup.add(caravel.foam.mesh);
+    this.worldGroup.add(caravel.wake.mesh);
+    this.aiShips.push(new AIShip(caravel, caravelRoute, 'route'));
+
+    // галеон — флагман на якоре в гавани (для осмотра и проверки повреждений)
+    const galleon = new Ship('galleon', false, this.wind, terrain, this.particles);
+    const perp = new THREE.Vector3(-seaDir.z, 0, seaDir.x);
+    galleon.position.copy(this.spawnPos).addScaledVector(perp, 85).addScaledVector(seaDir, 45);
+    galleon.position.y = 0;
+    galleon.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z) + 0.7, 0));
+    galleon.crew = 70;
+    this.worldGroup.add(galleon.visual.group);
+    this.worldGroup.add(galleon.foam.mesh);
+    this.worldGroup.add(galleon.wake.mesh);
+    this.aiShips.push(new AIShip(galleon, [], 'anchored'));
 
     // военный патруль
     const patrol = [
@@ -374,7 +426,6 @@ export class Game {
     this.proving = true;
     this.pgModel = modelId;
     // штиль: ровный ветер и лёгкая зыбь (блокируется в updateWeather)
-    this.windTargetSpeed = 4.2;
     this.wind.speed = 4.2;
     SEA.amplitude = 0.42;
     const p = this.player;
@@ -425,7 +476,6 @@ export class Game {
     p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
     p.anchored = false;
     this.combat.aim.active = false;
-    this.windTargetSpeed = 6 + Math.random() * 3;
     this.pushMessage('Возврат к Пальмовой гавани');
   }
 
@@ -767,27 +817,41 @@ export class Game {
   }
 
   // ---------- погода ----------
+  /** Сглаженная амплитуда волн (море набирает волну с запаздыванием) */
+  private seaAmpSmooth = 1;
+  /** последний визуал погоды (облачность/солнце/туман/дождь) */
+  private weatherVis = { cloudiness: 0.35, sunDim: 1, fogMul: 1, rainI: 0 };
   private updateWeather(dt: number) {
     // полигон: чистое море, ровный слабый ветер — всегда
-    if (this.proving) {
-      this.windTargetSpeed = 4.2;
+    const calm = this.proving;
+    const vis = this.weather.update(dt, this.rig.camera.position, calm);
+    this.weatherVis = vis;
+    if (calm) {
       this.wind.speed += (4.2 - this.wind.speed) * Math.min(1, dt * 0.6);
       SEA.amplitude = 0.42;
-      return;
+      this.seaAmpSmooth = 0.42;
+      return vis;
     }
-    this.windTimer -= dt;
-    if (this.windTimer < 0) {
-      this.windTimer = 18 + Math.random() * 22;
-      this.windTargetSpeed = 3.5 + Math.random() * 9.5;
-    }
-    this.gustT += dt;
-    const gust = Math.sin(this.gustT * 0.5) * 0.9 + Math.sin(this.gustT * 1.7 + 2) * 0.5;
-    this.wind.speed += (this.windTargetSpeed + gust - this.wind.speed) * Math.min(1, dt * 0.3);
-    this.wind.from += dt * 0.008 * Math.sin(this.time * 0.037 + 1.3);
-    // амплитуда волн: 0.4 штиль .. waveHeight шторм (из настроек графики;
-    // 1.15 по умолчанию — гребни не накрывают палубу, борт не тонет)
+    this.wind.speed = this.weather.wind.speed;
+    this.wind.from = this.weather.wind.from;
+    // амплитуда волн от силы ветра (0.3 штиль .. волна шторма,
+    // ограничена настройкой графики waveHeight — палубу не топит);
+    // swell набирается/спадает с запаздыванием — как настоящее море
     const waveCap = this.settings.graphics.waveHeight;
-    SEA.amplitude = clamp(0.45 + (this.wind.speed - 3) * 0.085, 0.4, waveCap);
+    const ampTarget = clamp(0.32 + this.wind.speed * 0.052, 0.3, waveCap);
+    this.seaAmpSmooth += (ampTarget - this.seaAmpSmooth) * Math.min(1, dt * 0.22);
+    SEA.amplitude = this.seaAmpSmooth;
+    return vis;
+  }
+
+  /** Отладочный хук: задать погоду (E2E/телеметрия) */
+  debugSetWeather(mode: 'clear' | 'rain' | 'storm' | 'fog', windSpeed = -1, windDir = -1) {
+    this.settings = structuredClone(this.settings);
+    this.settings.weather.mode = mode;
+    if (windSpeed >= 0) this.settings.weather.windSpeed = windSpeed;
+    if (windDir >= 0) this.settings.weather.windDir = windDir;
+    this.weather.applySettings(this.settings.weather);
+    return this.settings.weather;
   }
 
   // ---------- кадр ----------
@@ -859,6 +923,17 @@ export class Game {
       furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
       sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
+      // погода (e2e/диагностика): режим, дождь, туман, молнии
+      weather: {
+        mode: this.weather.mode,
+        rain: this.weather.rainCount,
+        fogMul: +this.weatherVis.fogMul.toFixed(2),
+        cloud: +this.weatherVis.cloudiness.toFixed(2),
+        flash: +this.weather.flash.toFixed(2),
+        flashes: this.weather.flashes,
+        windDir: Math.round((this.wind.from * 180 / Math.PI + 360) % 360),
+        sunDim: +this.weatherVis.sunDim.toFixed(2),
+      },
       proving: this.proving ? 1 : 0,
       tgtDist: tgt ? +p.position.distanceTo(tgt.position).toFixed(1) : -1,
       tgtHull: tgt ? +clamp(tgt.hullHP / tgt.hullMax, 0, 1).toFixed(3) : -1,
@@ -912,20 +987,35 @@ export class Game {
     for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles);
     if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles);
 
+    // мелкие детали кораблей — только когда камера рядом (LOD)
+    const camPos = this.rig.camera.position;
+    const lodD = this.settings.graphics.detailLod;
+    this._v3.copy(this.player.position).add(this.shift);
+    this.setDetailLod(this.player, camPos, lodD);
+    for (const ai of this.aiShips) this.setDetailLod(ai.ship, camPos, lodD);
+    if (this.pgTarget) this.setDetailLod(this.pgTarget.ship, camPos, lodD);
+
     // системы
     this.combat.update(dt, this.time, waterHeightAt);
     this.particles.update(dt);
     this.gibs.update(dt);
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
 
-    // небо и свет
+    // небо и свет (+ погода: облачность, приглушение, вспышки молний)
     playerScene.copy(this.player.position).add(this.shift);
-    const { dayF } = this.sky.update(dt, this.time, this.rig.camera.position, playerScene, 0.42);
+    const wv = this.weatherVis;
+    this.sky.flash = this.weather.flash;
+    this.sky.setWeather(wv.sunDim, clamp((wv.fogMul - 1) / 2.4, 0, 1) * 0.85);
+    const { dayF } = this.sky.update(dt, this.time, this.rig.camera.position, playerScene, wv.cloudiness);
     const env = this.sky.environmentColors(dayF, 0);
-    const fogD = this.fogBase() * (1 + (1 - dayF) * 0.18);
+    const fogD = this.fogBase() * (1 + (1 - dayF) * 0.18) * wv.fogMul;
+    // молния вспыхивает и в блеске воды
+    env.sun.multiplyScalar(1 + this.weather.flash * 5);
     this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, fogD);
     (this.scene.fog as THREE.FogExp2).color.copy(env.fog);
     (this.scene.fog as THREE.FogExp2).density = fogD;
+    // дым относит реальным ветром
+    this.particles.setWind(this.wind.from, this.wind.speed);
     // реальное солнце — в материалы парусов (иначе «пузо» не заливается
     // светом и паруса читаются плоскими при любом ветре)
     {
@@ -970,6 +1060,7 @@ export class Game {
       rollRate: this.player.angular.z,
       nearLand: this.nearLand(),
       dayF,
+      rain: this.proving ? 0 : wv.rainI,
     });
 
     // сообщения
@@ -986,6 +1077,14 @@ export class Game {
   private _v1 = new THREE.Vector3();
   private _v2 = new THREE.Vector3();
   private _v3 = new THREE.Vector3();
+
+  /** Мелкие детали корабля — только когда камера рядом (LOD) */
+  private setDetailLod(ship: Ship, camPos: THREE.Vector3, maxDist: number) {
+    const d = ship.visual.detail;
+    if (!d) return;
+    this._v3.copy(ship.position).add(this.shift);
+    d.visible = camPos.distanceTo(this._v3) < maxDist;
+  }
 
   private nearLand(): boolean {
     for (const isl of this.world.islands) {
@@ -1025,7 +1124,16 @@ export class Game {
   private onResize = () => {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.rig.resize(window.innerWidth / window.innerHeight);
+    this.updateParticleScale();
   };
+
+  /** пикселей на метр для спрайтов частиц (зависит от буфера и fov) */
+  private updateParticleScale() {
+    const size = new THREE.Vector2();
+    this.renderer.getDrawingBufferSize(size);
+    const fovRad = (this.rig.camera.fov * Math.PI) / 180;
+    this.particles.setScale(size.y / (2 * Math.tan(fovRad / 2)));
+  }
 
   run() {
     this.lastFrame = performance.now();

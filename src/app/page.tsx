@@ -182,7 +182,7 @@ export default function Home() {
     }
     // корабли ИИ
     for (const s of hud.mapShips) {
-      ctx.fillStyle = s.surrendered ? '#e8e4d8' : s.kind === 'brig' ? '#c23b3b' : '#d8a03c';
+      ctx.fillStyle = s.surrendered ? '#e8e4d8' : ['brig', 'galleon', 'frigate'].includes(s.kind) ? '#c23b3b' : '#d8a03c';
       ctx.beginPath(); ctx.arc(px(s.x), pz(s.z), 4, 0, Math.PI * 2); ctx.fill();
     }
     // игрок
@@ -373,8 +373,9 @@ export default function Home() {
                   <span className="font-serif text-sm font-bold text-amber-200">🎯 Полигон</span>
                   <span className="text-[10px] text-stone-500">{hud.target.dist} м</span>
                 </div>
-                <div className="mb-1.5 flex gap-1">
-                  {([['sloop', 'Шлюп'], ['fluyt', 'Флейт'], ['brig', 'Бриг']] as const).map(([id, label]) => (
+                <div className="mb-1.5 grid grid-cols-4 gap-1">
+                  {([['sloop', 'Шлюп'], ['fluyt', 'Флейт'], ['brig', 'Бриг'], ['caravel', 'Каравелла'],
+                     ['pinnace', 'Пинасс'], ['cog', 'Когг'], ['galleon', 'Галеон'], ['frigate', 'Фрегат']] as const).map(([id, label]) => (
                     <button key={id}
                       onClick={() => act(gg => gg.pgSetModel(id))}
                       className={`pointer-events-auto flex-1 rounded border px-1 py-1 text-[10px] transition ${

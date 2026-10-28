@@ -10,6 +10,7 @@ export class AudioSys {
   private oceanGain!: GainNode;
   private windGain!: GainNode;
   private windFilter!: BiquadFilterNode;
+  private rainGain!: GainNode;
   private creakTimer = 0;
   private gullTimer = 6;
   enabled = false;
@@ -67,6 +68,21 @@ export class AudioSys {
     this.windGain.gain.value = 0.05;
     wind.connect(this.windFilter).connect(this.windGain).connect(this.master);
     wind.start();
+
+    // дождь (широкополосный шум, громкость — от интенсивности)
+    const rain = ctx.createBufferSource();
+    rain.buffer = this.noiseBuf;
+    rain.loop = true;
+    const rainF = ctx.createBiquadFilter();
+    rainF.type = 'highpass';
+    rainF.frequency.value = 2600;
+    const rainF2 = ctx.createBiquadFilter();
+    rainF2.type = 'lowpass';
+    rainF2.frequency.value = 9000;
+    this.rainGain = ctx.createGain();
+    this.rainGain.gain.value = 0;
+    rain.connect(rainF).connect(rainF2).connect(this.rainGain).connect(this.master);
+    rain.start();
 
     this.enabled = true;
   }
@@ -142,11 +158,53 @@ export class AudioSys {
     this.noiseBurst(0.15, 3000, 'highpass', 0.06);
   }
 
-  update(dt: number, opts: { windSpeed: number; speed: number; rollRate: number; nearLand: boolean; dayF: number }) {
+  /** Гром: раскат с задержкой по дистанции до разряда (м) */
+  thunder(dist = 200) {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const delay = dist / 343; // скорость звука
+    const a = 1 / (1 + dist / 500);
+    const t0 = ctx.currentTime + delay;
+    // раскат: низкий шум с медленным спадом + подголоски
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    src.playbackRate.value = 0.55;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(320, t0);
+    f.frequency.exponentialRampToValueAtTime(55, t0 + 2.6);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.85 * a, t0 + 0.06);
+    g.gain.exponentialRampToValueAtTime(0.28 * a, t0 + 0.9);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 3.2);
+    src.connect(f).connect(g).connect(this.master);
+    src.start(t0, Math.random() * 1.5);
+    src.stop(t0 + 3.4);
+    // раскатистое «эхо»-повтор
+    const src2 = ctx.createBufferSource();
+    src2.buffer = this.noiseBuf;
+    src2.loop = true;
+    src2.playbackRate.value = 0.4;
+    const f2 = ctx.createBiquadFilter();
+    f2.type = 'lowpass';
+    f2.frequency.value = 140;
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t0 + 0.7);
+    g2.gain.exponentialRampToValueAtTime(0.4 * a, t0 + 1.1);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t0 + 3.6);
+    src2.connect(f2).connect(g2).connect(this.master);
+    src2.start(t0 + 0.7, Math.random() * 1.5);
+    src2.stop(t0 + 3.8);
+  }
+
+  update(dt: number, opts: { windSpeed: number; speed: number; rollRate: number; nearLand: boolean; dayF: number; rain?: number }) {
     if (!this.ctx) return;
     this.windFilter.frequency.value = 500 + opts.windSpeed * 55;
     this.windGain.gain.value = 0.02 + Math.min(0.14, opts.windSpeed / 90 + opts.speed / 120);
     this.oceanGain.gain.value = 0.1 + Math.min(0.1, opts.speed / 90);
+    this.rainGain.gain.value = Math.min(0.22, (opts.rain ?? 0) * 0.22);
     // скрип при качке
     this.creakTimer -= dt;
     if (Math.abs(opts.rollRate) > 0.16 && this.creakTimer < 0) {

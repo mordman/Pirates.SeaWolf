@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { GameSettings, QualityPreset, ControlsSettings } from '@/game/core/settings';
-import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset } from '@/game/core/settings';
+import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode } from '@/game/core/settings';
+import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS } from '@/game/core/settings';
 
 // ============================================================
 // Экран настроек: Графика (пресеты, дальность, вода, тени),
@@ -10,11 +10,21 @@ import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPrese
 // сразу и сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'gameplay' | 'controls' | 'audio';
+type Tab = 'graphics' | 'weather' | 'gameplay' | 'controls' | 'audio';
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
 };
+
+const WEATHER_LABELS: Record<WeatherMode, string> = {
+  clear: '☀ Ясно', rain: '🌧 Дождь', storm: '⛈ Гроза', fog: '🌫 Туман',
+};
+
+/** Роза ветров: подпись направления (откуда дует) */
+function windDirLabel(deg: number): string {
+  const names = ['С', 'ССВ', 'СВ', 'ВСВ', 'В', 'ВЮВ', 'ЮВ', 'ЮЮВ', 'Ю', 'ЮЮЗ', 'ЮЗ', 'ЗЮЗ', 'З', 'ЗСЗ', 'СЗ', 'ССЗ'];
+  return names[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+}
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -114,7 +124,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
         <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
           <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
           <div className="flex gap-1">
-            {([['graphics', 'Графика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['weather', 'Погода'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-3 py-1 text-xs font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -168,6 +178,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     <option value={2}>Экономные (×8)</option>
                   </select>
                 </Row>
+                <Row label="Детализация вблизи" hint="дистанция показа мелких деталей кораблей: выбленки, якоря, порты">
+                  <Slider value={g.detailLod} min={100} max={420} step={10}
+                    onChange={v => update(d => { d.graphics.detailLod = v; })}
+                    format={v => `${v} м`} />
+                </Row>
                 <Row label="Качество пены" hint="слои шума и прожилки на гребнях">
                   <select value={g.foamQuality} onChange={e => update(d => { d.graphics.foamQuality = Number(e.target.value); })}
                     className={inputCls}>
@@ -200,6 +215,69 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   <Slider value={g.pixelRatio} min={1} max={2} step={0.25}
                     onChange={v => update(d => { d.graphics.pixelRatio = v; })}
                     format={v => `×${v.toFixed(2)}`} />
+                </Row>
+              </div>
+            </div>
+          )}
+
+          {tab === 'weather' && (
+            <div className="divide-y divide-stone-800/60">
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Погодные явления</div>
+                <div className="flex gap-1.5">
+                  {(Object.keys(WEATHER_LABELS) as WeatherMode[]).map(m => (
+                    <button key={m}
+                      onClick={() => update(d => {
+                        d.weather.mode = m;
+                        // рекомендуемый ветер для режима (можно поменять после)
+                        d.weather.windSpeed = WEATHER_PRESETS[m].windSpeed;
+                      })}
+                      className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${
+                        s.weather.mode === m
+                          ? 'border-amber-400 bg-amber-700/50 text-amber-100'
+                          : 'border-stone-700 bg-stone-900/60 text-stone-300 hover:border-amber-700'}`}>
+                      {WEATHER_LABELS[m]}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  Гроза — ливень, вспышки молний с раскатами грома; туман снижает видимость.
+                  На полигоне всегда чистое море.
+                </div>
+              </div>
+              <div className="py-2">
+                <Row label="Сила ветра" hint="от ветра зависит волнение моря и ход под парусами">
+                  <Slider value={s.weather.windSpeed} min={0} max={24} step={0.5}
+                    onChange={v => update(d => { d.weather.windSpeed = v; })}
+                    format={v => `${v.toFixed(1)} м/с`} />
+                </Row>
+                <Row label="Направление ветра" hint={`откуда дует: ${windDirLabel(s.weather.windDir)} (${s.weather.windDir}°)`}>
+                  <Slider value={s.weather.windDir} min={0} max={355} step={5}
+                    onChange={v => update(d => { d.weather.windDir = v; })}
+                    format={v => `${windDirLabel(v)} ${v}°`} />
+                </Row>
+              </div>
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Дым и огонь выстрелов</div>
+                <Row label="Видимость дыма" hint="полностью скрывает дым и вспышки">
+                  <input type="checkbox" checked={s.fx.smokeVisible}
+                    onChange={e => update(d => { d.fx.smokeVisible = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="Размер дыма" hint="диаметр клубов порохового дыма">
+                  <Slider value={s.fx.smokeSize} min={0.3} max={2.5} step={0.1}
+                    onChange={v => update(d => { d.fx.smokeSize = v; })}
+                    format={v => `×${v.toFixed(1)}`} />
+                </Row>
+                <Row label="Плотность дыма" hint="количество клубов у дул и в следе ядра">
+                  <Slider value={s.fx.smokeDensity} min={0} max={2} step={0.1}
+                    onChange={v => update(d => { d.fx.smokeDensity = v; })}
+                    format={v => `${Math.round(v * 100)}%`} />
+                </Row>
+                <Row label="Прозрачность дыма" hint="100% = еле заметный, 0% = плотный">
+                  <Slider value={s.fx.smokeTransparency} min={0} max={0.95} step={0.05}
+                    onChange={v => update(d => { d.fx.smokeTransparency = v; })}
+                    format={v => `${Math.round(v * 100)}%`} />
                 </Row>
               </div>
             </div>
