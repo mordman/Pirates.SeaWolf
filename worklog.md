@@ -99,3 +99,18 @@ Stage Summary:
 - Пена: гребни пятнистые двух масштабов с вариацией цвета; воротник у борта рваный с носовым буруном (исправлен баг оси).
 - Настройки: дальность, детализация воды, пена, высота волн, тени/разрешение, pixel ratio, переназначение клавиш, инверсия руля, громкость — всё применяется на лету, persist в localStorage.
 - Скриншоты: scripts/shots/v12_*, v13_*, v14_*, v15_sails_zoom.png; тесты: scripts/e2e_v6..v16.mjs
+
+---
+Task ID: 5
+Agent: main (Z.ai)
+Task: Фикс краша шейдера воды: THREE.WebGLProgram "ERROR 0:202 'patch' : Illegal use of reserved word" — фрагментный шейдер воды не компилировался, рендер падал на renderer.render (game.ts:771).
+
+Work Log:
+- Диагноз: в Task 4 (пятнистая пена) переменная в GLSL была названа `patch` — это ЗАРЕЗЕРВИРОВАННОЕ слово GLSL (квалификатор тесселляции). Chrome/ANGLE (Windows) строго отклоняет его как идентификатор → Fragment shader is not compiled → вся вода не рендерилась.
+- Water.ts: переименовано patch → foamPatch, patchM → foamPatchM (11 вхождений, логика шейдера не тронута). Проверены остальные шейдеры проекта (sky, wake, buildShip) на другие зарезервированные слова (sample/input/output/filter/buffer/shared) — чисто; совпадения только в TypeScript (audio.ts .buffer — не GLSL).
+- Верификация (agent-browser + VLM): игра грузится, консоль/ошибки страницы ПУСТЫ (ни одного WebGLProgram/Shader Error), телеметрия живая (y=−0.46 vs waterY=−0.44 — корабль идёт по волнам), скриншоты при foamQuality=2 и waveHeight=1.3 (шторм): VLM подтвердил — вода синяя с градиентом глубины, пена на гребнях ПЯТНИСТАЯ/рваная (не сплошная), корабль и палуба на месте. tsc/eslint по коду игры чистые (ошибки только в examples/ и skills/ — предсуществующие, вне игры).
+- Скриншоты: scripts/shots/v17_foam_iso.png, v17_foam_side.png; тест: scripts/e2e_v17.mjs (в нём исправить: agent-browser может стартовать на about:blank — сначала `open http://localhost:3000/`, потом reload).
+
+Stage Summary:
+- Шейдер воды снова компилируется на всех драйверах (включая строгий ANGLE/Windows): зарезервированное слово `patch` заменено на `foamPatch`/`foamPatchM` без изменения математики пены.
+- Вся функциональность Task 4 (пятнистая пена двух масштабов, «пустыни» и «кипящие» зоны) сохранена и визуально подтверждена.
