@@ -21,6 +21,21 @@ import { GameSettings, loadSettings } from './core/settings';
 
 export interface HudMessage { id: number; text: string; }
 
+/** Отчёт о состоянии мишени полигона (для панели мини-игры) */
+export interface TargetReport {
+  name: string;
+  modelId: string;
+  hullPct: number;
+  waterPct: number;
+  leakRate: number;
+  crew: number; maxCrew: number;
+  masts: { broken: boolean; hpPct: number }[];
+  holesBelow: number; holesAbove: number;
+  sinking: boolean; sunk: boolean;
+  dist: number;
+  returnFire: boolean;
+}
+
 export interface HudState {
   started: boolean;
   dead: boolean;
@@ -63,6 +78,8 @@ export interface HudState {
   mapPlayer: { x: number; z: number; h: number };
   fps: number;
   dayF: number;
+  proving: boolean;
+  target: TargetReport | null;
 }
 
 const CARGO_PRICES: Record<string, number> = { sugar: 24, rum: 46, timber: 9 };
@@ -99,6 +116,14 @@ export class Game {
   settings: GameSettings;         // графика/управление/звук (см. core/settings.ts)
   uiOpen = false;                 // открыт ли модальный экран (пауза ввода)
   paused = false;                 // отладка/E2E: заморозить физику (рендер идёт)
+
+  // ===== Полигон (мини-игра проверки повреждений) =====
+  proving = false;                // активен ли режим полигона
+  pgTarget: AIShip | null = null; // мишень на якоре
+  pgModel = 'fluyt';              // модель мишени
+  pgReturnFire = false;           // отвечает ли мишень огнём
+  private PG_ANCHOR = new THREE.Vector3(2300, 0, 2300); // чистая вода вдали от островов
+
   private msgId = 1;
   messages: HudMessage[] = [];
   private msgTtl: number[] = [];
@@ -278,6 +303,109 @@ export class Game {
     this.bus.on(GameEvents.MESSAGE, (p) => {
       this.pushMessage((p as { text: string }).text);
     });
+    this.bus.on(GameEvents.MAST_BROKEN, (p) => {
+      const d = (p as { target: Ship; pos: THREE.Vector3 });
+      this.audio.woodHit(distToPlayer(d.pos));
+      this.rig.addShake(0.35);
+      const who = d.target === this.player ? 'Наш корабль' : d.target.preset.name;
+      this.pushMessage(`${who}: мачта переломлена!`);
+    });
+  }
+
+  // ===== Полигон: чистое море + корабль-мишень на якоре =====
+  /** Мишень на траверзе ПРАВОГО борта игрока (курс игрока — восток, right = +Z) */
+  private pgTargetPos(): THREE.Vector3 {
+    return this.PG_ANCHOR.clone().add(new THREE.Vector3(0, 0, 165));
+  }
+
+  private spawnProvingTarget(modelId: string) {
+    this.removeProvingTarget();
+    const terrain = (x: number, z: number) => heightAt(x, z);
+    const ship = new Ship(modelId, false, this.wind, terrain, this.particles);
+    ship.position.copy(this.pgTargetPos());
+    ship.position.y = 0;
+    ship.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // параллельно игроку
+    ship.noSurrender = true;
+    this.worldGroup.add(ship.visual.group);
+    this.worldGroup.add(ship.foam.mesh);
+    this.worldGroup.add(ship.wake.mesh);
+    const ai = new AIShip(ship, [], 'anchored');
+    ai.returnFire = this.pgReturnFire;
+    this.pgTarget = ai;
+    this.combat.others.push(ship);
+  }
+
+  private removeProvingTarget() {
+    if (!this.pgTarget) return;
+    const s = this.pgTarget.ship;
+    const idx = this.combat.others.indexOf(s);
+    if (idx >= 0) this.combat.others.splice(idx, 1);
+    this.worldGroup.remove(s.visual.group);
+    this.worldGroup.remove(s.foam.mesh);
+    this.worldGroup.remove(s.wake.mesh);
+    s.dispose();
+    this.pgTarget = null;
+  }
+
+  startProving(modelId = 'fluyt') {
+    if (!this.started) this.start();
+    this.exitProving();
+    this.proving = true;
+    this.pgModel = modelId;
+    // штиль: ровный ветер и лёгкая зыбь (блокируется в updateWeather)
+    this.windTargetSpeed = 4.2;
+    this.wind.speed = 4.2;
+    SEA.amplitude = 0.42;
+    const p = this.player;
+    p.clearDamage();
+    p.position.copy(this.PG_ANCHOR); p.position.y = 0;
+    p.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // курс на восток
+    p.anchored = false;
+    p.ammo = { ball: 250, chain: 120, grape: 150, fire: 60 };
+    p.planks = 30;
+    this.combat.aim.active = false;
+    this.docked = false;
+    this.spawnProvingTarget(modelId);
+    this.pushMessage('Полигон: чистое море, мишень на якоре с правого борта');
+  }
+
+  pgSetModel(modelId: string) {
+    this.pgModel = modelId;
+    if (this.proving) this.spawnProvingTarget(modelId);
+  }
+
+  setPgReturnFire(on: boolean) {
+    this.pgReturnFire = on;
+    if (this.pgTarget) this.pgTarget.returnFire = on;
+  }
+
+  resetProvingTarget() {
+    if (!this.pgTarget) return;
+    const s = this.pgTarget.ship;
+    s.clearDamage();
+    s.position.copy(this.pgTargetPos());
+    s.position.y = 0;
+    s.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
+    this.player.ammo = { ball: 250, chain: 120, grape: 150, fire: 60 };
+    this.pushMessage('Мишень восстановлена, боезапас пополнен');
+  }
+
+  exitProving() {
+    this.removeProvingTarget();
+    this.proving = false;
+    this.pgReturnFire = false;
+    // вернуть игрока к гавани (как при возрождении)
+    const p = this.player;
+    p.clearDamage();
+    const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
+      new THREE.Vector3(this.world.islands[0].cx, 0, this.world.islands[0].cz)).setY(0).normalize();
+    const pos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 130);
+    p.position.copy(pos); p.position.y = 0;
+    p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
+    p.anchored = false;
+    this.combat.aim.active = false;
+    this.windTargetSpeed = 6 + Math.random() * 3;
+    this.pushMessage('Возврат к Пальмовой гавани');
   }
 
   pushMessage(text: string) {
@@ -484,6 +612,7 @@ export class Game {
   // ---------- столкновения кораблей ----------
   private shipCollisions() {
     const all = [this.player, ...this.aiShips.map(a => a.ship)];
+    if (this.pgTarget && !this.pgTarget.ship.sunk) all.push(this.pgTarget.ship);
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
         const a = all[i], b = all[j];
@@ -532,6 +661,7 @@ export class Game {
       canDock: false, canBoard: false, boardedName: null, docked: false,
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
+      proving: false, target: null,
     };
   }
 
@@ -589,10 +719,41 @@ export class Game {
     }));
     h.mapPlayer = { x: p.position.x, z: p.position.z, h: p.heading };
     h.fps = Math.round(this.fpsSmooth);
+    // полигон: отчёт о мишени
+    h.proving = this.proving;
+    if (this.proving && this.pgTarget) {
+      const t = this.pgTarget.ship;
+      h.target = {
+        name: t.preset.name,
+        modelId: t.preset.id,
+        hullPct: clamp(t.hullHP / t.hullMax, 0, 1),
+        waterPct: clamp(t.water / t.holdCap, 0, 1),
+        leakRate: t.leakRate,
+        crew: Math.round(t.crew), maxCrew: t.preset.maxCrew,
+        masts: t.mastFall.map((f, i) => ({
+          broken: f >= 0,
+          hpPct: clamp(t.mastHP[i] / t.mastMaxHP, 0, 1),
+        })),
+        holesBelow: t.hullHoles.filter(x => x.belowWL).length,
+        holesAbove: t.hullHoles.filter(x => !x.belowWL).length,
+        sinking: t.sinking, sunk: t.sunk,
+        dist: Math.round(t.position.distanceTo(p.position)),
+        returnFire: this.pgReturnFire,
+      };
+    } else {
+      h.target = null;
+    }
   }
 
   // ---------- погода ----------
   private updateWeather(dt: number) {
+    // полигон: чистое море, ровный слабый ветер — всегда
+    if (this.proving) {
+      this.windTargetSpeed = 4.2;
+      this.wind.speed += (4.2 - this.wind.speed) * Math.min(1, dt * 0.6);
+      SEA.amplitude = 0.42;
+      return;
+    }
     this.windTimer -= dt;
     if (this.windTimer < 0) {
       this.windTimer = 18 + Math.random() * 22;
@@ -628,9 +789,11 @@ export class Game {
       this.updateWeather(STEP);
       this.player.fixedStep(STEP, this.time);
       for (const ai of this.aiShips) ai.ship.fixedStep(STEP, this.time);
+      if (this.pgTarget) this.pgTarget.ship.fixedStep(STEP, this.time);
       for (const ai of this.aiShips) {
         ai.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
       }
+      if (this.pgTarget) this.pgTarget.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
       this.shipCollisions();
       this.accum -= STEP;
       steps++;
@@ -661,6 +824,7 @@ export class Game {
     const windPow = Math.pow(clamp(this.wind.speed / 8.0, 0.05, 1.6), 1.6);
     const attainable = p.preset.maxSpeed * 0.85 * Math.sqrt(clamp(Ship.polar(p.apparentWindAngle()) * windPow, 0, 1.5));
     const setTot = Math.min(p.sailFrac, attainable > 1.5 ? clamp(p.speed() / attainable, 0, 1) : 1);
+    const tgt = this.proving && this.pgTarget ? this.pgTarget.ship : null;
     dbg.__sea = {
       fps: this.fpsSmooth,
       x: p.position.x, y: p.position.y, z: p.position.z,
@@ -674,6 +838,17 @@ export class Game {
       furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
       sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
+      proving: this.proving ? 1 : 0,
+      tgtDist: tgt ? +p.position.distanceTo(tgt.position).toFixed(1) : -1,
+      tgtHull: tgt ? +clamp(tgt.hullHP / tgt.hullMax, 0, 1).toFixed(3) : -1,
+      tgtWater: tgt ? +clamp(tgt.water / tgt.holdCap, 0, 1).toFixed(3) : -1,
+      tgtMastsBroken: tgt ? tgt.mastFall.filter(f => f >= 0).length : -1,
+      tgtHoles: tgt ? tgt.hullHoles.length : -1,
+      tgtCrew: tgt ? tgt.crew : -1,
+      tgtSinking: tgt && tgt.sinking ? 1 : 0,
+      tgtSunk: tgt && tgt.sunk ? 1 : 0,
+      tgtShown: tgt ? tgt.crew3d.shown : -1,
+      crewShown: p.crew3d.shown,
     };
 
     // действия команды (R)
@@ -701,6 +876,7 @@ export class Game {
     // визуал кораблей
     this.player.updateVisual(this.time, dt, this.particles);
     for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles);
+    if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles);
 
     // системы
     this.combat.update(dt, this.time, waterHeightAt);
@@ -784,6 +960,7 @@ export class Game {
   }
 
   respawn() {
+    if (this.proving) this.exitProving();
     const p = this.player;
     p.hullHP = p.hullMax;
     p.sailHP = p.preset.sailHP;
@@ -791,7 +968,11 @@ export class Game {
     p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0;
     p.sinking = false; p.sinkT = 0; p.sunk = false;
     p.mastsBroken = 0; p.mastAnim = -1;
-    for (const m of p.visual.masts) { m.rotation.x = 0; m.position.y = 0; }
+    for (let i = 0; i < p.mastHP.length; i++) { p.mastHP[i] = p.mastMaxHP; p.mastFall[i] = -1; }
+    for (const m of p.visual.masts) { m.rotation.set(0, 0, 0); m.position.y = 0; }
+    for (const h of p.hullHoles) { p.visual.group.remove(h.mesh); h.mesh.geometry.dispose(); }
+    p.hullHoles = [];
+    p.leakBias = 0;
     p.visual.group.visible = true;
     p.velocity.set(0, 0, 0);
     p.angular.set(0, 0, 0);

@@ -8,10 +8,11 @@ import { clamp, mod2pi } from '../core/rng';
 // ИИ кораблей:
 //  - Торговец: маршрут -> бегство при атаке -> сдача в плен
 //  - Военный бриг: патруль; атакует игрока-агрессора
-// Состояния: route / flee / surrender / derelict / patrol / combat
+//  - Мишень полигона: стоит на якоре, опционально отвечает огнём
+// Состояния: route / flee / surrender / derelict / patrol / combat / anchored
 // ============================================================
 
-export type AIState = 'route' | 'flee' | 'surrender' | 'derelict' | 'patrol' | 'combat';
+export type AIState = 'route' | 'flee' | 'surrender' | 'derelict' | 'patrol' | 'combat' | 'anchored';
 
 export class AIShip {
   ship: Ship;
@@ -24,12 +25,19 @@ export class AIShip {
   private gunTimer = 6;
   private derelictTimer = 0;
   whiteFlag?: THREE.Mesh;
+  /** мишень полигона: отвечать ли огнём (иначе просто стоит на якоре) */
+  returnFire = false;
 
   constructor(ship: Ship, waypoints: THREE.Vector3[], state: AIState = 'route') {
     this.ship = ship;
     this.waypoints = waypoints;
     this.state = state;
     ship.onSurrender = (s) => this.onSurrender(s);
+    if (state === 'anchored') {
+      ship.anchored = true;
+      ship.sailTarget = 0;
+      ship.noSurrender = true;
+    }
   }
 
   onSurrender(s: Ship) {
@@ -79,6 +87,22 @@ export class AIShip {
     if (this.state === 'derelict') {
       this.derelictTimer -= dt;
       if (this.derelictTimer < 0) s.startSinking();
+      return;
+    }
+    if (this.state === 'anchored') {
+      // мишень полигона: стоит на якоре, экипаж на палубе;
+      // опционально — редкий ответный залп с упреждением
+      s.anchored = true;
+      s.sailTarget = 0;
+      s.rudderTarget = 0;
+      if (this.returnFire && !s.sinking && !player.sinking) {
+        this.gunTimer -= dt;
+        const dist = s.position.distanceTo(player.position);
+        if (this.gunTimer < 0 && dist < 340) {
+          this.gunTimer = 9 + Math.random() * 4;
+          combat.aiBallVolley(s, player);
+        }
+      }
       return;
     }
 
@@ -151,6 +175,7 @@ export class AIShip {
 
   /** Игрок выстрелил рядом/попал — реакция */
   onPlayerAggression(nearShips: AIShip[]) {
+    if (this.state === 'anchored') return; // мишень полигона не убегает
     if (this.state === 'route' && !this.ship.surrendered) {
       this.state = 'flee';
     }

@@ -12,6 +12,21 @@ import { GameEvents } from '../core/events';
 
 export type AmmoType = 'ball' | 'chain' | 'grape' | 'fire';
 
+interface HitInfo {
+  mast: number;      // -1 = корпус, иначе индекс мачты
+  lp: THREE.Vector3; // точка попадания в СВЯЗНЫХ координатах цели
+}
+
+/** Расстояние от точки (px,pz) до отрезка (ax,az)-(bx,bz) в плоскости XZ */
+function distPointSeg2D(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+  const dx = bx - ax, dz = bz - az;
+  const len2 = dx * dx + dz * dz;
+  let t = len2 > 1e-9 ? ((px - ax) * dx + (pz - az) * dz) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + dx * t, cz = az + dz * t;
+  return Math.hypot(px - cx, pz - cz);
+}
+
 export const AMMO_INFO: Record<AmmoType, { name: string; short: string; muzzle: number; dmgHull: number; dmgSail: number; dmgCrew: number; pellets: number; drag: number; fireChance: number }> = {
   ball:  { name: 'Ядро',            short: 'ЯДР',  muzzle: 175, dmgHull: 15, dmgSail: 2,  dmgCrew: 0.6, pellets: 1, drag: 0.02, fireChance: 0.02 },
   chain: { name: 'Книппель',        short: 'КНП',  muzzle: 150, dmgHull: 3,  dmgSail: 24, dmgCrew: 0.4, pellets: 1, drag: 0.05, fireChance: 0 },
@@ -22,10 +37,12 @@ export const AMMO_INFO: Record<AmmoType, { name: string; short: string; muzzle: 
 interface Projectile {
   active: boolean;
   pos: THREE.Vector3;
+  prev: THREE.Vector3;   // позиция в прошлый кадр — swept-коллизии с мачтами
   vel: THREE.Vector3;
   type: AmmoType;
   shooter: Ship;
   age: number;
+  trailT: number;        // накопитель дымного следа (ядро видно в полёте)
 }
 
 export interface AimPublicState {
@@ -66,14 +83,14 @@ export class CombatSystem {
     const nGuns = player.visual.gunsPort.length + player.visual.gunsStarboard.length;
     for (let i = 0; i < nGuns; i++) this.reloads.push(0);
 
-    // пул ядер
-    const sph = new THREE.SphereGeometry(0.16, 6, 5);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.55, metalness: 0.7 });
-    this.projMesh = new THREE.InstancedMesh(sph, mat, 96);
+    // пул ядер (заметные тёмные шары — видно в полёте)
+    const sph = new THREE.SphereGeometry(0.19, 8, 6);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x17171b, roughness: 0.5, metalness: 0.75 });
+    this.projMesh = new THREE.InstancedMesh(sph, mat, 128);
     this.projMesh.frustumCulled = false;
     this.projMesh.count = 0;
-    for (let i = 0; i < 96; i++) {
-      this.projectiles.push({ active: false, pos: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0 });
+    for (let i = 0; i < 128; i++) {
+      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0 });
     }
 
     // траектория: цепочка ярких точек-трассеров
@@ -211,9 +228,11 @@ export class CombatSystem {
       if (!pr) break;
       pr.active = true;
       pr.pos.copy(this.muzzleWorld);
+      pr.prev.copy(this.muzzleWorld);
       pr.type = this.ammo;
       pr.shooter = ship;
       pr.age = 0;
+      pr.trailT = 0;
       const spread = this.ammo === 'grape' ? 0.035 : 0.008;
       const dir = this.aimDir.clone();
       dir.x += (Math.random() - 0.5) * spread * 2;
@@ -223,8 +242,10 @@ export class CombatSystem {
       pr.vel.copy(dir).multiplyScalar(info.muzzle * (0.94 + Math.random() * 0.12));
       pr.vel.add(ship.velocity);
     }
-    // вспышка и дым
-    this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z, 0, 0.5, 0, 0.1, 0.7, 2, 0.8, -4);
+    // вспышка выстрела + пороховой дым
+    this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z,
+      this.aimDir.x * 9, 1.2, this.aimDir.z * 9, 0.14, 1.5, 2, 2.2, -1.5);
+    this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z, 0, 0.5, 0, 0.1, 0.7, 2, 0.1, 0.7);
     for (let s = 0; s < 7; s++) {
       this.particles.smoke(
         this.muzzleWorld.x + this.aimDir.x * s * 0.8,
@@ -245,10 +266,12 @@ export class CombatSystem {
     if (!pr) return;
     pr.active = true;
     pr.pos.copy(shooter.position).addScaledVector(dirTo, shooter.preset.beam * 0.6);
+    pr.prev.copy(pr.pos);
     pr.pos.y += 1.2;
     pr.type = 'grape';
     pr.shooter = shooter;
     pr.age = 0;
+    pr.trailT = 0;
     pr.vel.copy(dirTo).multiplyScalar(110).add(shooter.velocity);
     this.emit(GameEvents.CANNON_FIRED, { pos: pr.pos.clone(), power: 0.6 });
   }
@@ -261,17 +284,18 @@ export class CombatSystem {
     to.normalize();
     const flight = dist / 165;
     const aim = target.position.clone().addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
-    const guns = aim.x * 0 + 1; // залп всем бортом в сторону цели
-    const n = Math.min(3, guns + 1);
+    const n = 3; // бортовой залп из 3 ядер
     for (let i = 0; i < n; i++) {
       const pr = this.projectiles.find(q => !q.active);
       if (!pr) break;
       pr.active = true;
       pr.pos.copy(shooter.position).addScaledVector(aim, shooter.preset.beam * 0.55);
+      pr.prev.copy(pr.pos);
       pr.pos.y += 1.0;
       pr.type = 'ball';
       pr.shooter = shooter;
       pr.age = 0;
+      pr.trailT = 0;
       const dir = aim.clone();
       dir.x += (Math.random() - 0.5) * 0.05;
       dir.y += 0.04 + (Math.random() - 0.5) * 0.03;
@@ -302,11 +326,19 @@ export class CombatSystem {
       if (!pr.active) continue;
       pr.age += dt;
       const info = AMMO_INFO[pr.type];
+      pr.prev.copy(pr.pos);
       // интеграция с сопротивлением
       const dragF = Math.exp(-info.drag * dt * 3);
       pr.vel.multiplyScalar(dragF);
       pr.vel.y -= 9.81 * dt;
       pr.pos.addScaledVector(pr.vel, dt);
+
+      // дымный след — ядро видно в полёте (кроме картечи — её дробин много)
+      pr.trailT += dt;
+      if (pr.trailT > 0.085 && pr.type !== 'grape') {
+        pr.trailT = 0;
+        this.particles.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.12, 0, 0.5, 0.6);
+      }
 
       // вода
       const wy = waterHeight(pr.pos.x, pr.pos.z, time);
@@ -316,14 +348,15 @@ export class CombatSystem {
         this.emit(GameEvents.PROJECTILE_SPLASH, { pos: pr.pos.clone() });
         continue;
       }
-      // цели
-      let hit = false;
+      // цели: мачты проверяем ПЕРВЫМИ (рангоут перекрывает корпус),
+      // корпус — сегментом от prev до pos (быстрое ядро не «проскакивает»)
+      let hit: HitInfo | null = null;
       const targets: Ship[] = pr.shooter === this.player ? this.others : [this.player];
       for (const t of targets) {
         if (t.sunk) continue;
-        if (this.hitsShip(pr, t)) {
-          this.applyHit(pr, t, info);
-          hit = true;
+        hit = this.hitTest(pr, t);
+        if (hit) {
+          this.applyHit(pr, t, info, hit);
           break;
         }
       }
@@ -348,31 +381,81 @@ export class CombatSystem {
     }
   }
 
-  private hitsShip(pr: Projectile, t: Ship): boolean {
-    // переход в связные координаты цели
-    const inv = new THREE.Quaternion().copy(t.quaternion).invert();
-    const lp = new THREE.Vector3().subVectors(pr.pos, t.position).applyQuaternion(inv);
+  private lprev = new THREE.Vector3();
+  private lcur = new THREE.Vector3();
+  private invQ = new THREE.Quaternion();
+
+  /** Проверка попадания: мачты (стоячие, swept) → корпус */
+  private hitTest(pr: Projectile, t: Ship): HitInfo | null {
+    this.invQ.copy(t.quaternion).invert();
+    this.lprev.subVectors(pr.prev, t.position).applyQuaternion(this.invQ);
+    this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
+
+    // --- мачты: вертикальный цилиндр в XZ, путь ядра — отрезок prev→pos ---
+    const masts = t.visual.masts;
+    for (let i = 0; i < masts.length; i++) {
+      if (t.mastFall[i] >= 0) continue; // сломанная/падающая не ловит снаряды
+      const mz = masts[i].position.z;
+      const h = ((masts[i].userData.height as number) || 20) - t.preset.draft * 0.3;
+      const d = distPointSeg2D(0, mz, this.lprev.x, this.lprev.z, this.lcur.x, this.lcur.z);
+      if (d < 0.8 && Math.max(this.lprev.y, this.lcur.y) > 0.7
+        && Math.min(this.lprev.y, this.lcur.y) < h + 0.4) {
+        return { mast: i, lp: this.lcur.clone() };
+      }
+    }
+
+    // --- корпус (бокс в связных координатах) ---
     const L = t.preset.length, B = t.preset.beam;
-    return Math.abs(lp.z) < L * 0.52 && Math.abs(lp.x) < B * 0.62 && lp.y > -t.preset.draft * 0.8 && lp.y < t.preset.freeboard + t.preset.length * 0.35;
+    const c = this.lcur;
+    if (Math.abs(c.z) < L * 0.52 && Math.abs(c.x) < B * 0.62
+      && c.y > -t.preset.draft * 0.8 && c.y < t.preset.freeboard + L * 0.35) {
+      return { mast: -1, lp: c.clone() };
+    }
+    return null;
   }
 
-  private applyHit(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType]) {
+  private applyHit(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType], hit: HitInfo) {
     const amount = 0.75 + Math.random() * 0.5;
-    t.applyDamage({
-      kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
-      amount: info.dmgHull * amount,
-      hitPoint: pr.pos.clone(),
-    });
-    if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
-    if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount * 2 });
-    if (pr.type === 'fire') t.applyDamage({ kind: 'fire', amount: info.dmgHull * 0.4 });
-    // щепки и дым
-    for (let i = 0; i < 5; i++) {
-      this.particles.spawn(pr.pos.x, pr.pos.y, pr.pos.z,
-        (Math.random() - 0.5) * 6, 2 + Math.random() * 4, (Math.random() - 0.5) * 6,
-        0.7, 0.28, 0, 0.6, 10);
+    const P = this.particles;
+    if (hit.mast >= 0) {
+      // --- попадание в РАНГОУТ: мачта трещит и ломается ---
+      // книппель — специализированный «обрыватель» такелажа: 1 попадание
+      // почти всегда калечит мачту, ядро — за 2-3
+      const dmg = pr.type === 'chain' ? 30 + Math.random() * 12
+        : pr.type === 'ball' ? 11 + Math.random() * 8
+        : pr.type === 'fire' ? 6 : 1.6;
+      const broke = t.damageMast(hit.mast, dmg);
+      if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
+      else if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount });
+      // щепа летит вдоль мачты
+      for (let i = 0; i < 9; i++) {
+        P.spawn(pr.pos.x, pr.pos.y + i * 0.35, pr.pos.z,
+          (Math.random() - 0.5) * 7, 2 + Math.random() * 5, (Math.random() - 0.5) * 7,
+          0.8, 0.3, 0, 0.6, 10);
+      }
+      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 1.4, 0, 1.6, 2.2);
+      if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
+    } else {
+      // --- попадание в КОРПУС: пробоина, у ватерлинии/ниже — течь ---
+      // (порог 0.6 м: при качке «у самой воды» дыры также дают течь)
+      const belowWL = hit.lp.y < 0.6;
+      t.applyDamage({
+        kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
+        amount: info.dmgHull * amount,
+        hitPoint: pr.pos.clone(),
+      });
+      if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
+      if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount * 2 });
+      // декаль пробоины (ядро и зажигательное)
+      if (pr.type === 'ball' || pr.type === 'fire') t.addHole(hit.lp, belowWL);
+      // щепки и дым
+      for (let i = 0; i < 6; i++) {
+        P.spawn(pr.pos.x, pr.pos.y, pr.pos.z,
+          (Math.random() - 0.5) * 6, 2 + Math.random() * 4, (Math.random() - 0.5) * 6,
+          0.7, 0.28, 0, 0.6, 10);
+      }
+      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 1.2, 0, 1.4, 2.0);
     }
-    this.particles.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 1.2, 0, 1.4, 2.0);
     this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
   }
 

@@ -247,6 +247,13 @@ export default function Home() {
             >
               ⚓ Поднять флаг
             </button>
+            <button
+              onClick={() => { gameRef.current?.startProving('fluyt'); }}
+              className="pointer-events-auto mt-2 rounded-lg border border-stone-500 bg-gradient-to-b from-stone-600 to-stone-800 px-8 py-2 font-serif text-sm font-bold text-stone-100 shadow-lg transition hover:from-stone-500 hover:to-stone-700 active:scale-95"
+            >
+              🎯 Полигон разрушений
+            </button>
+            <p className="mt-2 text-[11px] text-stone-500">Чистое море · мишень на якоре · проверка урона</p>
           </div>
         </div>
       )}
@@ -357,6 +364,75 @@ export default function Home() {
               <div className="mt-1 text-[10px] text-stone-500">Камера: {hud.cameraLabel} (C)</div>
             </Panel>
           </div>
+
+          {/* ---- панель полигона (право, под компасом) ---- */}
+          {hud.proving && hud.target && (
+            <div className="absolute right-3 top-40 w-64">
+              <Panel className="p-3">
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <span className="font-serif text-sm font-bold text-amber-200">🎯 Полигон</span>
+                  <span className="text-[10px] text-stone-500">{hud.target.dist} м</span>
+                </div>
+                <div className="mb-1.5 flex gap-1">
+                  {([['sloop', 'Шлюп'], ['fluyt', 'Флейт'], ['brig', 'Бриг']] as const).map(([id, label]) => (
+                    <button key={id}
+                      onClick={() => act(gg => gg.pgSetModel(id))}
+                      className={`pointer-events-auto flex-1 rounded border px-1 py-1 text-[10px] transition ${
+                        hud.target!.modelId === id
+                          ? 'border-amber-400 bg-amber-900/60 text-amber-100'
+                          : 'border-stone-700 bg-stone-900/70 text-stone-300 hover:border-stone-500'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mb-1.5">
+                  <button
+                    onClick={() => act(gg => gg.setPgReturnFire(!hud.target!.returnFire))}
+                    className={`pointer-events-auto w-full rounded border px-2 py-1 text-[10px] transition ${
+                      hud.target.returnFire
+                        ? 'border-red-500 bg-red-950/60 text-red-200'
+                        : 'border-stone-700 bg-stone-900/70 text-stone-300 hover:border-stone-500'}`}>
+                    {hud.target.returnFire ? '🔥 Мишень отвечает огнём' : 'Мишень не стреляет'}
+                  </button>
+                </div>
+                <div className="space-y-1 text-[11px]">
+                  <div className="flex justify-between"><span className="text-stone-400">Корпус</span>
+                    <span className={hud.target.hullPct < 0.35 ? 'text-red-400 font-bold' : ''}>{Math.round(hud.target.hullPct * 100)}%</span></div>
+                  <Bar pct={hud.target.hullPct} color={hud.target.hullPct < 0.35 ? 'bg-red-500' : 'bg-emerald-600'} />
+                  <div className="flex justify-between"><span className="text-stone-400">Трюм (вода)</span>
+                    <span className={hud.target.waterPct > 0.4 ? 'text-red-400 font-bold' : 'text-sky-300'}>{Math.round(hud.target.waterPct * 100)}%</span></div>
+                  <Bar pct={hud.target.waterPct} color="bg-sky-500" />
+                  <div className="flex justify-between"><span className="text-stone-400">Течь</span>
+                    <span>{hud.target.leakRate.toFixed(2)} м³/с</span></div>
+                  <div className="flex justify-between"><span className="text-stone-400">Мачты</span>
+                    <span className="flex gap-1">
+                      {hud.target.masts.map((m, i) => (
+                        <span key={i} className={m.broken ? 'text-red-400 font-bold' : m.hpPct < 0.7 ? 'text-amber-300' : 'text-emerald-400'}>
+                          {m.broken ? '✕' : '▮'}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  <div className="flex justify-between"><span className="text-stone-400">Пробоины</span>
+                    <span>{hud.target.holesBelow} под ВЛ / {hud.target.holesAbove} над</span></div>
+                  <div className="flex justify-between"><span className="text-stone-400">Экипаж</span>
+                    <span>{hud.target.crew} / {hud.target.maxCrew}</span></div>
+                  {hud.target.sinking && <div className="text-center font-bold text-red-400">МИШЕНЬ ТОНЕТ!</div>}
+                  {hud.target.sunk && <div className="text-center font-bold text-stone-400">Затонула</div>}
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-1">
+                  <button onClick={() => act(gg => gg.resetProvingTarget())}
+                    className="pointer-events-auto rounded border border-emerald-700 bg-emerald-950/50 px-2 py-1 text-[10px] text-emerald-200 transition hover:bg-emerald-900/60">
+                    ⟳ Восстановить
+                  </button>
+                  <button onClick={() => act(gg => gg.exitProving())}
+                    className="pointer-events-auto rounded border border-stone-600 bg-stone-900/60 px-2 py-1 text-[10px] text-stone-200 transition hover:bg-stone-800">
+                    ✕ Выйти
+                  </button>
+                </div>
+              </Panel>
+            </div>
+          )}
 
           {/* ---- прицел ---- */}
           {hud.aiming && (

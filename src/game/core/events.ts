@@ -25,6 +25,7 @@ export const GameEvents = {
   PROJECTILE_HIT: 'projectile:hit',
   PROJECTILE_SPLASH: 'projectile:splash',
   SHIP_DAMAGED: 'ship:damaged',
+  MAST_BROKEN: 'ship:mast-broken',
   SHIP_SURRENDER: 'ship:surrender',
   SHIP_SUNK: 'ship:sunk',
   PLAYER_DOCKED: 'player:docked',

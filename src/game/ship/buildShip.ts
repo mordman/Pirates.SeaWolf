@@ -76,6 +76,7 @@ interface SailInfo {
   furl: number;                   // текущее рифление 0..1 (анимируется, 1 = убран)
   square: boolean;                // квадратный парус (рея брасопится)
   braceAngle: number;             // текущий угол брасопки (рад)
+  mastIndex: number;              // мачта-носитель (падает вместе с ней)
 }
 
 // ---------- шейдер паруса ----------
@@ -212,7 +213,7 @@ function flagMesh(kind: 'pirate' | 'merchant' | 'navy'): { mesh: THREE.Mesh; mat
 }
 
 // ---------- корпус по шпангоутам ----------
-function hullProfile(t: number, P: ShipPreset) {
+export function hullProfile(t: number, P: ShipPreset) {
   // t: 0 корма -> 1 нос. Полуширина, осадка, высота фальшборта
   const B = P.beam / 2;
   let w: number;
@@ -666,16 +667,17 @@ export function buildShip(P: ShipPreset): ShipVisual {
     const mesh = new THREE.Mesh(g, mat);
     const y = md.h * level - P.draft * 0.3;
     // поворотная группа: ось вращения — мачта (брасопка рея по ветру)
+    // рея+парус — потомок МАЧТЫ: сломанная мачта валится вместе с ними
     const pivot = new THREE.Group();
-    pivot.position.set(0, y + 0.05, md.z);
+    pivot.position.set(0, y + 0.05, 0);
     // рея
     const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, width * 1.04, 5), woodMat);
     yard.rotation.z = Math.PI / 2;
     pivot.add(yard);
     mesh.position.set(0, 0, -0.25);
     pivot.add(mesh);
-    group.add(pivot);
-    sails.push({ mesh, mat, brace: pivot, setAt, furl: 1, square: true, braceAngle: 0 });
+    masts[mastIndex].add(pivot);
+    sails.push({ mesh, mat, brace: pivot, setAt, furl: 1, square: true, braceAngle: 0, mastIndex });
   };
   if (P.masts === 2) {
     addSquareSail(0, 0.66, L * 0.3, L * 0.16, 0.62);   // фок
@@ -722,22 +724,23 @@ export function buildShip(P: ShipPreset): ShipVisual {
     g.computeVertexNormals();
     const mat = sailMaterial(P.colors.sail);
     const mesh = new THREE.Mesh(g, mat);
-    mesh.position.copy(head);
+    mesh.position.set(head.x, head.y, head.z - mastZ);
     mesh.rotation.y = Math.PI / 2; // локальный Z (пузо) -> мир X (борт)
     mesh.frustumCulled = false;
-    group.add(mesh);
-    sails.push({ mesh, mat, setAt, furl: 1, square: false, braceAngle: 0 });
+    masts[0].add(mesh); // потомок фок-мачты — падает вместе с ней
+    sails.push({ mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex: 0 });
   };
   const foreTop = mastDefs[0];
   addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
   addJib(new THREE.Vector3(bowspritTip.x * 0.55, bowspritTip.y - (bowspritTip.y - P.freeboard * 0.72) * 0.45, bowspritTip.z - L * 0.1),
     new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
 
-  // флаг на топе грот-мачты
-  const mainMast = mastDefs[P.masts === 2 ? 1 : 1];
+  // флаг на топе грот-мачты (потомок мачты — валится вместе с ней)
+  const mainMastIdx = 1; // грот-мачта и у 2-, и у 3-мачтовых
+  const mainMast = mastDefs[mainMastIdx];
   const { mesh: flag, mat: flagMat } = flagMesh(P.flagKind);
-  flag.position.set(0.05, mainMast.h - P.draft * 0.3 - 0.4, mainMast.z);
-  group.add(flag);
+  flag.position.set(0.05, mainMast.h - P.draft * 0.3 - 0.4, 0);
+  masts[mainMastIdx].add(flag);
 
   // пушки по бортам
   const gunsPort: THREE.Object3D[] = [];
