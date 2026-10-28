@@ -16,7 +16,8 @@ export interface IslandDef {
 
 export const WORLD_SEED = 20261027;
 
-const ISLANDS: IslandDef[] = [
+// 8 «рукописных» островов (порт + ориентиры) — их индексы используют животные
+const BASE_ISLANDS: IslandDef[] = [
   { cx: 450, cz: 350, r: 240, maxH: 26, type: 'port', name: 'Пальмовая гавань', discovered: false },
   { cx: -650, cz: 500, r: 175, maxH: 13, type: 'jungle', name: 'Зелёный атолл', discovered: false },
   { cx: -520, cz: -700, r: 85, maxH: 30, type: 'rock', name: 'Скала Морского Дьявола', discovered: false },
@@ -26,6 +27,43 @@ const ISLANDS: IslandDef[] = [
   { cx: -1050, cz: 1150, r: 75, maxH: 24, type: 'rock', name: 'Клык', discovered: false },
   { cx: 250, cz: -1400, r: 185, maxH: 11, type: 'atoll', name: 'Плёс', discovered: false },
 ];
+
+/** Процедурная генерация архипелага: детерминированно по сиду —
+ *  кольцом вокруг порта, с минимальными проливами между островами.
+ *  Базовые острова не трогаем (животные/порт привязаны к индексам). */
+function generateIslands(): IslandDef[] {
+  const rng = new RNG(WORLD_SEED + 9173);
+  const names = [
+    'Остров Черепа', 'Мыс Багровой Луны', 'Скалы Трёх Братьев', 'Лагуна Сирен',
+    'Кайманов ключ', 'Затерянный риф', 'Бухта Повешенного', 'Остров Гвоздей',
+    'Перьевой атолл', 'Голый риф', 'Отмель Мёртвого Якоря', 'Тихая банка',
+  ];
+  const pool = [...names];
+  const out: IslandDef[] = [];
+  let guard = 0;
+  while (out.length < 11 && guard++ < 600) {
+    const a = rng.range(0, Math.PI * 2);
+    const d = rng.range(1000, 2850);
+    const cx = Math.cos(a) * d;
+    const cz = Math.sin(a) * d * 0.82; // мир чуть шире по X — под карту 640×520
+    if (Math.abs(cx) > 2850 || Math.abs(cz) > 2250) continue;
+    const roll = rng.next();
+    const type: IslandDef['type'] = roll < 0.5 ? 'jungle' : roll < 0.78 ? 'rock' : 'atoll';
+    const r = rng.range(85, 230);
+    // проливы не уже 520 м между берегами
+    let ok = true;
+    for (const isl of [...BASE_ISLANDS, ...out]) {
+      if (Math.hypot(cx - isl.cx, cz - isl.cz) < isl.r + r + 520) { ok = false; break; }
+    }
+    if (!ok) continue;
+    const maxH = type === 'rock' ? rng.range(18, 34) : type === 'jungle' ? rng.range(10, 26) : rng.range(6, 11);
+    const name = pool.length ? pool.splice(Math.floor(rng.next() * pool.length), 1)[0] : `Безымянный риф ${out.length + 1}`;
+    out.push({ cx: Math.round(cx), cz: Math.round(cz), r: Math.round(r), maxH: Math.round(maxH), type, name, discovered: false });
+  }
+  return out;
+}
+
+export const ISLANDS: IslandDef[] = [...BASE_ISLANDS, ...generateIslands()];
 
 /** Высота суши в мировой точке. Открытое море = -14 (глубина), суша > 0 */
 export function heightAt(x: number, z: number): number {

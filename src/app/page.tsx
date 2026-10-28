@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { Game, HudState } from '@/game/game';
 import type { AmmoType } from '@/game/combat/combat';
 import SettingsPanel from './SettingsPanel';
-import { ENCYCLOPEDIA } from '@/game/ship/encyclopedia';
+import { ENCYCLOPEDIA, type ShipEntry } from '@/game/ship/encyclopedia';
 import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings } from '@/game/core/settings';
 
 // ============================================================
@@ -68,6 +68,218 @@ function WindCompass({ hud }: { hud: HudState }) {
         <span className="text-amber-100 font-semibold">{hud.clock}</span>
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// МИНИ-КАРТА: круглый радар вокруг корабля (острова, суда, ветер)
+// ============================================================
+function MiniMap({ hud }: { hud: HudState }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const ctx = cv.getContext('2d')!;
+    const S = cv.width;
+    const c = S / 2;
+    const RANGE = 900;                       // метров от центра до края
+    const scale = c / RANGE;
+    ctx.clearRect(0, 0, S, S);
+    // морской фон + картушка
+    ctx.save();
+    ctx.beginPath(); ctx.arc(c, c, c - 2, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = '#0c242e';
+    ctx.fillRect(0, 0, S, S);
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    for (let r = RANGE / 3; r <= RANGE; r += RANGE / 3) {
+      ctx.beginPath(); ctx.arc(c, c, r * scale, 0, Math.PI * 2); ctx.stroke();
+    }
+    const px = (x: number) => c + (x - hud.mapPlayer.x) * scale;
+    const pz = (z: number) => c + (z - hud.mapPlayer.z) * scale;
+    // острова: открытые — в цвете, неизвестные — пунктиром
+    for (const isl of hud.mapIslands) {
+      const ix = px(isl.x), iz = pz(isl.z);
+      const r = Math.max(3, isl.r * scale);
+      if (ix < -r || ix > S + r || iz < -r || iz > S + r) continue;
+      if (!isl.discovered) {
+        ctx.strokeStyle = 'rgba(220,200,150,0.28)';
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
+      const grad = ctx.createRadialGradient(ix, iz, r * 0.2, ix, iz, r);
+      grad.addColorStop(0, '#4a7a3a');
+      grad.addColorStop(0.75, '#c9b26a');
+      grad.addColorStop(1, '#1d5d6e');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.fill();
+    }
+    // корабли ИИ: военные — красные, торговцы — янтарные, сдавшиеся — белые
+    for (const s of hud.mapShips) {
+      const sx = px(s.x), sz = pz(s.z);
+      if (Math.hypot(sx - c, sz - c) > c - 5) continue;
+      ctx.fillStyle = s.surrendered ? '#e8e4d8' : s.cat === 'war' ? '#c23b3b' : '#d8a03c';
+      ctx.beginPath(); ctx.arc(sx, sz, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    // игрок — носом по курсу (курс 0 = +Z = вниз карты)
+    ctx.save();
+    ctx.translate(c, c);
+    ctx.rotate(Math.PI - hud.mapPlayer.h);
+    ctx.fillStyle = '#7dd3fc';
+    ctx.beginPath();
+    ctx.moveTo(0, -7); ctx.lineTo(5, 6); ctx.lineTo(0, 3); ctx.lineTo(-5, 6);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // ветер: стрелка по ободу (куда ДУЕТ)
+    const wa = ((hud.windFromDeg + 180) % 360) * Math.PI / 180;
+    const wx = c + Math.sin(wa) * (c - 13), wy = c - Math.cos(wa) * (c - 13);
+    ctx.save();
+    ctx.translate(wx, wy);
+    ctx.rotate(wa);
+    ctx.fillStyle = 'rgba(125,211,252,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(0, -6); ctx.lineTo(4, 3); ctx.lineTo(-4, 3);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // север
+    ctx.fillStyle = '#e8c87a';
+    ctx.font = 'bold 10px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('С', c, 12);
+  }, [hud]);
+  return (
+    <canvas ref={ref} width={168} height={168}
+      className="rounded-full border-2 border-amber-900/60 bg-[#0c242e] shadow-lg shadow-black/50" />
+  );
+}
+
+// ============================================================
+// 3D-ПРОСМОТР МОДЕЛИ КОРАБЛЯ (энциклопедия): автоповорот + драг
+// ============================================================
+function ShipViewer3D({ presetId }: { presetId: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    let disposed = false;
+    let raf = 0;
+    let renderer: import('three').WebGLRenderer | null = null;
+    let visual: import('@/game/ship/buildShip').ShipVisual | null = null;
+    let three: typeof import('three') | null = null;
+    (async () => {
+      three = await import('three');
+      const bs = await import('@/game/ship/buildShip');
+      if (disposed || !ref.current || !three) return;
+      const T = three;
+      const P = bs.PRESETS[presetId];
+      if (!P) return;
+      renderer = new T.WebGLRenderer({ canvas: ref.current, antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+      renderer.toneMapping = T.ACESFilmicToneMapping;
+      const scene = new T.Scene();
+      const cam = new T.PerspectiveCamera(36, 1.5, 0.5, 800);
+      // свет: небо + солнце + подсветка
+      scene.add(new T.HemisphereLight(0xcfe4f2, 0x40331f, 1.05));
+      const sun = new T.DirectionalLight(0xfff0d8, 1.9);
+      sun.position.set(0.6, 1, 0.5);
+      scene.add(sun);
+      const rim = new T.DirectionalLight(0x9db8d8, 0.6);
+      rim.position.set(-0.8, 0.4, -0.6);
+      scene.add(rim);
+      // модель
+      visual = bs.buildShip(P);
+      scene.add(visual.group);
+      const L = P.length;
+      const H = P.freeboard + L * 0.78; // высота рангоута
+      let az = 0.85, elev = 0.30, dist = Math.max(L * 1.5, H * 1.32);
+      let targetDist = dist;
+      // паруса частично поставлены, реи чуть брасоплены — «живой» силуэт
+      for (const s of visual.sails.sails) {
+        s.mat.uniforms.uFurl.value = 0.16;
+        s.mat.uniforms.uBelly.value = 0.55;
+        if (s.brace) s.brace.rotation.y = 0.22;
+      }
+      const resize = () => {
+        if (!renderer || !ref.current) return;
+        const w = ref.current.clientWidth || 300;
+        const h = ref.current.clientHeight || 210;
+        renderer.setSize(w, h, false);
+        cam.aspect = w / h;
+        cam.updateProjectionMatrix();
+      };
+      resize();
+      // drag-вращение и зум колесом
+      let dragging = false, lastX = 0, lastY = 0;
+      const el = ref.current;
+      const onDown = (e: PointerEvent) => { dragging = true; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); };
+      const onMove = (e: PointerEvent) => {
+        if (!dragging) return;
+        az -= (e.clientX - lastX) * 0.008;
+        elev = Math.min(1.35, Math.max(0.06, elev + (e.clientY - lastY) * 0.005));
+        lastX = e.clientX; lastY = e.clientY;
+      };
+      const onUp = () => { dragging = false; };
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        targetDist = Math.min(Math.max(L * 0.6, targetDist * (1 + Math.sign(e.deltaY) * 0.12)), L * 3.2);
+      };
+      el.addEventListener('pointerdown', onDown);
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', onUp);
+      el.addEventListener('wheel', onWheel, { passive: false });
+      const t0 = performance.now();
+      const loop = () => {
+        if (disposed) return;
+        raf = requestAnimationFrame(loop);
+        const t = (performance.now() - t0) / 1000;
+        if (!dragging) az += 0.0028;
+        dist += (targetDist - dist) * 0.15;
+        const ty = H * 0.42;
+        cam.position.set(
+          Math.sin(az) * Math.cos(elev) * dist,
+          ty + Math.sin(elev) * dist,
+          Math.cos(az) * Math.cos(elev) * dist);
+        cam.lookAt(0, ty * 0.8, 0);
+        // анимация парусов/флага
+        if (visual) {
+          for (const s of visual.sails.sails) s.mat.uniforms.uTime.value = t;
+          visual.flagMat.uniforms.uTime.value = t;
+        }
+        renderer?.render(scene, cam);
+      };
+      loop();
+      // cleanup-обработчики вынесены в return замыкания
+      (el as unknown as { __cleanup3d?: () => void }).__cleanup3d = () => {
+        el.removeEventListener('pointerdown', onDown);
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', onUp);
+        el.removeEventListener('wheel', onWheel);
+      };
+    })();
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      const el = ref.current;
+      (el as unknown as { __cleanup3d?: () => void })?.__cleanup3d?.();
+      // освободить GPU-ресурсы модели
+      if (visual && three) {
+        visual.group.traverse(o => {
+          const mesh = o as import('three').Mesh;
+          if (mesh.geometry) mesh.geometry.dispose();
+          const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+          for (const m of mats) {
+            const mat = m as import('three').MeshStandardMaterial & { map?: { dispose(): void } };
+            mat.map?.dispose();
+            mat.dispose();
+          }
+        });
+      }
+      renderer?.dispose();
+    };
+  }, [presetId]);
+  return (
+    <canvas ref={ref}
+      className="h-full w-full cursor-grab rounded-lg bg-gradient-to-b from-[#1c2f3d] to-[#0d1a22] active:cursor-grabbing" />
   );
 }
 

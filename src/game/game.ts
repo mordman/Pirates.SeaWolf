@@ -76,8 +76,8 @@ export interface HudState {
   boardedName: string | null;
   docked: boolean;
   messages: HudMessage[];
-  mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean }[];
-  mapShips: { x: number; z: number; kind: string; surrendered: boolean }[];
+  mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string }[];
+  mapShips: { x: number; z: number; kind: string; cat: 'war' | 'merchant'; surrendered: boolean }[];
   mapPlayer: { x: number; z: number; h: number };
   fps: number;
   dayF: number;
@@ -244,6 +244,7 @@ export class Game {
     (this.scene.fog as THREE.FogExp2).density = this.fogBase();
     this.audio.setVolume(s.audio.volume);
     this.input.setPreventCodes(this.preventCodes());
+    this.combat.infiniteAmmo = s.gameplay.infiniteAmmo;
     this.applyFx(s.fx);
     if (prev.weather.mode !== s.weather.mode
       || prev.weather.windSpeed !== s.weather.windSpeed
@@ -274,8 +275,12 @@ export class Game {
 
   private spawnShips() {
     const terrain = (x: number, z: number) => heightAt(x, z);
+    // прочность кораблей и боезапас игрока — из настроек игры
+    const gp = this.settings.gameplay;
+    const playerOpts = { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo } };
+    const aiOpts = { durabilityMul: gp.hullDurability };
     // игрок: шлюп в глубокой воде за пирсом
-    this.player = new Ship('sloop', true, this.wind, terrain, this.particles);
+    this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
     const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
       new THREE.Vector3(this.world.islands[0].cx, 0, this.world.islands[0].cz)).setY(0).normalize();
     this.spawnPos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 130);
@@ -296,7 +301,7 @@ export class Game {
     const safeSpawns = [new THREE.Vector3(820, 0, -150), new THREE.Vector3(-1000, 0, -350)];
     const traderModels = ['fluyt', 'pinnace']; // флейт и пинасс — торговые суда эпохи
     routes.forEach((route, i) => {
-      const trader = new Ship(traderModels[i], false, this.wind, terrain, this.particles);
+      const trader = new Ship(traderModels[i], false, this.wind, terrain, this.particles, aiOpts);
       trader.position.copy(safeSpawns[i]);
       trader.quaternion.setFromEuler(new THREE.Euler(0, i * 1.3, 0));
       trader.gold = 260 + i * 190;
@@ -313,7 +318,7 @@ export class Game {
       new THREE.Vector3(1200, 0, 600), new THREE.Vector3(0, 0, 950),
       new THREE.Vector3(-1100, 0, 850), new THREE.Vector3(-500, 0, 150),
     ];
-    const caravel = new Ship('caravel', false, this.wind, terrain, this.particles);
+    const caravel = new Ship('caravel', false, this.wind, terrain, this.particles, aiOpts);
     caravel.position.copy(caravelRoute[0]);
     caravel.quaternion.setFromEuler(new THREE.Euler(0, -1.2, 0));
     caravel.gold = 340;
@@ -324,7 +329,7 @@ export class Game {
     this.aiShips.push(new AIShip(caravel, caravelRoute, 'route'));
 
     // галеон — флагман на якоре в гавани (для осмотра и проверки повреждений)
-    const galleon = new Ship('galleon', false, this.wind, terrain, this.particles);
+    const galleon = new Ship('galleon', false, this.wind, terrain, this.particles, aiOpts);
     const perp = new THREE.Vector3(-seaDir.z, 0, seaDir.x);
     galleon.position.copy(this.spawnPos).addScaledVector(perp, 85).addScaledVector(seaDir, 45);
     galleon.position.y = 0;
@@ -341,7 +346,7 @@ export class Game {
       new THREE.Vector3(240, 0, 730), new THREE.Vector3(30, 0, 380),
       new THREE.Vector3(240, 0, 30), new THREE.Vector3(660, 0, 30),
     ];
-    const brig = new Ship('brig', false, this.wind, terrain, this.particles);
+    const brig = new Ship('brig', false, this.wind, terrain, this.particles, aiOpts);
     brig.position.set(940, 0, 380);
     brig.crew = 52;
     this.worldGroup.add(brig.visual.group);
@@ -349,9 +354,53 @@ export class Game {
     this.worldGroup.add(brig.wake.mesh);
     this.aiShips.push(new AIShip(brig, patrol, 'patrol'));
 
+    // фрегат Surprise — быстрый патруль южных маршрутов
+    const surpriseRoute = [
+      new THREE.Vector3(-350, 0, -1100), new THREE.Vector3(400, 0, -1500),
+      new THREE.Vector3(1100, 0, -900), new THREE.Vector3(600, 0, -350),
+    ];
+    const surprise = new Ship('surprise', false, this.wind, terrain, this.particles, aiOpts);
+    surprise.position.copy(surpriseRoute[0]);
+    surprise.quaternion.setFromEuler(new THREE.Euler(0, 2.1, 0));
+    surprise.crew = 170;
+    this.worldGroup.add(surprise.visual.group);
+    this.worldGroup.add(surprise.foam.mesh);
+    this.worldGroup.add(surprise.wake.mesh);
+    this.aiShips.push(new AIShip(surprise, surpriseRoute, 'patrol'));
+
+    // ост-индец Amsterdam — тяжёлый торговец через весь архипелаг
+    const eicRoute = [
+      new THREE.Vector3(-1900, 0, 1300), new THREE.Vector3(-400, 0, 1500),
+      new THREE.Vector3(900, 0, 1200), new THREE.Vector3(1800, 0, 200),
+    ];
+    const eic = new Ship('amsterdam', false, this.wind, terrain, this.particles, aiOpts);
+    eic.position.copy(eicRoute[0]);
+    eic.quaternion.setFromEuler(new THREE.Euler(0, -0.4, 0));
+    eic.gold = 720;
+    eic.cargo = { sugar: 40, rum: 22, timber: 55 };
+    this.worldGroup.add(eic.visual.group);
+    this.worldGroup.add(eic.foam.mesh);
+    this.worldGroup.add(eic.wake.mesh);
+    this.aiShips.push(new AIShip(eic, eicRoute, 'route'));
+
+    // шлюп Lady Washington — каботажник у гавани (пушнинная торговля)
+    const ladyRoute = [
+      new THREE.Vector3(700, 0, 700), new THREE.Vector3(300, 0, 950),
+      new THREE.Vector3(-100, 0, 800), new THREE.Vector3(250, 0, 550),
+    ];
+    const lady = new Ship('ladyw', false, this.wind, terrain, this.particles, aiOpts);
+    lady.position.copy(ladyRoute[0]);
+    lady.gold = 180;
+    lady.cargo = { sugar: 6, rum: 3, timber: 12 };
+    this.worldGroup.add(lady.visual.group);
+    this.worldGroup.add(lady.foam.mesh);
+    this.worldGroup.add(lady.wake.mesh);
+    this.aiShips.push(new AIShip(lady, ladyRoute, 'route'));
+
     this.combat = new CombatSystem(this.player, this.particles, (t, p) => this.bus.emit(t, p));
     this.combat.others = this.aiShips.map(a => a.ship);
     this.combat.addTo(this.worldGroup);
+    this.combat.infiniteAmmo = gp.infiniteAmmo;
   }
 
   private wireEvents() {
@@ -402,7 +451,8 @@ export class Game {
   private spawnProvingTarget(modelId: string) {
     this.removeProvingTarget();
     const terrain = (x: number, z: number) => heightAt(x, z);
-    const ship = new Ship(modelId, false, this.wind, terrain, this.particles);
+    const ship = new Ship(modelId, false, this.wind, terrain, this.particles,
+      { durabilityMul: this.settings.gameplay.hullDurability });
     ship.position.copy(this.pgTargetPos());
     ship.position.y = 0;
     ship.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // параллельно игроку
@@ -443,7 +493,14 @@ export class Game {
     p.position.copy(this.PG_ANCHOR); p.position.y = 0;
     p.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // курс на восток
     p.anchored = false;
-    p.ammo = { ball: 250, chain: 120, grape: 150, fire: 60 };
+    // боезапас полигона — не меньше стандартного набора
+    const am = this.settings.gameplay.startingAmmo;
+    p.ammo = {
+      ball: Math.max(250, am.ball),
+      chain: Math.max(120, am.chain),
+      grape: Math.max(150, am.grape),
+      fire: Math.max(60, am.fire),
+    };
     p.planks = 30;
     this.combat.aim.active = false;
     this.docked = false;
@@ -468,7 +525,13 @@ export class Game {
     s.position.copy(this.pgTargetPos());
     s.position.y = 0;
     s.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
-    this.player.ammo = { ball: 250, chain: 120, grape: 150, fire: 60 };
+    const am = this.settings.gameplay.startingAmmo;
+    this.player.ammo = {
+      ball: Math.max(250, am.ball),
+      chain: Math.max(120, am.chain),
+      grape: Math.max(150, am.grape),
+      fire: Math.max(60, am.fire),
+    };
     this.pushMessage('Мишень восстановлена, боезапас пополнен');
   }
 
@@ -535,7 +598,7 @@ export class Game {
     if (this.player.gold < cost) return 'Не хватает золота';
     this.player.gold -= cost;
     this.player.hullHP = this.player.hullMax;
-    this.player.sailHP = this.player.preset.sailHP;
+    this.player.sailHP = this.player.sailMax;
     this.player.water = 0;
     this.player.leakRate = 0;
     this.pushMessage(`Полный ремонт выполнен (-${cost} зол.)`);
@@ -575,6 +638,39 @@ export class Game {
     if (total <= 0) return 'Трюм пуст';
     this.player.gold += total;
     this.pushMessage(`Груз продан: +${total} зол.`);
+    return null;
+  }
+
+  // ---------- быстрое перемещение (глобальная карта) ----------
+  /** Телепорт к открытому острову: точка в море у берега со стороны
+   *  текущего положения игрока. Возвращает ошибку или null при успехе. */
+  fastTravelTo(islandName: string): string | null {
+    const isl = this.world.islands.find(i => i.name === islandName);
+    if (!isl) return 'Остров не найден';
+    if (!this.world.discovered.has(islandName)) return 'Остров ещё не открыт — подплывите ближе';
+    const p = this.player;
+    if (p.sinking) return 'Мы тонем — не до путешествий';
+    const d = Math.hypot(p.position.x - isl.cx, p.position.z - isl.cz);
+    if (d < isl.r + 420) return 'Вы уже рядом с этим островом';
+    // ищем глубокую воду у берега (перебор углов от направления на игрока)
+    const baseA = Math.atan2(p.position.x - isl.cx, p.position.z - isl.cz);
+    let pos = new THREE.Vector3(isl.cx, 0, isl.cz);
+    for (let k = 0; k < 16; k++) {
+      const a = baseA + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * 0.4;
+      const rr = isl.r + 300;
+      const x = isl.cx + Math.sin(a) * rr;
+      const z = isl.cz + Math.cos(a) * rr;
+      if (heightAt(x, z) < -8) { pos.set(x, 0, z); break; }
+      if (k === 15) pos.set(x, 0, z);
+    }
+    if (this.docked) this.undock();
+    p.position.copy(pos);
+    p.velocity.set(0, 0, 0);
+    p.angular.set(0, 0, 0);
+    p.anchored = false;
+    p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(isl.cx - pos.x, isl.cz - pos.z), 0));
+    this.pushMessage(`Быстрое перемещение: ${isl.name}`);
+    this.audio.bell();
     return null;
   }
 
@@ -794,10 +890,10 @@ export class Game {
     h.boardedName = this.boardingTarget?.ship.preset.name ?? null;
     h.docked = this.docked;
     h.messages = [...this.messages];
-    h.mapIslands = this.world.islands.map(i => ({ x: i.cx, z: i.cz, r: i.r, name: i.name, discovered: this.world.discovered.has(i.name) }));
+    h.mapIslands = this.world.islands.map(i => ({ x: i.cx, z: i.cz, r: i.r, name: i.name, discovered: this.world.discovered.has(i.name), type: i.type }));
     h.mapShips = this.aiShips.filter(a => !a.ship.sunk).map(a => ({
       x: a.ship.position.x, z: a.ship.position.z,
-      kind: a.ship.preset.id, surrendered: a.ship.surrendered,
+      kind: a.ship.preset.id, cat: a.ship.preset.category, surrendered: a.ship.surrendered,
     }));
     h.mapPlayer = { x: p.position.x, z: p.position.z, h: p.heading };
     h.fps = Math.round(this.fpsSmooth);
@@ -1117,7 +1213,7 @@ export class Game {
     if (this.proving) this.exitProving();
     const p = this.player;
     p.hullHP = p.hullMax;
-    p.sailHP = p.preset.sailHP;
+    p.sailHP = p.sailMax;
     p.crew = Math.round(p.preset.maxCrew * 0.8);
     p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0;
     p.sinking = false; p.sinkT = 0; p.sunk = false;
@@ -1136,6 +1232,7 @@ export class Game {
       this.spawnPos.x - this.world.islands[0].cx, this.spawnPos.z - this.world.islands[0].cz), 0));
     p.gold = Math.floor(p.gold * 0.5);
     p.cargo = { sugar: 0, rum: 0, timber: 0 };
+    p.ammo = { ...this.settings.gameplay.startingAmmo };
     p.sailTarget = 0;
     this.dead = false;
     this.pushMessage(`Новый корабль у гавани. Половина золота ушла на дно...`);

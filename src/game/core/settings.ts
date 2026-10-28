@@ -60,7 +60,10 @@ export interface AudioSettings {
 }
 
 export interface GameplaySettings {
-  provingDistance: number; // м: дистанция до мишени на полигоне (50..400)
+  provingDistance: number;  // м: дистанция до мишени на полигоне (50..400)
+  startingAmmo: { ball: number; chain: number; grape: number; fire: number }; // стартовый боезапас
+  hullDurability: number;   // множитель прочности всех кораблей (0.5..3)
+  infiniteAmmo: boolean;    // не расходовать боеприпасы (чит)
 }
 
 export interface GameSettings {
@@ -98,7 +101,12 @@ export const DEFAULT_SETTINGS: GameSettings = {
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
   },
   audio: { volume: 0.55 },
-  gameplay: { provingDistance: 90 },
+  gameplay: {
+    provingDistance: 90,
+    startingAmmo: { ball: 40, chain: 12, grape: 20, fire: 8 },
+    hullDurability: 1,
+    infiniteAmmo: false,
+  },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
 };
@@ -161,6 +169,14 @@ export function loadSettings(): GameSettings {
     }
     if (isObj(data.gameplay)) {
       if (typeof data.gameplay.provingDistance === 'number') s.gameplay.provingDistance = Math.min(400, Math.max(10, Math.round(data.gameplay.provingDistance)));
+      if (isObj(data.gameplay.startingAmmo)) {
+        const a = data.gameplay.startingAmmo;
+        for (const k of ['ball', 'chain', 'grape', 'fire'] as const) {
+          if (typeof a[k] === 'number') s.gameplay.startingAmmo[k] = Math.min(999, Math.max(0, Math.round(a[k])));
+        }
+      }
+      if (typeof data.gameplay.hullDurability === 'number') s.gameplay.hullDurability = Math.min(3, Math.max(0.5, data.gameplay.hullDurability));
+      if (typeof data.gameplay.infiniteAmmo === 'boolean') s.gameplay.infiniteAmmo = data.gameplay.infiniteAmmo;
     }
     if (isObj(data.weather)) {
       const w = data.weather;

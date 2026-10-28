@@ -1,0 +1,803 @@
+     1→     1→import * as THREE from 'three';
+     2→     2→import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern } from './buildShip';
+     3→     3→import { buildCrew, CrewVisual } from './crew';
+     4→     4→import { waterHeightAt, waterNormalAt } from '../water/waves';
+     5→     5→import { WaterlineFoam, WakeTrail } from '../water/wake';
+     6→     6→import { Particles } from '../fx/particles';
+     7→     7→import { clamp, mod2pi, smoothstep } from '../core/rng';
+     8→     8→
+     9→     9→// ============================================================
+    10→    10→// Корабль как сущность: 6DOF-физика (surge/sway/heave/roll/
+    11→    11→// pitch/yaw), buoyancy probes по секциям, ветер на парусах,
+    12→    12→// руль, якорь, повреждения, течь, пожар, затопление.
+    13→    13→// ============================================================
+    14→    14→
+    15→    15→export interface WindState { from: number; speed: number; } // from: радианы ОТКУДА дует
+    16→    16→
+    17→    17→export type DamageKind = 'ball' | 'chain' | 'grape' | 'fire' | 'ram' | 'ground';
+    18→    18→
+    19→    19→export interface DamageInput {
+    20→    20→  kind: DamageKind;
+    21→    21→  amount: number;
+    22→    22→  hitPoint?: THREE.Vector3; // мировая точка
+    23→    23→}
+    24→    24→
+    25→    25→interface Probe { off: THREE.Vector3; k: number; c: number; }
+    26→    26→
+    27→    27→const G = 9.81;
+    28→    28→
+    29→    29→export class Ship {
+    30→    30→  preset: ShipPreset;
+    31→    31→  visual: ShipVisual;
+    32→    32→  isPlayer: boolean;
+    33→    33→
+    34→    34→  // --- физика ---
+    35→    35→  position = new THREE.Vector3();
+    36→    36→  quaternion = new THREE.Quaternion();
+    37→    37→  velocity = new THREE.Vector3();
+    38→    38→  angular = new THREE.Vector3(); // мировая угловая скорость
+    39→    39→  mass: number;
+    40→    40→  inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
+    41→    41→  private probes: Probe[] = [];
+    42→    42→  private reserve: Probe[] = [];   // запас плавучести надводного борта
+    43→    43→  private force = new THREE.Vector3();
+    44→    44→  private torque = new THREE.Vector3();
+    45→    45→  private _f = new THREE.Vector3();
+    46→    46→  private _r = new THREE.Vector3();
+    47→    47→  private _t1 = new THREE.Vector3();
+    48→    48→  private _t2 = new THREE.Vector3();
+    49→    49→  private _t3 = new THREE.Vector3();
+    50→    50→  private tmpV = new THREE.Vector3();
+    51→    51→  private tmpV2 = new THREE.Vector3();
+    52→    52→  private tmpQ = new THREE.Quaternion();
+    53→    53→  private wq = new THREE.Quaternion();
+    54→    54→  private dq = new THREE.Quaternion();
+    55→    55→  private _e2 = new THREE.Euler();   // разбор кватерниона для посадки на волну
+    56→    56→
+    57→    57→  // --- управление ---
+    58→    58→  sailTarget = 0;          // 0..3
+    59→    59→  /** Принудительная доля постановки парусов (0..1) — мишень полигона
+    60→    60→   *  стоит на якоре с поставленным рангоутом; null = обычная логика */
+    61→    61→  sailOverride: number | null = null;
+    62→    62→  sailFrac = 0;            // плавное 0..1
+    63→    63→  rudder = 0;              // -1..1 (реальный угол)
+    64→    64→  rudderTarget = 0;
+    65→    65→  anchored = false;
+    66→    66→  reverseThrust = false;
+    67→    67→  helmActive = false;
+    68→    68→
+    69→    69→  // --- состояние ---
+    70→    70→  hullHP: number; hullMax: number;
+    71→    71→  sailHP: number;
+    72→    72→  crew: number;
+    73→    73→  water = 0;               // м³ в трюме
+    74→    74→  holdCap: number;
+    75→    75→  leakRate = 0;            // м³/с суммарная течь
+    76→    76→  onFire = false;
+    77→    77→  fireT = 0;
+    78→    78→  mastsBroken = 0;         // число сломанных (для тяги)
+    79→    79→  mastAnim = -1;           // (легаси) для совместимости
+    80→    80→  mastHP: number[] = [];   // HP каждой мачты
+    81→    81→  mastFall: number[] = []; // прогресс падения: -1 стоит, 0..1 валится/лежит
+    82→    82→  mastMaxHP = 32;
+    83→    83→  hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh }[] = [];
+    84→    84→  leakBias = 0;            // суммарный кренящий момент пробоин (−1..1 порт/штирборт)
+    85→    85→  noSurrender = false;     // мишень полигона не сдаётся
+    86→    86→  crew3d: CrewVisual;      // фигуры на палубе
+    87→    87→  sinking = false;
+    88→    88→  sinkT = 0;
+    89→    89→  sunk = false;
+    90→    90→  surrendered = false;
+    91→    91→  grounded = false;
+    92→    92→  gold = 0;
+    93→    93→  cargo: Record<string, number> = {};
+    94→    94→  ammo: Record<string, number> = { ball: 40, chain: 12, grape: 20, fire: 8 };
+    95→    95→  planks = 12;
+    96→    96→  pumpAction = false;
+    97→    97→
+    98→    98→  // --- мир ---
+    99→    99→  wind: WindState;
+   100→   100→  terrainHeight: (x: number, z: number) => number;
+   101→   101→  particles: Particles;
+   102→   102→
+   103→   103→  // --- вода/след ---
+   104→   104→  foam: WaterlineFoam;
+   105→   105→  wake = new WakeTrail();
+   106→   106→  private lastStern = new THREE.Vector3();
+   107→   107→  private rollSmooth = 0;
+   108→   108→
+   109→   109→  // --- события колбэки ---
+   110→   110→  onSurrender?: (s: Ship) => void;
+   111→   111→  onSunk?: (s: Ship) => void;
+   112→   112→
+   113→   113→  constructor(presetId: string, isPlayer: boolean, wind: WindState,
+   114→   114→    terrainHeight: (x: number, z: number) => number, particles: Particles) {
+   115→   115→    this.preset = PRESETS[presetId];
+   116→   116→    this.isPlayer = isPlayer;
+   117→   117→    this.wind = wind;
+   118→   118→    this.terrainHeight = terrainHeight;
+   119→   119→    this.particles = particles;
+   120→   120→    this.visual = buildShip(this.preset);
+   121→   121→    this.hullHP = this.preset.hullHP;
+   122→   122→    this.hullMax = this.preset.hullHP;
+   123→   123→    this.sailHP = this.preset.sailHP;
+   124→   124→    this.crew = Math.round(this.preset.maxCrew * 0.8);
+   125→   125→    this.holdCap = this.preset.cargo * 0.8;
+   126→   126→    this.mass = this.preset.mass;
+   127→   127→
+   128→   128→    const { length: L, beam: B, draft: D, freeboard: F } = this.preset;
+   129→   129→    // моменты инерции (связные оси: x — крен? нет: x=право, y=верх, z=нос)
+   130→   130→    // крен — вокруг z, дифферент — вокруг x, рыскание — вокруг y
+   131→   131→    this.inertia.set(
+   132→   132→      this.mass * (B * B + F * F) / 12 * 1.5,   // pitch (x)
+   133→   133→      this.mass * (L * L + B * B) / 12 * 1.2,   // yaw (y)
+   134→   134→      this.mass * (B * B + F * F) / 12 * 1.5,   // roll (z)
+   135→   135→    );
+   136→   136→
+   137→   137→    // зонды плавучести: 9 шпангоутов × 3 точки (ниже ватерлинии),
+   138→   138→    // вплоть до носа/кормы (±0.47 полудлины). Пружины жёсткие
+   139→   139→    // (нейтраль 0.38 осадки, запас ×1.35) и демпфер ζ≈0.62 — корпус
+   140→   140→    // БЫСТРО всходит на гребень и не проваливается внутрь волны.
+   141→   141→    const NZ = 9;
+   142→   142→    let n = 0;
+   143→   143→    for (let i = 0; i < NZ; i++) {
+   144→   144→      const t = i / (NZ - 1);
+   145→   145→      const z = THREE.MathUtils.lerp(-L * 0.47, L * 0.47, t);
+   146→   146→      const prof = this.halfWidthAt(z);
+   147→   147→      const offs = [0, -prof * 0.75, prof * 0.75];
+   148→   148→      for (const x of offs) {
+   149→   149→        this.probes.push({ off: new THREE.Vector3(x, -D * 0.38, z), k: 0, c: 0 });
+   150→   150→        n++;
+   151→   151→      }
+   152→   152→    }
+   153→   153→    const neutral = D * 0.38;
+   154→   154→    const kTotal = this.mass * G / neutral * 1.35;
+   155→   155→    for (const p of this.probes) {
+   156→   156→      p.k = kTotal / n;
+   157→   157→      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.62; // демпфер качки
+   158→   158→    }
+   159→   159→    // Резервные зонды по скулам борта чуть выше спокойной ватерлинии:
+   160→   160→    // моделируют запас плавучести корпуса до планширя — гребень, накрывший
+   161→   161→    // палубу, встречает сильное сопротивление и кренящий момент вправку,
+   162→   162→    // «полностью по борт» корабль больше не погружается.
+   163→   163→    let rn = 0;
+   164→   164→    for (let i = 0; i < NZ; i++) {
+   165→   165→      const t = i / (NZ - 1);
+   166→   166→      const z = THREE.MathUtils.lerp(-L * 0.44, L * 0.44, t);
+   167→   167→      const prof = this.halfWidthAt(z) * 0.85;
+   168→   168→      for (const x of [-prof, prof]) {
+   169→   169→        this.reserve.push({ off: new THREE.Vector3(x, F * 0.34, z), k: 0, c: 0 });
+   170→   170→        rn++;
+   171→   171→      }
+   172→   172→    }
+   173→   173→    // жёстче прежнего: полный вес запаса уже на 15 см погружения борта —
+   174→   174→    // волна не может накрыть палубу, корпус «всплывает» на гребень
+   175→   175→    const rkTotal = this.mass * G / 0.15;
+   176→   176→    for (const p of this.reserve) {
+   177→   177→      p.k = rkTotal / rn;
+   178→   178→      p.c = 2 * Math.sqrt(p.k * (this.mass / rn)) * 1.3;
+   179→   179→    }
+   180→   180→
+   181→   181→    this.foam = new WaterlineFoam(this.visual.outline);
+   182→   182→    this.wake.setWaterHeight(waterHeightAt);
+   183→   183→    if (isPlayer) enableLantern(this.visual);
+   184→   184→
+   185→   185→    // экипаж на палубе: процедурные типажи, сид фиксирован по модели
+   186→   186→    const seed = Array.from(presetId).reduce((a, ch) => a + ch.charCodeAt(0) * 31, 11)
+   187→   187→      + Math.round(this.preset.length * 7);
+   188→   188→    this.crew3d = buildCrew(this.preset, seed);
+   189→   189→    this.visual.group.add(this.crew3d.group);
+   190→   190→    for (let i = 0; i < this.visual.masts.length; i++) {
+   191→   191→      this.mastHP.push(this.mastMaxHP);
+   192→   192→      this.mastFall.push(-1);
+   193→   193→    }
+   194→   194→  }
+   195→   195→
+   196→   196→  halfWidthAt(z: number): number {
+   197→   197→    const t = clamp((z + this.preset.length / 2) / this.preset.length, 0, 1);
+   198→   198→    let w: number;
+   199→   199→    if (t < 0.45) w = THREE.MathUtils.lerp(0.58, 1.0, t / 0.45);
+   200→   200→    else w = THREE.MathUtils.lerp(1.0, 0.0, Math.pow(clamp((t - 0.45) / 0.55, 0, 1), 0.75));
+   201→   201→    return Math.max(0.3, w * this.preset.beam * 0.5);
+   202→   202→  }
+   203→   203→
+   204→   204→  // ---------- геометрия ориентации ----------
+   205→   205→  get forward(): THREE.Vector3 {
+   206→   206→    const e = new THREE.Euler().setFromQuaternion(this.quaternion, 'YXZ');
+   207→   207→    return new THREE.Vector3(Math.sin(e.y), 0, Math.cos(e.y)).normalize();
+   208→   208→  }
+   209→   209→  get heading(): number {
+   210→   210→    const e = new THREE.Euler().setFromQuaternion(this.quaternion, 'YXZ');
+   211→   211→    return e.y;
+   212→   212→  }
+   213→   213→  get euler(): THREE.Euler { return new THREE.Euler().setFromQuaternion(this.quaternion, 'YXZ'); }
+   214→   214→  speed(): number { return Math.hypot(this.velocity.x, this.velocity.z); }
+   215→   215→  speedKnots(): number { return this.speed() * 1.9438; }
+   216→   216→
+   217→   217→  /** Угол между направлением ОТКУДА дует (кажущийся) ветер и курсом, 0..PI */
+   218→   218→  apparentWindAngle(): number {
+   219→   219→    const wf = this.tmpV.set(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
+   220→   220→    // кажущийся ветер = истинный - скорость корабля
+   221→   221→    const av = this.tmpV2.set(-wf.x * this.wind.speed - this.velocity.x, 0, -wf.z * this.wind.speed - this.velocity.z);
+   222→   222→    // вектор ОТКУДА дует кажущийся ветер:
+   223→   223→    const aFromX = -av.x, aFromZ = -av.z;
+   224→   224→    const len = Math.hypot(aFromX, aFromZ) || 1;
+   225→   225→    const f = this.forward;
+   226→   226→    const dot = (aFromX / len) * f.x + (aFromZ / len) * f.z;
+   227→   227→    return Math.acos(clamp(dot, -1, 1));
+   228→   228→  }
+   229→   229→
+   230→   230→  /** Полярная эффективность парусов по углу (рад): лавировка/бейдевинд/галфвинд/фордевинд */
+   231→   231→  static polar(awa: number): number {
+   232→   232→    const d = awa * 180 / Math.PI;
+   233→   233→    if (d < 25) return 0.02;                       // левентик — почти нет хода
+   234→   234→    if (d < 60) return THREE.MathUtils.lerp(0.08, 0.7, (d - 25) / 35);
+   235→   235→    if (d < 110) return THREE.MathUtils.lerp(0.7, 1.0, (d - 60) / 50);  // бейдевинд-галфвинд
+   236→   236→    if (d < 150) return THREE.MathUtils.lerp(1.0, 0.82, (d - 110) / 40);
+   237→   237→    return THREE.MathUtils.lerp(0.82, 0.68, (d - 150) / 30);            // фордевинд
+   238→   238→  }
+   239→   239→
+   240→   240→  // ---------- фиксированный шаг физики ----------
+   241→   241→  fixedStep(dt: number, time: number) {
+   242→   242→    if (this.sunk) return;
+   243→   243→    this.force.set(0, 0, 0);
+   244→   244→    this.torque.set(0, 0, 0);
+   245→   245→
+   246→   246→    const f = this._f.copy(this.forward);
+   247→   247→    // штирборт (правый борт): forward × up = (−f.z, 0, f.x)
+   248→   248→    const right = this._r.set(-f.z, 0, f.x).normalize();
+   249→   249→    const e = this.euler;
+   250→   250→    const spd = this.speed();
+   251→   251→
+   252→   252→    const m = this.mass + this.water * 1000; // вода в трюме утяжеляет
+   253→   253→
+   254→   254→    // --- гравитация ---
+   255→   255→    this.force.y -= m * G;
+   256→   256→
+   257→   257→    // --- плавучесть по зондам (τ = r × F, F = (0, fl, 0)) ---
+   258→   258→    for (const p of this.probes) {
+   259→   259→      const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
+   260→   260→      const wy = waterHeightAt(wp.x, wp.z, time);
+   261→   261→      const depth = wy - wp.y;
+   262→   262→      if (depth > 0) {
+   263→   263→        const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
+   264→   264→        // вертикальная скорость точки: v = ω × r → vy = ωz*rx − ωx*rz
+   265→   265→        const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
+   266→   266→        let fl = p.k * Math.min(depth, 6) - p.c * vy;
+   267→   267→        if (fl < 0) fl = 0;
+   268→   268→        this.force.y += fl;
+   269→   269→        this.torque.x += -rz * fl;
+   270→   270→        this.torque.z += rx * fl;
+   271→   271→      }
+   272→   272→    }
+   273→   273→    // --- запас плавучести бортов (пока не тонем) ---
+   274→   274→    if (!this.sinking) {
+   275→   275→      for (const p of this.reserve) {
+   276→   276→        const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
+   277→   277→        const wy = waterHeightAt(wp.x, wp.z, time);
+   278→   278→        const depth = wy - wp.y;
+   279→   279→        if (depth > 0) {
+   280→   280→          const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
+   281→   281→          const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
+   282→   282→          let fl = p.k * Math.min(depth, 2.5) - p.c * vy;
+   283→   283→          if (fl < 0) fl = 0;
+   284→   284→          this.force.y += fl;
+   285→   285→          this.torque.x += -rz * fl;
+   286→   286→          this.torque.z += rx * fl;
+   287→   287→        }
+   288→   288→      }
+   289→   289→    }
+   290→   290→
+   291→   291→    // --- ветер на парусах ---
+   292→   292→    this.sailFrac += (this.sailTarget / 3 - this.sailFrac) * Math.min(1, dt * 0.7);
+   293→   293→    const awa = this.apparentWindAngle();
+   294→   294→    const polar = Ship.polar(awa);
+   295→   295→    const sailEffMul = this.sailHP / this.preset.sailHP;
+   296→   296→    const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
+   297→   297→    const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
+   298→   298→    let thrust = 0;
+   299→   299→    if (!this.anchored && !this.sinking && this.mastsBroken < 2) {
+   300→   300→      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
+   301→   301→    }
+   302→   302→    if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45; // задний ход на вёслах
+   303→   303→    // сила тяги вдоль forward
+   304→   304→    this.force.x += f.x * thrust * m * 0.06;
+   305→   305→    this.force.z += f.z * thrust * m * 0.06;
+   306→   306→    // крен от ветра: боковая составляющая ветра на парусах
+   307→   307→    // (умеренный: в шторм подветренный борт не зарывается в волну)
+   308→   308→    const wf = new THREE.Vector3(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
+   309→   309→    const windTravel = wf.clone().multiplyScalar(-this.wind.speed);
+   310→   310→    const lateral = windTravel.dot(right);
+   311→   311→    const heelF = lateral * this.sailFrac * windPower * m * 0.034;
+   312→   312→    this.torque.z += heelF;
+   313→   313→    // ... и небольшое боковое сносовое усилие
+   314→   314→    this.force.x += right.x * lateral * this.sailFrac * m * 0.004;
+   315→   315→    this.force.z += right.z * lateral * this.sailFrac * m * 0.004;
+   316→   316→
+   317→   317→    // --- руль ---
+   318→   318→    this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
+   319→   319→    const rudderAngle = this.rudder * 0.6; // рад, макс ~34°
+   320→   320→    const yawAuth = clamp(spd / 4.0, 0, 1.15); // авторитеты руля от скорости
+   321→   321→    // положительный руль (D) = поворот ВПРАВО (штирборт):
+   322→   322→    // вращение вокруг −Y, т.к. +Y = поворот влево (к порту)
+   323→   323→    this.torque.y -= rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
+   324→   324→    // крен на повороте (отцентробежный)
+   325→   325→    this.torque.z += this.angular.y * spd * m * 0.35;
+   326→   326→    // лёгкое зарывание носа на скорости (слабое: сильное топило борт
+   327→   327→    // в волну на 3+ метра — см. жалобы «корабль погружается по борт»)
+   328→   328→    this.torque.x += spd * spd * m * 0.0012;
+   329→   329→
+   330→   330→    // --- сопротивление (по связным осям) ---
+   331→   331→    const vLocal = this.velocity.clone();
+   332→   332→    const fwdSpd = vLocal.dot(f);
+   333→   333→    const latSpd = vLocal.dot(right);
+   334→   334→    const fwdDrag = -Math.sign(fwdSpd) * (18 * fwdSpd + 55 * fwdSpd * Math.abs(fwdSpd)) * m * 0.001;
+   335→   335→    const latDrag = -latSpd * (3.2) * m * 0.1;
+   336→   336→    this.force.x += f.x * fwdDrag + right.x * latDrag;
+   337→   337→    this.force.z += f.z * fwdDrag + right.z * latDrag;
+   338→   338→    this.force.y -= this.velocity.y * m * 0.12; // вертикальное демпфирование
+   339→   339→    if (this.anchored) {
+   340→   340→      this.force.x -= this.velocity.x * m * 1.2;
+   341→   341→      this.force.z -= this.velocity.z * m * 1.2;
+   342→   342→    }
+   343→   343→    if (this.grounded) {
+   344→   344→      this.force.x -= this.velocity.x * m * 2.5;
+   345→   345→      this.force.z -= this.velocity.z * m * 2.5;
+   346→   346→    }
+   347→   347→
+   348→   348→    // --- угловое демпфирование по связным осям ---
+   349→   349→    const invQ = this.tmpQ.copy(this.quaternion).invert();
+   350→   350→    const ab = this._t3.copy(this.angular).applyQuaternion(invQ); // связные
+   351→   351→    ab.x *= Math.exp(-1.6 * dt);  // дифферент
+   352→   352→    ab.y *= Math.exp(-0.9 * dt);  // рыскание
+   353→   353→    ab.z *= Math.exp(-1.1 * dt);  // крен
+   354→   354→    this.angular.copy(ab.applyQuaternion(this.quaternion));
+   355→   355→
+   356→   356→    // --- ограничение крена/дифферента (мягкие стопы) ---
+   357→   357→    // дифферент свободнее прежнего: 0.21 рад (12°) — нос всходит
+   358→   358→    // на крутой фронт волны, а не прорезает его;
+   359→   359→    // крен 0.36 рад (20°) — подветренный борт остаётся над водой
+   360→   360→    const roll = e.z, pitch = e.x;
+   361→   361→    const rollLim = 0.36, pitchLim = 0.21;
+   362→   362→    if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
+   363→   363→    if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
+   364→   364→    // затопление кренит корабль в сторону пробоин
+   365→   365→    this.floodRoll(m);
+   366→   366→    if (this.sinking) {
+   367→   367→      this.sinkT += dt;
+   368→   368→      this.force.y -= m * G * Math.min(0.9, this.sinkT / 9); // неотвратимое погружение
+   369→   369→      this.torque.x += m * 0.25 * Math.sign(roll || 1);
+   370→   370→      this.torque.z += m * 0.4 * Math.sign(roll || 1);
+   371→   371→    }
+   372→   372→
+   373→   373→    // --- интеграция ---
+   374→   374→    this.velocity.addScaledVector(this.force, dt / m);
+   375→   375→    this.position.addScaledVector(this.velocity, dt);
+   376→   376→    // α = I⁻¹ τ в связных осях
+   377→   377→    const tb = this._t3.copy(this.torque).applyQuaternion(invQ);
+   378→   378→    tb.x /= this.inertia.x; tb.y /= this.inertia.y; tb.z /= this.inertia.z;
+   379→   379→    this.angular.addScaledVector(tb.applyQuaternion(this.quaternion), dt);
+   380→   380→    // ограничим угловые скорости
+   381→   381→    const wLen = this.angular.length();
+   382→   382→    if (wLen > 1.1) this.angular.multiplyScalar(1.1 / wLen);
+   383→   383→    // q̇ = 0.5 · ω⊗q → q_new = q + 0.5·dt·(ωx,ωy,ωz,0)⊗q, потом нормализация
+   384→   384→    this.wq.set(this.angular.x, this.angular.y, this.angular.z, 0);
+   385→   385→    this.dq.copy(this.wq).multiply(this.quaternion); // dq = ω ⊗ q
+   386→   386→    const qs = 0.5 * dt;
+   387→   387→    this.quaternion.set(
+   388→   388→      this.quaternion.x + this.dq.x * qs,
+   389→   389→      this.quaternion.y + this.dq.y * qs,
+   390→   390→      this.quaternion.z + this.dq.z * qs,
+   391→   391→      this.quaternion.w + this.dq.w * qs
+   392→   392→    ).normalize();
+   393→   393→
+   394→   394→    // === КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ ===
+   395→   395→    // Пружины зондов дают равновесие на СРЕДНЕМ уровне воды — корпус
+   396→   396→    // «сидел» ВНУТРИ гребня. Здесь корпус прямо следует ПОВЕРХНОСТИ:
+   397→   397→    // вертикаль — к уровню 4 точек (нос/корма/оба борта), дифферент —
+   398→   398→    // к плоскости волны вдоль корпуса. Крен ОСТАЁТСЯ динамическим
+   399→   399→    // (ветер, течь, поворот) — зондов-пружин на крен достаточно.
+   400→   400→    // Скорости λy 3.2/с и λp 2.4/с: успевают за зыбью (период 4–8 с),
+   401→   401→    // короткую рябь усредняют; поправка ограничена 8 м/с и 0.5 рад/с.
+   402→   402→    if (!this.sinking && !this.sunk && !this.grounded) {
+   403→   403→      const Lh = this.preset.length * 0.36, Bh = this.preset.beam * 0.36;
+   404→   404→      const hB = waterHeightAt(this.position.x + f.x * Lh, this.position.z + f.z * Lh, time);
+   405→   405→      const hS = waterHeightAt(this.position.x - f.x * Lh, this.position.z - f.z * Lh, time);
+   406→   406→      const hR = waterHeightAt(this.position.x + right.x * Bh, this.position.z + right.z * Bh, time);
+   407→   407→      const hP = waterHeightAt(this.position.x - right.x * Bh, this.position.z - right.z * Bh, time);
+   408→   408→      const surfY = (hB + hS + hR + hP) * 0.25;
+   409→   409→      // равновесие пружин: осадка зондов 0.28·D → центр на 0.10·D над водой;
+   410→   410→      // затопленный трюм садит корпус ниже (до 30 см)
+   411→   411→      const sink = clamp(this.water / Math.max(1, this.holdCap), 0, 1) * 0.30;
+   412→   412→      const targetY = surfY + this.preset.draft * 0.10 - sink;
+   413→   413→      const kY = 1 - Math.exp(-dt * 3.2);
+   414→   414→      const corrY = clamp((targetY - this.position.y) * kY, -8 * dt, 8 * dt);
+   415→   415→      this.position.y += corrY;
+   416→   416→      // согласованное затухание вертикальной скорости — пружины
+   417→   417→      // не раскачивают корпус вокруг кинематической посадки
+   418→   418→      this.velocity.y *= Math.exp(-dt * 3.0);
+   419→   419→      // дифферент: нос/корма по склону волны (вода выше у носа → нос вверх)
+   420→   420→      const wPitch = -Math.atan2(hB - hS, 2 * Lh);
+   421→   421→      const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
+   422→   422→      const kP = 1 - Math.exp(-dt * 2.4);
+   423→   423→      e2.x += clamp((wPitch - e2.x) * kP, -0.5 * dt, 0.5 * dt);
+   424→   424→      this.quaternion.setFromEuler(e2);
+   425→   425→    }
+   426→   426→
+   427→   427→    // --- посадка на мель / столкновение с землёй ---
+   428→   428→    this.checkGrounding(dt);
+   429→   429→
+   430→   430→    // --- течение воды в трюме ---
+   431→   431→    if (this.leakRate > 0) {
+   432→   432→      this.water = Math.min(this.holdCap, this.water + this.leakRate * dt);
+   433→   433→    }
+   434→   434→    if (this.onFire) {
+   435→   435→      this.fireT += dt;
+   436→   436→      this.hullHP -= dt * 1.6;
+   437→   437→      if (this.fireT > 26) { this.onFire = false; this.fireT = 0; } // выгорит
+   438→   438→      if (Math.random() < dt * 1.2) {
+   439→   439→        const p = this.particles;
+   440→   440→        const wp = this.position.clone();
+   441→   441→        p.fire(wp.x + (Math.random() - 0.5) * 4, this.waterlineY() + 1 + Math.random() * 2, wp.z + (Math.random() - 0.5) * 10);
+   442→   442→        p.smoke(wp.x + (Math.random() - 0.5) * 4, this.waterlineY() + 3, wp.z + (Math.random() - 0.5) * 10, this.wind ? Math.cos(this.wind.from + Math.PI) * 2 : 0, 2.2, this.wind ? Math.sin(this.wind.from + Math.PI) * 2 : 0, 2.8, 3.0);
+   443→   443→      }
+   444→   444→    }
+   445→   445→    // порог затопления
+   446→   446→    if (!this.sinking && this.water > this.holdCap * 0.62) this.startSinking();
+   447→   447→    if (this.hullHP <= 0 && !this.sinking) this.startSinking();
+   448→   448→
+   449→   449→    // --- сдался? ---
+   450→   450→    if (!this.isPlayer && !this.surrendered && !this.sinking) {
+   451→   451→      if (this.hullHP < this.hullMax * 0.34 || this.crew < this.preset.maxCrew * 0.25) {
+   452→   452→        this.surrendered = true;
+   453→   453→        this.sailTarget = 0;
+   454→   454→        this.onSurrender?.(this);
+   455→   455→      }
+   456→   456→    }
+   457→   457→
+   458→   458→    if (this.sinking && this.sinkT > 14 && !this.sunk) {
+   459→   459→      this.sunk = true;
+   460→   460→      this.visual.group.visible = false;
+   461→   461→      this.onSunk?.(this);
+   462→   462→    }
+   463→   463→  }
+   464→   464→
+   465→   465→  private checkGrounding(dt: number) {
+   466→   466→    if (this.sinking || this.sunk) return;
+   467→   467→    const f = this.forward;
+   468→   468→    const bow = this.tmpV.copy(this.position).addScaledVector(f, this.preset.length * 0.42);
+   469→   469→    const stern = this.tmpV2.copy(this.position).addScaledVector(f, -this.preset.length * 0.42);
+   470→   470→    let hit = false;
+   471→   471→    for (const p of [bow, stern]) {
+   472→   472→      const th = this.terrainHeight(p.x, p.z);
+   473→   473→      if (th > this.position.y - this.preset.draft * 0.6) {
+   474→   474→        hit = true;
+   475→   475→        // нормаль склона
+   476→   476→        const e = 2;
+   477→   477→        const nx = this.terrainHeight(p.x - e, p.z) - this.terrainHeight(p.x + e, p.z);
+   478→   478→        const nz = this.terrainHeight(p.x, p.z - e) - this.terrainHeight(p.x, p.z + e);
+   479→   479→        const n = new THREE.Vector3(nx, 2 * e, nz).normalize();
+   480→   480→        this.force.addScaledVector(n, this.mass * 22);
+   481→   481→        this.velocity.multiplyScalar(0.94);
+   482→   482→      }
+   483→   483→    }
+   484→   484→    if (hit) {
+   485→   485→      if (!this.grounded && this.speed() > 3.5) {
+   486→   486→        this.applyDamage({ kind: 'ground', amount: 5 + this.speed() });
+   487→   487→      }
+   488→   488→      this.grounded = true;
+   489→   489→    } else this.grounded = false;
+   490→   490→  }
+   491→   491→
+   492→   492→  waterlineY(): number {
+   493→   493→    return this.position.y;
+   494→   494→  }
+   495→   495→
+   496→   496→  // ---------- повреждения ----------
+   497→   497→  applyDamage(d: DamageInput) {
+   498→   498→    if (this.sunk || this.sinking) return;
+   499→   499→    const rng = Math.random;
+   500→   500→    switch (d.kind) {
+   501→   501→      case 'ball': {
+   502→   502→        this.hullHP -= d.amount;
+   503→   503→        if (d.hitPoint && d.hitPoint.y < 0.45 + this.position.y) this.addLeak(0.06 + rng() * 0.05);
+   504→   504→        if (rng() < 0.3) this.crew = Math.max(0, this.crew - 1);
+   505→   505→        // случайный «рикошет в рангоут» — редкий, основную работу делают
+   506→   506→        // прицельные попадания из CombatSystem (mast hits)
+   507→   507→        if (rng() < 0.10) this.breakMast();
+   508→   508→        break;
+   509→   509→      }
+   510→   510→      case 'chain': {
+   511→   511→        this.sailHP = Math.max(0, this.sailHP - d.amount);
+   512→   512→        if (rng() < 0.25) this.crew = Math.max(0, this.crew - 1);
+   513→   513→        break;
+   514→   514→      }
+   515→   515→      case 'grape': {
+   516→   516→        this.crew = Math.max(0, this.crew - Math.round(d.amount));
+   517→   517→        this.hullHP -= d.amount * 0.4;
+   518→   518→        break;
+   519→   519→      }
+   520→   520→      case 'fire': {
+   521→   521→        this.hullHP -= d.amount;
+   522→   522→        if (rng() < 0.35 && !this.onFire) { this.onFire = true; this.fireT = 0; }
+   523→   523→        if (rng() < 0.08) { this.addLeak(0.03); }
+   524→   524→        break;
+   525→   525→      }
+   526→   526→      case 'ram': {
+   527→   527→        this.hullHP -= d.amount;
+   528→   528→        if (rng() < 0.5) this.addLeak(0.04);
+   529→   529→        break;
+   530→   530→      }
+   531→   531→      case 'ground': this.hullHP -= d.amount * 0.5; break;
+   532→   532→    }
+   533→   533→    if (this.hullHP <= 0 && !this.sinking) this.startSinking();
+   534→   534→    if (!this.isPlayer && !this.noSurrender && !this.surrendered && this.hullHP < this.hullMax * 0.34) {
+   535→   535→      this.surrendered = true; this.sailTarget = 0; this.onSurrender?.(this);
+   536→   536→    }
+   537→   537→  }
+   538→   538→
+   539→   539→  /** Урон в КОНКРЕТНУЮ мачту (прицельное попадание ядром/книппелем) */
+   540→   540→  damageMast(idx: number, amount: number): boolean {
+   541→   541→    if (idx < 0 || idx >= this.mastHP.length) return false;
+   542→   542→    if (this.mastFall[idx] >= 0) return false; // уже сломана
+   543→   543→    this.mastHP[idx] -= amount;
+   544→   544→    if (this.mastHP[idx] <= 0) { this.breakMast(idx); return true; }
+   545→   545→    return false;
+   546→   546→  }
+   547→   547→
+   548→   548→  addLeak(rate: number) {
+   549→   549→    this.leakRate = Math.min(1.8, this.leakRate + rate);
+   550→   550→    if (this.leakRate < 0) this.leakRate = 0;
+   551→   551→  }
+   552→   552→
+   553→   553→  /** Урон ПАРУСАМ: пробоины картечи/книппеля снижают тягу (sailHP).
+   554→   554→   *  Дыры рисуются отдельно — см. combat.applySailHit + sailAddHole. */
+   555→   555→  damageSails(n: number) {
+   556→   556→    this.sailHP = Math.max(0, this.sailHP - n);
+   557→   557→  }
+   558→   558→
+   559→   559→  /** Пробоина в борту: декаль + течь (ниже ватерлинии) + кренящий момент */
+   560→   560→  addHole(localPos: THREE.Vector3, belowWL: boolean) {
+   561→   561→    const side = localPos.x >= 0 ? 1 : -1;
+   562→   562→    // тёмная «рваная» дыра: круг + обломки досок вокруг
+   563→   563→    const g = new THREE.CircleGeometry(0.34 + Math.random() * 0.14, 9);
+   564→   564→    const mat = new THREE.MeshStandardMaterial({ color: 0x120d08, roughness: 1 });
+   565→   565→    const mesh = new THREE.Mesh(g, mat);
+   566→   566→    const w = Math.max(0.3, this.halfWidthAt(localPos.z) * 0.985);
+   567→   567→    mesh.position.set(side * w, localPos.y, localPos.z);
+   568→   568→    mesh.rotation.y = side * Math.PI / 2;
+   569→   569→    mesh.rotation.x = (Math.random() - 0.5) * 0.5;
+   570→   570→    this.visual.group.add(mesh);
+   571→   571→    this.hullHoles.push({ side, belowWL, mesh });
+   572→   572→    if (belowWL) {
+   573→   573→      this.addLeak(0.16 + Math.random() * 0.10);
+   574→   574→      this.leakBias = clamp(this.leakBias + side * 0.35, -1, 1);
+   575→   575→    }
+   576→   576→  }
+   577→   577→
+   578→   578→  /** Затопление: крен в сторону пробоин + вода в трюме утяжеляет */
+   579→   579→  private floodRoll(m: number) {
+   580→   580→    if (this.water <= 0 || this.sinking) return;
+   581→   581→    const frac = this.water / this.holdCap;
+   582→   582→    this.torque.z += this.leakBias * frac * m * 0.06;
+   583→   583→  }
+   584→   584→
+   585→   585→  breakMast(idx?: number) {
+   586→   586→    let i = idx;
+   587→   587→    if (i === undefined || i < 0 || i >= this.visual.masts.length || this.mastFall[i] >= 0) {
+   588→   588→      // без указания — случайная целая мачта
+   589→   589→      const intact = this.mastFall.map((f, k) => f < 0 ? k : -1).filter(k => k >= 0);
+   590→   590→      if (!intact.length) return;
+   591→   591→      i = intact[Math.floor(Math.random() * intact.length)];
+   592→   592→    }
+   593→   593→    this.mastFall[i] = 0;
+   594→   594→    this.mastsBroken = this.mastFall.filter(f => f >= 0).length;
+   595→   595→    this.sailHP = Math.max(0, this.sailHP - 30);
+   596→   596→    if (this.sailTarget > 0) this.sailTarget = Math.max(0, this.sailTarget - 1);
+   597→   597→  }
+   598→   598→
+   599→   599→  /** Сброс ВСЕХ повреждений (полигон/возрождение): корпус, мачты,
+   600→   600→   *  паруса, пробоины, течь, пожар, экипаж */
+   601→   601→  clearDamage() {
+   602→   602→    this.hullHP = this.hullMax;
+   603→   603→    this.sailHP = this.preset.sailHP;
+   604→   604→    this.water = 0;
+   605→   605→    this.leakRate = 0;
+   606→   606→    this.leakBias = 0;
+   607→   607→    this.onFire = false;
+   608→   608→    this.fireT = 0;
+   609→   609→    this.sinking = false;
+   610→   610→    this.sinkT = 0;
+   611→   611→    this.sunk = false;
+   612→   612→    this.surrendered = false;
+   613→   613→    this.mastsBroken = 0;
+   614→   614→    this.mastAnim = -1;
+   615→   615→    for (let i = 0; i < this.visual.masts.length; i++) {
+   616→   616→      this.mastHP[i] = this.mastMaxHP;
+   617→   617→      this.mastFall[i] = -1;
+   618→   618→      const m = this.visual.masts[i];
+   619→   619→      m.rotation.set(0, 0, 0);
+   620→   620→      m.position.y = 0;
+   621→   621→    }
+   622→   622→    for (const h of this.hullHoles) {
+   623→   623→      this.visual.group.remove(h.mesh);
+   624→   624→      h.mesh.geometry.dispose();
+   625→   625→      (h.mesh.material as THREE.Material).dispose();
+   626→   626→    }
+   627→   627→    this.hullHoles = [];
+   628→   628→    this.crew = Math.round(this.preset.maxCrew * 0.8);
+   629→   629→    this.crew3d.reset();
+   630→   630→    this.visual.group.visible = true;
+   631→   631→    this.velocity.set(0, 0, 0);
+   632→   632→    this.angular.set(0, 0, 0);
+   633→   633→    this.sailTarget = 0;
+   634→   634→    this.rudder = 0;
+   635→   635→    this.rudderTarget = 0;
+   636→   636→  }
+   637→   637→
+   638→   638→  startSinking() {
+   639→   639→    if (this.sinking) return;
+   640→   640→    this.sinking = true;
+   641→   641→    this.sinkT = 0;
+   642→   642→    this.onFire = false;
+   643→   643→  }
+   644→   644→
+   645→   645→  /** Действие команды (R): пожар -> течь -> ремонт */
+   646→   646→  crewAction(dt: number): string | null {
+   647→   647→    if (this.onFire) { this.fireT += dt * 3; if (this.fireT > 4) { this.onFire = false; this.fireT = 0; return 'Пожар потушен'; } return 'Тушение пожара...'; }
+   648→   648→    if (this.water > 0.01) {
+   649→   649→      const pump = 0.05 + this.crew * 0.004;
+   650→   650→      this.water = Math.max(0, this.water - pump * dt);
+   651→   651→      this.leakRate = Math.max(0, this.leakRate - 0.004 * dt);
+   652→   652→      return this.water > 0.05 ? 'Откачка воды...' : 'Трюм осушён';
+   653→   653→    }
+   654→   654→    if (this.hullHP < this.hullMax && this.planks > 0) {
+   655→   655→      this.hullHP = Math.min(this.hullMax, this.hullHP + 0.9 * dt);
+   656→   656→      this.planks -= dt * 0.15;
+   657→   657→      return 'Ремонт корпуса...';
+   658→   658→    }
+   659→   659→    return null;
+   660→   660→  }
+   661→   661→
+   662→   662→  // ---------- визуал ----------
+   663→   663→  updateVisual(time: number, dt: number, particles: Particles) {
+   664→   664→    const v = this.visual;
+   665→   665→    v.group.position.copy(this.position);
+   666→   666→    v.group.quaternion.copy(this.quaternion);
+   667→   667→
+   668→   668→    // паруса: количество поставленных парусов соответствует ФАКТИЧЕСКОЙ
+   669→   669→    // СКОРОСТИ — экипаж ставит паруса по мере разгона и убирает по мере
+   670→   670→    // остановки; уровень W/S задаёт максимум. Рея брасопится по ветру,
+   671→   671→    // «пузо» — по кажущемуся ветру. Паруса СЛОМАННОЙ мачты обвисают.
+   672→   672→    const awa = this.apparentWindAngle();
+   673→   673→    const polar = Ship.polar(awa);
+   674→   674→    const windClamp = clamp(this.wind.speed / 9, 0.3, 1.4);
+   675→   675→    // скорость, достижимая под полным парусным вооружением в этот ветер
+   676→   676→    // (корень из тяги — сопротивление квадратично): ~0.85·maxSpeed
+   677→   677→    const windPow = Math.pow(clamp(this.wind.speed / 8.0, 0.05, 1.6), 1.6);
+   678→   678→    const attainable = this.preset.maxSpeed * 0.85 * Math.sqrt(clamp(polar * windPow, 0, 1.5));
+   679→   679→    // в левентик/штиль паруса остаются на мачтах и трепещут (не убираются
+   680→   680→    // механически) — убираются только когда есть чем идти, но нет хода
+   681→   681→    const spdSetFrac = attainable > 1.5 ? clamp(this.speed() / attainable, 0, 1) : 1;
+   682→   682→    const setTotal = this.sailOverride ?? Math.min(this.sailFrac, spdSetFrac);
+   683→   683→    // локальный вектор «откуда дует» (x — борт, z — нос): ψ = φ + курс
+   684→   684→    const psi = this.wind.from + this.heading;
+   685→   685→    const wlX = Math.cos(psi); // >0 — ветер с порта (левый борт)
+   686→   686→    // цель брасопки: рея поперёк ветра (нормаль паруса по ветру), ±55°
+   687→   687→    let bt = Math.atan2(wlX, Math.sin(psi)) - Math.PI;
+   688→   688→    bt = Math.atan2(Math.sin(bt), Math.cos(bt)); // кратчайшая дуга
+   689→   689→    const braceTarget = clamp(bt, -0.96, 0.96);
+   690→   690→    const bellyBase = (0.35 + 0.95 * windClamp) * (0.15 + 0.85 * polar);
+   691→   691→    const flutterBase = 0.012 * windClamp * (1 + (1 - polar) * 2.2);
+   692→   692→    for (const s of v.sails.sails) {
+   693→   693→      // мачта-носитель сломана → парус безжизненно обвисает
+   694→   694→      const mastDead = s.mastIndex !== undefined && this.mastFall[s.mastIndex] >= 0;
+   695→   695→      // доля постановки этого паруса при текущей скорости хода
+   696→   696→      const setFrac = mastDead ? 0 : smoothstep(s.setAt - 0.38, s.setAt, setTotal);
+   697→   697→      s.furl += ((1 - setFrac) - s.furl) * Math.min(1, dt * (mastDead ? 2.2 : 1.1));
+   698→   698→      const sf = 1 - s.furl;
+   699→   699→      s.mat.uniforms.uTime.value = time;
+   700→   700→      s.mat.uniforms.uFurl.value = s.furl;
+   701→   701→      s.mat.uniforms.uDamage.value = 1 - this.sailHP / this.preset.sailHP;
+   702→   702→      s.mat.uniforms.uFlutter.value = flutterBase * (0.25 + 0.75 * sf);
+   703→   703→      if (s.square && s.brace) {
+   704→   704→        // реи разворачиваются медленно — как будто работают брашпили
+   705→   705→        s.braceAngle += ((mastDead ? 0 : braceTarget) - s.braceAngle) * Math.min(1, dt * 0.5);
+   706→   706→        s.brace.rotation.y = s.braceAngle;
+   707→   707→        s.mat.uniforms.uBelly.value = mastDead ? 0 : bellyBase * sf;
+   708→   708→      } else {
+   709→   709→        // кливер: пузо в подветренную сторону (локальный Z → борт)
+   710→   710→        s.mat.uniforms.uBelly.value = mastDead ? 0 : bellyBase * sf * (-wlX);
+   711→   711→      }
+   712→   712→    }
+   713→   713→
+   714→   714→    // флаг — по ветру
+   715→   715→    const wf = Math.atan2(-Math.cos(this.wind.from), -Math.sin(this.wind.from));
+   716→   716→    v.flag.rotation.y = wf - this.heading + Math.PI;
+   717→   717→    v.flagMat.uniforms.uTime.value = time;
+   718→   718→
+   719→   719→    // штурвал крутится от руля: D (руль вправо) — по часовой от рулевого
+   720→   720→    v.wheel.rotation.z = this.rudder * 2.2;
+   721→   721→
+   722→   722→    // падение мачт: каждая валится вперёд-вбок со своим наклоном,
+   723→   723→    // реи и паруса едут вместе с мачтой (они её потомки)
+   724→   724→    for (let i = 0; i < v.masts.length; i++) {
+   725→   725→      const f = this.mastFall[i];
+   726→   726→      if (f >= 0 && f < 1) {
+   727→   727→        this.mastFall[i] = Math.min(1, f + dt * 0.42);
+   728→   728→        const k = this.mastFall[i];
+   729→   729→        const lean = (i % 2 === 0 ? 1 : -1) * 0.3;
+   730→   730→        v.masts[i].rotation.x = k * 1.25;
+   731→   731→        v.masts[i].rotation.z = k * lean;
+   732→   732→        v.masts[i].position.y = -k * 1.6;
+   733→   733→      }
+   734→   734→    }
+   735→   735→
+   736→   736→    // пенный воротник по ватерлинии
+   737→   737→    if (!this.sunk) {
+   738→   738→      const wy = waterHeightAt(this.position.x, this.position.z, time);
+   739→   739→      this.foam.mesh.position.set(this.position.x, wy + 0.28, this.position.z);
+   740→   740→      this.foam.mesh.rotation.y = this.heading;
+   741→   741→      const spdFrac = clamp(this.speed() / this.preset.maxSpeed, 0, 1);
+   742→   742→      this.foam.update(time, spdFrac, this.euler.z);
+   743→   743→    } else {
+   744→   744→      this.foam.mesh.visible = false;
+   745→   745→    }
+   746→   746→
+   747→   747→    // кильватерный след
+   748→   748→    const sternW = this.tmpV.set(0, 0, -this.preset.length * 0.48)
+   749→   749→      .applyQuaternion(this.quaternion).add(this.position);
+   750→   750→    const spdFrac = clamp(this.speed() / this.preset.maxSpeed, 0, 1);
+   751→   751→    if (!this.sunk && !this.grounded) {
+   752→   752→      this.wake.push(sternW, spdFrac, dt, time);
+   753→   753→    }
+   754→   754→    this.wake.update(time);
+   755→   755→
+   756→   756→    // носовой бурун: брызги при ударе носа о волну
+   757→   757→    if (!this.sunk) {
+   758→   758→      const bowW = this.tmpV2.set(0, -this.preset.draft * 0.3, this.preset.length * 0.46)
+   759→   759→        .applyQuaternion(this.quaternion).add(this.position);
+   760→   760→      const waveY = waterHeightAt(bowW.x, bowW.z, time);
+   761→   761→      const relV = this.velocity.y - (waveY - this.lastStern.y) * 0; // грубая оценка
+   762→   762→      const impact = (waveY - bowW.y) * (0.3 + spdFrac);
+   763→   763→      if (impact > 0.55 && Math.random() < 0.6) {
+   764→   764→        particles.splash(bowW.x, waveY, bowW.z, 0.5 + spdFrac * 0.9);
+   765→   765→      }
+   766→   766→      if (spdFrac > 0.35 && Math.random() < spdFrac * 0.5) {
+   767→   767→        particles.spawn(bowW.x + (Math.random() - 0.5) * 2, waveY + 0.1, bowW.z + (Math.random() - 0.5) * 2,
+   768→   768→          (Math.random() - 0.5) * 2, 1.5 + Math.random() * 2.5 * spdFrac, (Math.random() - 0.5) * 2,
+   769→   769→          0.5, 0.3 + Math.random() * 0.35, 0, 0.4, 10);
+   770→   770→      }
+   771→   771→      // крен: всплески у борта
+   772→   772→      const roll = this.euler.z;
+   773→   773→      this.rollSmooth += (roll - this.rollSmooth) * Math.min(1, dt * 3);
+   774→   774→      if (Math.abs(this.rollSmooth) > 0.28 && Math.random() < 0.3) {
+   775→   775→        const side = Math.sign(this.rollSmooth) * this.preset.beam * 0.5;
+   776→   776→        const px = this.position.x + Math.cos(this.heading) * side;
+   777→   777→        const pz = this.position.z - Math.sin(this.heading) * side;
+   778→   778→        particles.splash(px, waterHeightAt(px, pz, time), pz, 0.5);
+   779→   779→      }
+   780→   780→    }
+   781→   781→
+   782→   782→    // экипаж: анимация, потери (трупы/разрывы), эвакуация при потоплении
+   783→   783→    this.crew3d.update(dt, time, {
+   784→   784→      crew: this.crew, maxCrew: this.preset.maxCrew,
+   785→   785→      sinking: this.sinking, sunk: this.sunk,
+   786→   786→      position: this.position, quaternion: this.quaternion,
+   787→   787→    });
+   788→   788→  }
+   789→   789→
+   790→   790→  /** Сдвиг мира (floating origin) */
+   791→   791→  shiftWorld(delta: THREE.Vector3) {
+   792→   792→    this.position.add(delta);
+   793→   793→    this.wake.shiftWorld(delta);
+   794→   794→  }
+   795→   795→
+   796→   796→  dispose() {
+   797→   797→    this.visual.group.traverse((o) => {
+   798→   798→      const mesh = o as THREE.Mesh;
+   799→   799→      if (mesh.geometry) mesh.geometry.dispose();
+   800→   800→    });
+   801→   801→  }
+   802→   802→}
+   803→   803→

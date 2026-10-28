@@ -70,6 +70,8 @@ export class CombatSystem {
     active: false, side: 1, azimuth: 0, elevation: 0.06, range: 0, target: null, targetLead: null,
   };
   ammo: AmmoType = 'ball';
+  /** чит из настроек: боеприпасы не расходуются */
+  infiniteAmmo = false;
 
   private projectiles: Projectile[] = [];
   private projMesh: THREE.InstancedMesh;
@@ -263,7 +265,7 @@ export class CombatSystem {
       this.emit(GameEvents.MESSAGE, { text: `${info.name}: нет боеприпасов!` });
       return;
     }
-    ship.ammo[this.ammo]--;
+    if (!this.infiniteAmmo) ship.ammo[this.ammo]--; // расход боезапаса
     this.reloads[idx] = this.reloadDuration();
     if (delay > 0) {
       // отложенный выстрел для залпа

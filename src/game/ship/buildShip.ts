@@ -21,16 +21,24 @@ export interface ShipPreset {
   cargo: number;         // грузоподъёмность, т
   colors: { hull: number; deck: number; trim: number; sail: number };
   flagKind: 'pirate' | 'merchant' | 'navy';
+  // --- классификация (энциклопедия, мини-карта) ---
+  category: 'war' | 'merchant';          // военный / торговый
+  shipClass: string;                     // класс/ранг судна
+  year?: number;                         // год постройки
+  country?: string;                      // страна
   // --- архитектура XVI–XVIII веков ---
-  rig?: 'full' | 'single' | 'lateenMix'; // полное / один парус на мачту (когг) / фок прямой + латинские (каравелла)
-  gunportRows?: number;  // рядов пушечных портов по борту (галеон/фрегат)
+  rig?: 'full' | 'single' | 'lateenMix' | 'lateen'; // полное / один парус на мачту (когг) / фок прямой + латинские (каравелла) / все латинские (шебека, галера)
+  gunportRows?: number;  // рядов пушечных портов по борту (1–4)
   castleH?: number;      // высота надстроек-«замков» (когг)
   flatBow?: boolean;     // пинасс: почти плоская носовая переборка
   beakhead?: boolean;    // галеон: низкий бак с гальюном
   gallery?: boolean;     // кормовая галерея с окнами
+  oars?: number;         // вёсел на борт (гребные суда: шебека, галера)
+  stripes?: { y0: number; y1: number; color: number }[]; // цветные полосы борта (доли свободного борта): «Victory stripe»
 }
 
 export const PRESETS: Record<string, ShipPreset> = {
+  // ================= base set =================
   sloop: {
     id: 'sloop', name: 'Шлюп «Бриз»',
     length: 28, beam: 7.4, draft: 2.2, freeboard: 2.7,
@@ -39,6 +47,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 100, sailHP: 100, maxCrew: 24, cargo: 60,
     colors: { hull: 0x5c4326, deck: 0xa8895f, trim: 0x2e2013, sail: 0xe9dcc2 },
     flagKind: 'pirate',
+    category: 'war', shipClass: 'Шлюп', year: 1715, country: 'Британские колонии',
   },
   fluyt: {
     id: 'fluyt', name: 'Флейт «Морская корова»',
@@ -48,6 +57,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 150, sailHP: 110, maxCrew: 20, cargo: 220,
     colors: { hull: 0x4a3a2a, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
     flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Флейт', year: 1605, country: 'Голландия',
   },
   brig: {
     id: 'brig', name: 'Бриг «Ревнитель»',
@@ -57,8 +67,8 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 180, sailHP: 120, maxCrew: 60, cargo: 90,
     colors: { hull: 0x3d3d46, deck: 0x8f7752, trim: 0x1c1c22, sail: 0xdfd6bd },
     flagKind: 'navy',
+    category: 'war', shipClass: 'Бриг', year: 1780, country: 'Великобритания',
   },
-  // --- суда XVI–XVIII веков (wonderfulsail.com) ---
   caravel: {
     id: 'caravel', name: 'Каравелла «Нинья»',
     length: 21, beam: 6.4, draft: 1.9, freeboard: 2.9,
@@ -68,6 +78,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     colors: { hull: 0x6e4c2a, deck: 0xa8895f, trim: 0x2c1f12, sail: 0xe6d7b2 },
     flagKind: 'merchant',
     rig: 'lateenMix',
+    category: 'merchant', shipClass: 'Каравелла', year: 1490, country: 'Португалия',
   },
   pinnace: {
     id: 'pinnace', name: 'Пинасс «Морской пёс»',
@@ -78,6 +89,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     colors: { hull: 0x54402c, deck: 0x9d8158, trim: 0x241a10, sail: 0xd9ccb0 },
     flagKind: 'merchant',
     flatBow: true,
+    category: 'merchant', shipClass: 'Пинасс', year: 1600, country: 'Англия',
   },
   cog: {
     id: 'cog', name: 'Когг «Ганзейский волк»',
@@ -88,6 +100,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     colors: { hull: 0x4f3b26, deck: 0x93764f, trim: 0x23180d, sail: 0xd6c8a8 },
     flagKind: 'merchant',
     rig: 'single', castleH: 2.6,
+    category: 'merchant', shipClass: 'Когг', year: 1350, country: 'Ганзейский союз',
   },
   galleon: {
     id: 'galleon', name: 'Галеон «Золотая лань»',
@@ -98,6 +111,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     colors: { hull: 0x3a2e22, deck: 0x8f7752, trim: 0x8a6a2a, sail: 0xe3d8bd },
     flagKind: 'navy',
     gunportRows: 2, beakhead: true, gallery: true,
+    category: 'war', shipClass: 'Галеон', year: 1577, country: 'Англия',
   },
   frigate: {
     id: 'frigate', name: 'Фрегат «Неустрашимый»',
@@ -108,8 +122,241 @@ export const PRESETS: Record<string, ShipPreset> = {
     colors: { hull: 0x2a2d33, deck: 0x8f7752, trim: 0x9a7a33, sail: 0xe9e0c8 },
     flagKind: 'navy',
     gunportRows: 2, gallery: true,
+    category: 'war', shipClass: 'Фрегат 5 ранга', year: 1750, country: 'Великобритания',
+  },
+
+  // ================= военные корабли XVIII века =================
+  victory: {
+    id: 'victory', name: 'HMS Victory',
+    length: 57, beam: 15.5, draft: 7.0, freeboard: 7.2,
+    masts: 3, gunsPerSide: 14, gunportRows: 3,
+    mass: 3_500_000, maxSpeed: 6.4,
+    hullHP: 950, sailHP: 320, maxCrew: 850, cargo: 550,
+    colors: { hull: 0x1c1c22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xece3cb },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1765, country: 'Великобритания',
+    stripes: [{ y0: 0.24, y1: 0.36, color: 0xc9a24a }, { y0: 0.41, y1: 0.53, color: 0xc9a24a }, { y0: 0.58, y1: 0.70, color: 0xc9a24a }],
+  },
+  santisima: {
+    id: 'santisima', name: 'Santísima Trinidad',
+    length: 61, beam: 16.2, draft: 7.4, freeboard: 7.6,
+    masts: 3, gunsPerSide: 15, gunportRows: 4,
+    mass: 4_300_000, maxSpeed: 6.0,
+    hullHP: 1100, sailHP: 340, maxCrew: 1050, cargo: 620,
+    colors: { hull: 0x7a2a22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xe9e0c8 },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1769, country: 'Испания',
+    stripes: [{ y0: 0.23, y1: 0.33, color: 0xd8d2c2 }, { y0: 0.35, y1: 0.45, color: 0xd8d2c2 }, { y0: 0.47, y1: 0.57, color: 0xd8d2c2 }, { y0: 0.60, y1: 0.70, color: 0xd8d2c2 }],
+  },
+  soleil: {
+    id: 'soleil', name: 'Soleil Royal',
+    length: 50, beam: 14.0, draft: 6.5, freeboard: 6.8,
+    masts: 3, gunsPerSide: 12, gunportRows: 3,
+    mass: 2_800_000, maxSpeed: 6.6,
+    hullHP: 880, sailHP: 300, maxCrew: 850, cargo: 500,
+    colors: { hull: 0x27406b, deck: 0xa8895f, trim: 0xc9a24a, sail: 0xece3cb },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1693, country: 'Франция',
+    stripes: [{ y0: 0.24, y1: 0.36, color: 0xc9a24a }, { y0: 0.41, y1: 0.53, color: 0xc9a24a }, { y0: 0.58, y1: 0.70, color: 0xc9a24a }],
+  },
+  blago: {
+    id: 'blago', name: '«Благополучие»',
+    length: 46, beam: 12.0, draft: 5.4, freeboard: 5.8,
+    masts: 3, gunsPerSide: 11, gunportRows: 2,
+    mass: 1_900_000, maxSpeed: 6.4,
+    hullHP: 620, sailHP: 240, maxCrew: 470, cargo: 400,
+    colors: { hull: 0x4c4030, deck: 0x9d8158, trim: 0x2b4a6b, sail: 0xe3d8bd },
+    flagKind: 'navy',
+    category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1741, country: 'Россия',
+    stripes: [{ y0: 0.36, y1: 0.54, color: 0x9db3c9 }],
+  },
+  agamemnon: {
+    id: 'agamemnon', name: 'HMS Agamemnon',
+    length: 48, beam: 13.2, draft: 5.8, freeboard: 6.0,
+    masts: 3, gunsPerSide: 11, gunportRows: 2,
+    mass: 2_200_000, maxSpeed: 6.5,
+    hullHP: 660, sailHP: 250, maxCrew: 500, cargo: 380,
+    colors: { hull: 0x1c1c22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xe9e0c8 },
+    flagKind: 'navy',
+    category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1781, country: 'Великобритания',
+    stripes: [{ y0: 0.36, y1: 0.54, color: 0xc9a24a }],
+  },
+  ingermanland: {
+    id: 'ingermanland', name: '«Ингерманланд»',
+    length: 46, beam: 12.0, draft: 5.4, freeboard: 5.8,
+    masts: 3, gunsPerSide: 11, gunportRows: 2,
+    mass: 1_900_000, maxSpeed: 6.4,
+    hullHP: 630, sailHP: 240, maxCrew: 470, cargo: 400,
+    colors: { hull: 0x6e6a5c, deck: 0x9d8158, trim: 0x2b5a8a, sail: 0xe3d8bd },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1715, country: 'Россия',
+    stripes: [{ y0: 0.38, y1: 0.56, color: 0x2b5a8a }],
+  },
+  constitution: {
+    id: 'constitution', name: 'USS Constitution',
+    length: 53, beam: 13.0, draft: 6.0, freeboard: 6.2,
+    masts: 3, gunsPerSide: 12, gunportRows: 2,
+    mass: 2_200_000, maxSpeed: 7.8,
+    hullHP: 740, sailHP: 280, maxCrew: 450, cargo: 380,
+    colors: { hull: 0x17171c, deck: 0xa8895f, trim: 0xd8d2c2, sail: 0xece3cb },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Тяжёлый фрегат 4 ранга', year: 1797, country: 'США',
+    stripes: [{ y0: 0.34, y1: 0.54, color: 0xd8d2c2 }],
+  },
+  surprise: {
+    id: 'surprise', name: 'HMS Surprise',
+    length: 38, beam: 9.6, draft: 4.4, freeboard: 4.6,
+    masts: 3, gunsPerSide: 9, gunportRows: 1,
+    mass: 700_000, maxSpeed: 8.6,
+    hullHP: 290, sailHP: 170, maxCrew: 200, cargo: 150,
+    colors: { hull: 0x2a2d33, deck: 0x9d8158, trim: 0x1c1c22, sail: 0xe9e0c8 },
+    flagKind: 'navy',
+    category: 'war', shipClass: 'Фрегат 6 ранга', year: 1796, country: 'Великобритания',
+    stripes: [{ y0: 0.34, y1: 0.56, color: 0xc9b45a }],
+  },
+  hermione: {
+    id: 'hermione', name: 'Hermione',
+    length: 44, beam: 10.8, draft: 4.9, freeboard: 5.0,
+    masts: 3, gunsPerSide: 10, gunportRows: 1,
+    mass: 1_050_000, maxSpeed: 8.0,
+    hullHP: 330, sailHP: 200, maxCrew: 255, cargo: 180,
+    colors: { hull: 0x2b4a7a, deck: 0x9d8158, trim: 0xc9a24a, sail: 0xece3cb },
+    flagKind: 'navy', gallery: true,
+    category: 'war', shipClass: 'Фрегат (класс Concorde)', year: 1779, country: 'Франция',
+    stripes: [{ y0: 0.32, y1: 0.54, color: 0xc9a24a }],
+  },
+  mystique: {
+    id: 'mystique', name: 'Le Mystique',
+    length: 36, beam: 8.2, draft: 3.4, freeboard: 3.8,
+    masts: 3, gunsPerSide: 8, gunportRows: 1,
+    mass: 400_000, maxSpeed: 8.2,
+    hullHP: 240, sailHP: 200, maxCrew: 150, cargo: 120,
+    colors: { hull: 0x6e3423, deck: 0xa8895f, trim: 0x2c1f12, sail: 0xe6d7b2 },
+    flagKind: 'navy',
+    rig: 'lateen', oars: 8,
+    category: 'war', shipClass: 'Военная шебека (гребная)', year: 1750, country: 'Франция',
+  },
+  galley: {
+    id: 'galley', name: 'Галера «Капудана»',
+    length: 50, beam: 7.6, draft: 2.5, freeboard: 3.2,
+    masts: 3, gunsPerSide: 4,
+    mass: 340_000, maxSpeed: 7.0,
+    hullHP: 260, sailHP: 150, maxCrew: 260, cargo: 100,
+    colors: { hull: 0x5c3020, deck: 0x93764f, trim: 0xc9a24a, sail: 0xdccfa8 },
+    flagKind: 'navy',
+    rig: 'lateen', oars: 12,
+    category: 'war', shipClass: 'Военная галера (гребная)', year: 1750, country: 'Средиземноморье',
+  },
+
+  // ================= торговые и гражданские суда XVIII века =================
+  amsterdam: {
+    id: 'amsterdam', name: 'Amsterdam',
+    length: 52, beam: 14.0, draft: 6.4, freeboard: 6.8,
+    masts: 3, gunsPerSide: 8, gunportRows: 1,
+    mass: 1_800_000, maxSpeed: 5.6,
+    hullHP: 520, sailHP: 260, maxCrew: 120, cargo: 1400,
+    colors: { hull: 0x4a3a2a, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
+    flagKind: 'merchant', gallery: true,
+    category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1748, country: 'Голландия',
+    stripes: [{ y0: 0.30, y1: 0.50, color: 0x6b7a86 }],
+  },
+  abergavenny: {
+    id: 'abergavenny', name: 'Earl of Abergavenny',
+    length: 48, beam: 12.8, draft: 6.0, freeboard: 6.4,
+    masts: 3, gunsPerSide: 10, gunportRows: 1,
+    mass: 1_700_000, maxSpeed: 5.5,
+    hullHP: 560, sailHP: 280, maxCrew: 160, cargo: 1500,
+    colors: { hull: 0x3d3226, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
+    flagKind: 'merchant', gallery: true,
+    category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1796, country: 'Великобритания',
+    stripes: [{ y0: 0.30, y1: 0.52, color: 0x2b4a6b }],
+  },
+  gotheborg: {
+    id: 'gotheborg', name: 'Götheborg',
+    length: 47, beam: 12.5, draft: 5.6, freeboard: 6.0,
+    masts: 3, gunsPerSide: 9, gunportRows: 1,
+    mass: 1_500_000, maxSpeed: 5.9,
+    hullHP: 480, sailHP: 250, maxCrew: 140, cargo: 1200,
+    colors: { hull: 0x5f4a2e, deck: 0x9d8158, trim: 0x27406b, sail: 0xd8cbae },
+    flagKind: 'merchant', gallery: true,
+    category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1738, country: 'Швеция',
+    stripes: [{ y0: 0.32, y1: 0.52, color: 0x27406b }],
+  },
+  friendship: {
+    id: 'friendship', name: 'Friendship of Salem',
+    length: 38, beam: 9.4, draft: 4.4, freeboard: 4.6,
+    masts: 3, gunsPerSide: 6, gunportRows: 1,
+    mass: 700_000, maxSpeed: 6.4,
+    hullHP: 340, sailHP: 190, maxCrew: 24, cargo: 420,
+    colors: { hull: 0x17171c, deck: 0xa8895f, trim: 0xd8d2c2, sail: 0xd8cbae },
+    flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Торговый Индский корабль', year: 1797, country: 'США',
+    stripes: [{ y0: 0.34, y1: 0.56, color: 0xd8d2c2 }],
+  },
+  endeavour: {
+    id: 'endeavour', name: 'HMS Endeavour',
+    length: 30, beam: 8.8, draft: 3.9, freeboard: 4.2,
+    masts: 3, gunsPerSide: 5,
+    mass: 400_000, maxSpeed: 5.8,
+    hullHP: 250, sailHP: 130, maxCrew: 85, cargo: 380,
+    colors: { hull: 0x5c4028, deck: 0x93764f, trim: 0x241a10, sail: 0xd6c8a8 },
+    flagKind: 'navy', flatBow: true,
+    category: 'merchant', shipClass: 'Исследовательское судно', year: 1764, country: 'Великобритания',
+  },
+  bounty: {
+    id: 'bounty', name: 'HMS Bounty',
+    length: 31, beam: 8.6, draft: 3.8, freeboard: 4.0,
+    masts: 3, gunsPerSide: 4,
+    mass: 380_000, maxSpeed: 6.8,
+    hullHP: 210, sailHP: 140, maxCrew: 46, cargo: 320,
+    colors: { hull: 0x4f3b26, deck: 0x93764f, trim: 0x2e2013, sail: 0xdccfa8 },
+    flagKind: 'navy',
+    category: 'merchant', shipClass: 'Вооружённое транспортное судно', year: 1784, country: 'Великобритания',
+  },
+  essex: {
+    id: 'essex', name: 'Whaler Essex',
+    length: 28, beam: 7.4, draft: 3.5, freeboard: 3.8,
+    masts: 3, gunsPerSide: 3,
+    mass: 340_000, maxSpeed: 6.6,
+    hullHP: 190, sailHP: 130, maxCrew: 21, cargo: 350,
+    colors: { hull: 0x3a2e22, deck: 0x93764f, trim: 0x23180d, sail: 0xd6c8a8 },
+    flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Китобойное судно', year: 1799, country: 'США',
+  },
+  rebecca: {
+    id: 'rebecca', name: 'Rebecca',
+    length: 26, beam: 7.0, draft: 3.2, freeboard: 3.4,
+    masts: 2, gunsPerSide: 3,
+    mass: 220_000, maxSpeed: 7.2,
+    hullHP: 150, sailHP: 110, maxCrew: 15, cargo: 190,
+    colors: { hull: 0x54402c, deck: 0x9d8158, trim: 0x241a10, sail: 0xd9ccb0 },
+    flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Торговый бриг', year: 1790, country: 'Британия / США',
+  },
+  svati: {
+    id: 'svati', name: '«Свати»',
+    length: 24, beam: 6.6, draft: 2.9, freeboard: 3.1,
+    masts: 2, gunsPerSide: 2,
+    mass: 160_000, maxSpeed: 6.8,
+    hullHP: 120, sailHP: 105, maxCrew: 16, cargo: 170,
+    colors: { hull: 0x4c4030, deck: 0x93764f, trim: 0x2b4a6b, sail: 0xd9ccb0 },
+    flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Галиот / шхуна', year: 1780, country: 'Россия',
+  },
+  ladyw: {
+    id: 'ladyw', name: 'Lady Washington',
+    length: 17, beam: 5.2, draft: 2.2, freeboard: 2.5,
+    masts: 2, gunsPerSide: 2,
+    mass: 90_000, maxSpeed: 6.6,
+    hullHP: 85, sailHP: 90, maxCrew: 12, cargo: 60,
+    colors: { hull: 0x5c4326, deck: 0xa8895f, trim: 0x2e2013, sail: 0xe6d7b2 },
+    flagKind: 'merchant',
+    category: 'merchant', shipClass: 'Торговый шлюп', year: 1780, country: 'США',
   },
 };
+
+export const WAR_PRESET_IDS = Object.values(PRESETS).filter(p => p.category === 'war').map(p => p.id);
+export const MERCHANT_PRESET_IDS = Object.values(PRESETS).filter(p => p.category === 'merchant').map(p => p.id);
 
 export interface ShipVisual {
   group: THREE.Group;
@@ -124,6 +371,8 @@ export interface ShipVisual {
   lantern?: THREE.PointLight;
   wheel: THREE.Object3D;
   detail?: THREE.Group;           // мелкие детали — видны только вблизи (LOD)
+  oars?: THREE.Object3D[];        // вёсла гребных судов (анимация гребков)
+  rudderMesh?: THREE.Mesh;        // руль на корме (поворачивается с рулём)
 }
 
 export interface SailRig {
@@ -349,6 +598,16 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
   const cBoot = new THREE.Color(0xd8d2c2); // пояс ватерлинии
   const cWale = new THREE.Color(P.colors.trim);
   const tmp = new THREE.Color();
+  // цветные полосы борта (доли свободного борта) — «Victory stripe»
+  const F = P.freeboard;
+  const stripes = (P.stripes ?? []).map(st => ({
+    y0: st.y0 * F, y1: st.y1 * F, c: new THREE.Color(st.color),
+  }));
+  // высотные зоны МАСШТАБИРУЮТСЯ под высоту борта (у линейных кораблей
+  // ватерлинионный пояс и вельс не должны лепиться у самой палубы)
+  const bootTop = Math.max(0.42, F * 0.13);        // верх ватерлинионного пояса
+  const waleY0 = Math.max(0.9, F * 0.22);          // вельс (дополнительный пояс прочности)
+  const waleY1 = waleY0 + Math.max(0.45, F * 0.09);
 
   const stations: { z: number; w: number; draft: number; bulwark: number }[] = [];
   for (let s = 0; s <= S; s++) {
@@ -359,10 +618,18 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
 
   const pushPoint = (x: number, y: number, z: number) => {
     pos.push(x, y, z);
-    // раскраска по высоте
+    // раскраска по высоте: подводная часть -> ватерлинионный пояс ->
+    // (полосы пресета) -> вельс -> основной цвет борта
+    let stripeC: THREE.Color | null = null;
+    if (y > 0.1) {
+      for (const st of stripes) {
+        if (y >= st.y0 && y <= st.y1) { stripeC = st.c; break; }
+      }
+    }
     if (y < -0.15) tmp.copy(cHull).lerp(cBelow, Math.min(1, (-y + 0.15) / P.draft));
-    else if (y < 0.42) tmp.copy(cBoot);
-    else if (y > 0.9 && y < 1.35) tmp.copy(cWale);
+    else if (y < bootTop) tmp.copy(cBoot);
+    else if (stripeC) tmp.copy(stripeC);
+    else if (y > waleY0 && y < waleY1) tmp.copy(cWale);
     else tmp.copy(cHull);
     // лёгкая полосатость обшивки
     const stripe = 1.0 - 0.06 * (Math.sin(y * 9.0) * 0.5 + 0.5);
@@ -745,24 +1012,28 @@ function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
   const cWoodD = new THREE.Color(0x4a3420);
   let any = false;
 
-  // пушечные порты: тёмные проёмы в ряд по борту + золочёный вельс над батареей
+  // пушечные порты: тёмные проёмы в ряд по борту + золочёный вельс над батареей.
+  // Ряды распределены по высоте борта равномерно (1–4 ряда: фрегат .. 4-дечный линкор)
   const rows = P.gunportRows || 0;
   if (rows > 0) {
-    const nGuns = Math.max(4, P.gunsPerSide + 1);
+    const nGuns = Math.max(4, Math.min(P.gunsPerSide + 1, 16));
+    const rowY = (r: number) => P.freeboard * (rows === 1
+      ? 0.5
+      : 0.62 - r * (0.34 / (rows - 1)));
     for (let r = 0; r < rows; r++) {
-      const y = P.freeboard * (rows === 2 ? (r === 0 ? 0.62 : 0.28) : 0.5);
+      const y = rowY(r);
       for (const side of [-1, 1]) {
         for (let i = 0; i < nGuns; i++) {
           const z = THREE.MathUtils.lerp(-L * 0.3, L * 0.3, nGuns === 1 ? 0.5 : i / (nGuns - 1));
           const tt = (z + L / 2) / L;
           if (tt < 0.12 || tt > 0.86) continue;
           const hw = hullHalfWidthAt(P, tt, y);
-          bakeInto(t, new THREE.BoxGeometry(0.06, 0.5, 0.62), cPort, side * (hw + 0.02), y, z);
+          bakeInto(t, new THREE.BoxGeometry(0.06, Math.min(0.5, P.freeboard * 0.09), 0.62), cPort, side * (hw + 0.02), y, z);
         }
-        const S = 26;
-        for (let s = 0; s < S; s++) {
-          const zA = THREE.MathUtils.lerp(-L * 0.32, L * 0.32, s / S);
-          const zB = THREE.MathUtils.lerp(-L * 0.32, L * 0.32, (s + 1) / S);
+        const S2 = 26;
+        for (let s = 0; s < S2; s++) {
+          const zA = THREE.MathUtils.lerp(-L * 0.32, L * 0.32, s / S2);
+          const zB = THREE.MathUtils.lerp(-L * 0.32, L * 0.32, (s + 1) / S2);
           const tt = ((zA + zB) / 2 + L / 2) / L;
           if (tt < 0.1 || tt > 0.88) continue;
           const hw = hullHalfWidthAt(P, tt, y + 0.42);
@@ -933,6 +1204,51 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
   group.add(mesh);
   return group;
 }
+
+/** Вёсла гребных судов (шебека, галера): вальные порты по борту +
+ *  вёсла с лопастями, наклонённые к воде; гребки анимирует Ship.updateVisual */
+function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] } {
+  const group = new THREE.Group();
+  const oars: THREE.Object3D[] = [];
+  const n = P.oars || 0;
+  if (!n) return { group, oars };
+  const L = P.length;
+  const shaftMat = new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.85 });
+  const portMat = new THREE.MeshStandardMaterial({ color: 0x14100d, roughness: 0.9 });
+  const oarLen = clamp2(L * 0.17, 4.5, 11);
+  const z0 = -L * 0.26, z1 = L * 0.30;
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    const z = THREE.MathUtils.lerp(z0, z1, t);
+    const tt = clamp2((z + L / 2) / L, 0, 1);
+    const y = P.freeboard * 0.30; // вальная палуба — ниже орудийной
+    const hw = hullHalfWidthAt(P, tt, y);
+    for (const side of [-1, 1]) {
+      // тёмный вальный порт
+      const port = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.26, 0.3), portMat);
+      port.position.set(side * (hw + 0.01), y, z);
+      group.add(port);
+      // весло: вал + лопасть, наклонены вниз-наружу к воде
+      const oar = new THREE.Group();
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, oarLen, 5), shaftMat);
+      shaft.rotation.z = Math.PI / 2;
+      shaft.position.x = oarLen * 0.42;
+      oar.add(shaft);
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(oarLen * 0.3, 0.03, 0.2), shaftMat);
+      blade.position.x = oarLen * 0.92;
+      oar.add(blade);
+      oar.position.set(side * (hw + 0.04), y, z);
+      oar.rotation.z = side * -0.34;
+      oar.userData.phase = t * Math.PI * 2 + (side > 0 ? Math.PI : 0);
+      oar.userData.side = side;
+      oar.userData.base = side * -0.34;
+      group.add(oar);
+      oars.push(oar);
+    }
+  }
+  return { group, oars };
+}
+function clamp2(v: number, a: number, b: number) { return v < a ? a : v > b ? b : v; }
 
 // ---------- такелаж (линии) ----------
 function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3): THREE.LineSegments {
@@ -1146,6 +1462,11 @@ export function buildShip(P: ShipPreset): ShipVisual {
     addSquareSail(0, 0.6, L * 0.28, L * 0.13, 0.55);
     addLateenSail(1, 0.45, L * 0.5, mastDefs[1].h * 0.5, 0.85);
     addLateenSail(2, 0.8, L * 0.32, mastDefs[2].h * 0.5, 0.55);
+  } else if (P.rig === 'lateen') {
+    // шебека / галера: огромные латинские паруса на всех мачтах
+    addLateenSail(0, 0.68, L * 0.34, mastDefs[0].h * 0.46, 0.5);
+    addLateenSail(1, 0.45, L * 0.52, mastDefs[1].h * 0.52, 0.85);
+    addLateenSail(2, 0.78, L * 0.3, mastDefs[2].h * 0.44, 0.5);
   } else if (P.masts === 2) {
     addSquareSail(0, 0.66, L * 0.3, L * 0.16, 0.62);   // фок
     addSquareSail(1, 0.72, L * 0.36, L * 0.2, 0.45);   // грот нижний — ставится первым
@@ -1214,9 +1535,9 @@ export function buildShip(P: ShipPreset): ShipVisual {
       quad, holeW: Math.hypot(a.x, a.y), holeH: Math.hypot(b.x, b.y),
     });
   };
-  // кливера — только на «полных» вооружениях (у когга и каравеллы их нет)
+  // кливера — только на «полных» вооружениях (у когга, каравеллы и шебеки их нет)
   const foreTop = mastDefs[0];
-  if (P.rig !== 'lateenMix' && P.rig !== 'single') {
+  if (P.rig !== 'lateenMix' && P.rig !== 'single' && P.rig !== 'lateen') {
     addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
     addJib(new THREE.Vector3(bowspritTip.x * 0.55, bowspritTip.y - (bowspritTip.y - P.freeboard * 0.72) * 0.45, bowspritTip.z - L * 0.1),
       new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
@@ -1343,12 +1664,30 @@ export function buildShip(P: ShipPreset): ShipVisual {
   detail.visible = false;
   group.add(detail);
 
+  // вёсла (шебека, галера)
+  let oarsVis: THREE.Object3D[] | undefined;
+  if (P.oars) {
+    const o = buildOars(P);
+    group.add(o.group);
+    oarsVis = o.oars;
+  }
+
+  // руль за транцем: перо на петлях, поворачивается вместе с рулём
+  const rudLen = Math.min(2.6, Math.max(1.4, L * 0.045));
+  const rudGeo = new THREE.BoxGeometry(0.15, Math.max(1.2, P.draft * 0.72), rudLen);
+  rudGeo.translate(0, 0, -rudLen / 2); // ось вращения — передняя кромка
+  const rudderMesh = new THREE.Mesh(rudGeo, darkMat);
+  rudderMesh.position.set(0, -P.draft * 0.40, -L / 2 + 0.03);
+  rudderMesh.castShadow = true;
+  group.add(rudderMesh);
+
   const rig: SailRig = { sails };
 
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
     masts, lantern, wheel, detail,
+    oars: oarsVis, rudderMesh,
   };
 }
 

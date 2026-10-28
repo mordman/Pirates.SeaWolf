@@ -24,6 +24,12 @@ export interface DamageInput {
 
 interface Probe { off: THREE.Vector3; k: number; c: number; }
 
+/** Опции создания корабля (настройки игры) */
+export interface ShipOpts {
+  durabilityMul?: number;              // множитель прочности корпуса/парусов/мачт
+  ammo?: Record<string, number>;       // стартовый боезапас (игрок)
+}
+
 const G = 9.81;
 
 export class Ship {
@@ -69,6 +75,8 @@ export class Ship {
   // --- состояние ---
   hullHP: number; hullMax: number;
   sailHP: number;
+  /** максимум парусов с учётом множителя прочности (clearDamage) */
+  sailMax: number;
   crew: number;
   water = 0;               // м³ в трюме
   holdCap: number;
@@ -111,16 +119,22 @@ export class Ship {
   onSunk?: (s: Ship) => void;
 
   constructor(presetId: string, isPlayer: boolean, wind: WindState,
-    terrainHeight: (x: number, z: number) => number, particles: Particles) {
+    terrainHeight: (x: number, z: number) => number, particles: Particles,
+    opts?: ShipOpts) {
     this.preset = PRESETS[presetId];
     this.isPlayer = isPlayer;
     this.wind = wind;
     this.terrainHeight = terrainHeight;
     this.particles = particles;
     this.visual = buildShip(this.preset);
-    this.hullHP = this.preset.hullHP;
-    this.hullMax = this.preset.hullHP;
-    this.sailHP = this.preset.sailHP;
+    // прочность по настройке игры (по умолчанию 1× — исторические ТТХ)
+    const mul = opts?.durabilityMul ?? 1;
+    this.hullHP = this.preset.hullHP * mul;
+    this.hullMax = this.hullHP;
+    this.sailHP = this.preset.sailHP * mul;
+    this.sailMax = this.sailHP;
+    this.mastMaxHP = 32 * mul;
+    if (opts?.ammo) this.ammo = { ...opts.ammo };
     this.crew = Math.round(this.preset.maxCrew * 0.8);
     this.holdCap = this.preset.cargo * 0.8;
     this.mass = this.preset.mass;
@@ -300,6 +314,13 @@ export class Ship {
       thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
     }
     if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45; // задний ход на вёслах
+    // ГРЕБНЫЕ суда (шебека, галера): вёсла дают ход даже в полный штиль;
+    // под парусами вёсла помогают меньше — экипаж занят парусами
+    if (this.preset.oars && !this.anchored && !this.sinking) {
+      const crewFrac = clamp(this.crew / this.preset.maxCrew, 0.2, 1);
+      const oarThrust = this.preset.maxSpeed * 0.34 * crewFrac * (1 - 0.55 * this.sailFrac);
+      thrust += oarThrust;
+    }
     // сила тяги вдоль forward
     this.force.x += f.x * thrust * m * 0.06;
     this.force.z += f.z * thrust * m * 0.06;
@@ -400,7 +421,7 @@ export class Ship {
     // Скорости λy 3.2/с и λp 2.4/с: успевают за зыбью (период 4–8 с),
     // короткую рябь усредняют; поправка ограничена 8 м/с и 0.5 рад/с.
     if (!this.sinking && !this.sunk && !this.grounded) {
-      const Lh = this.preset.length * 0.36, Bh = this.preset.beam * 0.36;
+      const Lh = this.preset.length * 0.38, Bh = this.preset.beam * 0.36;
       const hB = waterHeightAt(this.position.x + f.x * Lh, this.position.z + f.z * Lh, time);
       const hS = waterHeightAt(this.position.x - f.x * Lh, this.position.z - f.z * Lh, time);
       const hR = waterHeightAt(this.position.x + right.x * Bh, this.position.z + right.z * Bh, time);
@@ -410,8 +431,8 @@ export class Ship {
       // затопленный трюм садит корпус ниже (до 30 см)
       const sink = clamp(this.water / Math.max(1, this.holdCap), 0, 1) * 0.30;
       const targetY = surfY + this.preset.draft * 0.10 - sink;
-      const kY = 1 - Math.exp(-dt * 3.2);
-      const corrY = clamp((targetY - this.position.y) * kY, -8 * dt, 8 * dt);
+      const kY = 1 - Math.exp(-dt * 4.2);
+      const corrY = clamp((targetY - this.position.y) * kY, -11 * dt, 11 * dt);
       this.position.y += corrY;
       // согласованное затухание вертикальной скорости — пружины
       // не раскачивают корпус вокруг кинематической посадки
@@ -419,8 +440,8 @@ export class Ship {
       // дифферент: нос/корма по склону волны (вода выше у носа → нос вверх)
       const wPitch = -Math.atan2(hB - hS, 2 * Lh);
       const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
-      const kP = 1 - Math.exp(-dt * 2.4);
-      e2.x += clamp((wPitch - e2.x) * kP, -0.5 * dt, 0.5 * dt);
+      const kP = 1 - Math.exp(-dt * 3.2);
+      e2.x += clamp((wPitch - e2.x) * kP, -0.65 * dt, 0.65 * dt);
       this.quaternion.setFromEuler(e2);
     }
 
@@ -600,7 +621,7 @@ export class Ship {
    *  паруса, пробоины, течь, пожар, экипаж */
   clearDamage() {
     this.hullHP = this.hullMax;
-    this.sailHP = this.preset.sailHP;
+    this.sailHP = this.sailMax;
     this.water = 0;
     this.leakRate = 0;
     this.leakBias = 0;
@@ -718,6 +739,19 @@ export class Ship {
 
     // штурвал крутится от руля: D (руль вправо) — по часовой от рулевого
     v.wheel.rotation.z = this.rudder * 2.2;
+
+    // руль за кормой следует за рулём
+    if (v.rudderMesh) v.rudderMesh.rotation.y = this.rudder * 0.45;
+
+    // вёсла: гребки в противофазе бортов (сила гребков — от хода)
+    if (v.oars && v.oars.length) {
+      const rowing = clamp(this.speed() / Math.max(1, this.preset.maxSpeed * 0.4), 0.12, 1);
+      for (const o of v.oars) {
+        const base = o.userData.base as number;
+        const phase = o.userData.phase as number;
+        o.rotation.z = base + Math.sin(time * 2.3 + phase) * 0.16 * rowing;
+      }
+    }
 
     // падение мачт: каждая валится вперёд-вбок со своим наклоном,
     // реи и паруса едут вместе с мачтой (они её потомки)
