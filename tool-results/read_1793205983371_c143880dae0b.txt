@@ -1,0 +1,697 @@
+     1→import * as THREE from 'three';
+     2→import { Ship } from '../ship/Ship';
+     3→import type { Particles } from '../fx/particles';
+     4→import { clamp } from '../core/rng';
+     5→import { GameEvents } from '../core/events';
+     6→
+     7→// ============================================================
+     8→// Артиллерия: орудия по бортам, сектора наведения, боеприпасы
+     9→// (ядро/книппель/картечь/зажигательное), одиночный огонь и
+    10→// залп бортом, баллистическая траектория, упреждение цели.
+    11→// ============================================================
+    12→
+    13→export type AmmoType = 'ball' | 'chain' | 'grape' | 'fire';
+    14→
+    15→interface HitInfo {
+    16→  mast: number;      // -1 = корпус, иначе индекс мачты
+    17→  lp: THREE.Vector3; // точка попадания в СВЯЗНЫХ координатах цели
+    18→  dir: THREE.Vector3;// направление полёта в связных координатах цели
+    19→}
+    20→
+    21→/** Расстояние от точки (px,pz) до отрезка (ax,az)-(bx,bz) в плоскости XZ */
+    22→function distPointSeg2D(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+    23→  const dx = bx - ax, dz = bz - az;
+    24→  const len2 = dx * dx + dz * dz;
+    25→  let t = len2 > 1e-9 ? ((px - ax) * dx + (pz - az) * dz) / len2 : 0;
+    26→  t = Math.max(0, Math.min(1, t));
+    27→  const cx = ax + dx * t, cz = az + dz * t;
+    28→  return Math.hypot(px - cx, pz - cz);
+    29→}
+    30→
+    31→export const AMMO_INFO: Record<AmmoType, { name: string; short: string; muzzle: number; dmgHull: number; dmgSail: number; dmgCrew: number; pellets: number; drag: number; fireChance: number }> = {
+    32→  ball:  { name: 'Ядро',            short: 'ЯДР',  muzzle: 175, dmgHull: 15, dmgSail: 2,  dmgCrew: 0.6, pellets: 1, drag: 0.02, fireChance: 0.02 },
+    33→  chain: { name: 'Книппель',        short: 'КНП',  muzzle: 150, dmgHull: 3,  dmgSail: 24, dmgCrew: 0.4, pellets: 1, drag: 0.05, fireChance: 0 },
+    34→  grape: { name: 'Картечь',         short: 'КРТ',  muzzle: 130, dmgHull: 2,  dmgSail: 1,  dmgCrew: 2.2, pellets: 6, drag: 0.35, fireChance: 0 },
+    35→  fire:  { name: 'Зажигательное',   short: 'ЗЖГ',  muzzle: 160, dmgHull: 7,  dmgSail: 4,  dmgCrew: 0.5, pellets: 1, drag: 0.03, fireChance: 0.38 },
+    36→};
+    37→
+    38→interface Projectile {
+    39→  active: boolean;
+    40→  pos: THREE.Vector3;
+    41→  prev: THREE.Vector3;   // позиция в прошлый кадр — swept-коллизии с мачтами
+    42→  vel: THREE.Vector3;
+    43→  type: AmmoType;
+    44→  shooter: Ship;
+    45→  age: number;
+    46→  trailT: number;        // накопитель дымного следа (ядро видно в полёте)
+    47→  spin: number;          // вращение книппеля вокруг оси полёта, рад
+    48→  /** мачты, уже разорванные этим книппелем, по кораблям (сквозной полёт) */
+    49→  pierced: Map<Ship, number[]>;
+    50→}
+    51→
+    52→export interface AimPublicState {
+    53→  active: boolean;
+    54→  side: -1 | 1;
+    55→  azimuth: number;  // рад от направления борта
+    56→  elevation: number;// рад
+    57→  range: number;    // м до точки падения
+    58→  target: Ship | null;
+    59→  targetLead: THREE.Vector3 | null;
+    60→}
+    61→
+    62→export class CombatSystem {
+    63→  player: Ship;
+    64→  others: Ship[] = [];
+    65→  particles: Particles;
+    66→  emit: (type: string, payload?: unknown) => void;
+    67→
+    68→  aim: AimPublicState = {
+    69→    active: false, side: 1, azimuth: 0, elevation: 0.06, range: 0, target: null, targetLead: null,
+    70→  };
+    71→  ammo: AmmoType = 'ball';
+    72→
+    73→  private projectiles: Projectile[] = [];
+    74→  private projMesh: THREE.InstancedMesh;
+    75→  /** книппели: отдельный пул мешей (два полушара на цепи, кувыркаются) */
+    76→  private chainMeshes: THREE.Group[] = [];
+    77→  private chainGeoCache: THREE.Group | null = null;
+    78→  private dummy = new THREE.Object3D();
+    79→  private chainDummy = new THREE.Object3D();
+    80→  private xAxis = new THREE.Vector3(1, 0, 0);
+    81→  private trajLine: THREE.Points;
+    82→  private impactRing: THREE.Mesh;
+    83→  private leadMarker: THREE.Mesh;
+    84→  private reloads: number[] = []; // по орудиям обеих бортов
+    85→  private muzzleWorld = new THREE.Vector3();
+    86→  private aimDir = new THREE.Vector3();
+    87→
+    88→  constructor(player: Ship, particles: Particles, emit: (t: string, p?: unknown) => void) {
+    89→    this.player = player;
+    90→    this.particles = particles;
+    91→    this.emit = emit;
+    92→    const nGuns = player.visual.gunsPort.length + player.visual.gunsStarboard.length;
+    93→    for (let i = 0; i < nGuns; i++) this.reloads.push(0);
+    94→
+    95→    // пул ядер (заметные тёмные шары — видно в полёте)
+    96→    const sph = new THREE.SphereGeometry(0.23, 8, 6);
+    97→    const mat = new THREE.MeshStandardMaterial({ color: 0x17171b, roughness: 0.5, metalness: 0.75 });
+    98→    this.projMesh = new THREE.InstancedMesh(sph, mat, 128);
+    99→    this.projMesh.frustumCulled = false;
+   100→    this.projMesh.count = 0;
+   101→    for (let i = 0; i < 128; i++) {
+   102→      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0, spin: 0, pierced: new Map() });
+   103→    }
+   104→    // пул мешей книппелей (строятся лениво в addTo, чтобы шарить геометрию)
+   105→    for (let i = 0; i < 24; i++) {
+   106→      const g = this.makeChainMesh();
+   107→      g.visible = false;
+   108→      this.chainMeshes.push(g);
+   109→    }
+   110→
+   111→    // траектория: цепочка ярких точек-трассеров
+   112→    const tg = new THREE.BufferGeometry();
+   113→    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(48 * 3), 3));
+   114→    this.trajLine = new THREE.Points(tg, new THREE.PointsMaterial({
+   115→      color: 0xffd27a, size: 3.2, sizeAttenuation: false, transparent: true, opacity: 0.9,
+   116→      depthTest: false,
+   117→    }));
+   118→    this.trajLine.frustumCulled = false;
+   119→    this.trajLine.renderOrder = 20;
+   120→    this.trajLine.visible = false;
+   121→
+   122→    // кольцо в точке падения
+   123→    this.impactRing = new THREE.Mesh(
+   124→      new THREE.RingGeometry(3.0, 4.6, 24),
+   125→      new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthTest: false })
+   126→    );
+   127→    this.impactRing.rotation.x = -Math.PI / 2;
+   128→    this.impactRing.renderOrder = 21;
+   129→    this.impactRing.visible = false;
+   130→
+   131→    // маркер упреждения
+   132→    this.leadMarker = new THREE.Mesh(
+   133→      new THREE.OctahedronGeometry(1.6),
+   134→      new THREE.MeshBasicMaterial({ color: 0xff5533, transparent: true, opacity: 0.9 })
+   135→    );
+   136→    this.leadMarker.visible = false;
+   137→  }
+   138→
+   139→  addTo(parent: THREE.Object3D) {
+   140→    parent.add(this.projMesh);
+   141→    for (const c of this.chainMeshes) parent.add(c);
+   142→    parent.add(this.trajLine);
+   143→    parent.add(this.impactRing);
+   144→    parent.add(this.leadMarker);
+   145→  }
+   146→
+   147→  /** Книппель: два полушара ядра на цепи — кувыркается в полёте */
+   148→  private makeChainMesh(): THREE.Group {
+   149→    if (!this.chainGeoCache) {
+   150→      // прототип: ось X — ось полёта, полушария по краям, цепь между ними
+   151→      const proto = new THREE.Group();
+   152→      const ballMat = new THREE.MeshStandardMaterial({ color: 0x1b1b20, roughness: 0.5, metalness: 0.72 });
+   153→      const linkMat = new THREE.MeshStandardMaterial({ color: 0x454b54, roughness: 0.55, metalness: 0.85 });
+   154→      const R = 0.34;
+   155→      // полусфера (z≥0) + плоская крышка
+   156→      const hemi = new THREE.SphereGeometry(R, 12, 8, 0, Math.PI);
+   157→      const cap = new THREE.CircleGeometry(R, 12);
+   158→      for (const dir of [1, -1] as const) {
+   159→        const half = new THREE.Group();
+   160→        const dome = new THREE.Mesh(hemi, ballMat);
+   161→        dome.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2; // купол наружу по X
+   162→        half.add(dome);
+   163→        const c = new THREE.Mesh(cap, ballMat);
+   164→        c.rotation.y = dir > 0 ? -Math.PI / 2 : Math.PI / 2; // крышка к центру
+   165→        half.add(c);
+   166→        half.position.x = dir * 0.62;
+   167→        proto.add(half);
+   168→      }
+   169→      // цепь: 4 звена-тора перпендикулярно друг другу
+   170→      for (let i = 0; i < 4; i++) {
+   171→        const link = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.03, 5, 12), linkMat);
+   172→        link.position.x = -0.23 + i * 0.155;
+   173→        link.rotation.y = i % 2 === 0 ? 0 : Math.PI / 2;
+   174→        proto.add(link);
+   175→      }
+   176→      this.chainGeoCache = proto;
+   177→    }
+   178→    // копируем прототип (меши шарят геометрию/материал)
+   179→    const g = new THREE.Group();
+   180→    for (const child of this.chainGeoCache.children) g.add(child.clone());
+   181→    return g;
+   182→  }
+   183→
+   184→  toggleAim(side: -1 | 1): boolean {
+   185→    if (this.aim.active && this.aim.side === side) {
+   186→      this.aim.active = false;
+   187→    } else {
+   188→      this.aim.active = true;
+   189→      this.aim.side = side;
+   190→    }
+   191→    this.trajLine.visible = this.aim.active;
+   192→    this.emit(GameEvents.AIM_TOGGLED, this.aim.active);
+   193→    return this.aim.active;
+   194→  }
+   195→  /** Мировое направление прицела */
+   196→  aimDirection(out: THREE.Vector3): THREE.Vector3 {
+   197→    const heading = this.player.heading;
+   198→    const side = this.aim.side; // 1 = правый борт (штирборт = мир −X при курсе 0)
+   199→    // штирборт: (−cos h, 0, sin h); порт: зеркально
+   200→    const baseAz = Math.atan2(-side * Math.cos(heading), side * Math.sin(heading));
+   201→    // baseAz: направление правого/левого борта
+   202→    const az = baseAz + this.aim.azimuth;
+   203→    const cosE = Math.cos(this.aim.elevation);
+   204→    out.set(Math.sin(az) * cosE, Math.sin(this.aim.elevation), Math.cos(az) * cosE);
+   205→    return out.normalize();
+   206→  }
+   207→
+   208→  private gunIndex(side: -1 | 1, i: number): number {
+   209→    return side === 1 ? i : this.player.visual.gunsPort.length + i;
+   210→  }
+   211→
+   212→  private reloadDuration(): number {
+   213→    const crewFrac = clamp(this.player.crew / this.player.preset.maxCrew, 0.25, 1);
+   214→    return 7.5 / (0.4 + 0.6 * crewFrac);
+   215→  }
+   216→
+   217→  fireOne() {
+   218→    if (!this.aim.active) return;
+   219→    const guns = this.aim.side === 1 ? this.player.visual.gunsStarboard : this.player.visual.gunsPort;
+   220→    for (let i = 0; i < guns.length; i++) {
+   221→      const idx = this.gunIndex(this.aim.side, i);
+   222→      if (this.reloads[idx] <= 0) {
+   223→        this.fireGun(idx, guns[i]);
+   224→        return;
+   225→      }
+   226→    }
+   227→    this.emit(GameEvents.MESSAGE, { text: 'Орудия перезаряжаются!' });
+   228→  }
+   229→
+   230→  fireBroadside() {
+   231→    if (!this.aim.active) return;
+   232→    const guns = this.aim.side === 1 ? this.player.visual.gunsStarboard : this.player.visual.gunsPort;
+   233→    let fired = 0;
+   234→    for (let i = 0; i < guns.length; i++) {
+   235→      const idx = this.gunIndex(this.aim.side, i);
+   236→      if (this.reloads[idx] <= 0) {
+   237→        // лёгкий разброс залпа
+   238→        const az0 = this.aim.azimuth, el0 = this.aim.elevation;
+   239→        this.aim.azimuth += (Math.random() - 0.5) * 0.06;
+   240→        this.fireGun(idx, guns[i], i * 0.05);
+   241→        this.aim.azimuth = az0; this.aim.elevation = el0;
+   242→        fired++;
+   243→      }
+   244→    }
+   245→    if (!fired) this.emit(GameEvents.MESSAGE, { text: 'Борт перезаряжается!' });
+   246→  }
+   247→
+   248→  private fireGun(idx: number, gun: THREE.Object3D, delay = 0) {
+   249→    const ship = this.player;
+   250→    const info = AMMO_INFO[this.ammo];
+   251→    if (ship.ammo[this.ammo] <= 0) {
+   252→      this.emit(GameEvents.MESSAGE, { text: `${info.name}: нет боеприпасов!` });
+   253→      return;
+   254→    }
+   255→    ship.ammo[this.ammo]--;
+   256→    this.reloads[idx] = this.reloadDuration();
+   257→    if (delay > 0) {
+   258→      // отложенный выстрел для залпа
+   259→      setTimeout(() => this.doFire(gun, info), delay * 1000);
+   260→    } else {
+   261→      this.doFire(gun, info);
+   262→    }
+   263→  }
+   264→
+   265→  private doFire(gun: THREE.Object3D, info: typeof AMMO_INFO[AmmoType]) {
+   266→    const ship = this.player;
+   267→    // позиция дула в МИРОВЫХ координатах (без matrixWorld — floating origin!)
+   268→    const sideDir = gun.userData.side > 0 ? 1 : -1;
+   269→    this.muzzleWorld.copy(gun.position);
+   270→    this.muzzleWorld.x += sideDir * 1.35;
+   271→    this.muzzleWorld.y += 0.12;
+   272→    this.muzzleWorld.applyQuaternion(ship.quaternion).add(ship.position);
+   273→    const h = ship.heading;
+   274→
+   275→    this.aimDirection(this.aimDir);
+   276→    // отдача: крен от залпа (борт, из которого стреляем, поднимается)
+   277→    ship.angular.z += sideDir * 0.006 * info.muzzle / 175;
+   278→
+   279→    for (let p = 0; p < info.pellets; p++) {
+   280→      const pr = this.projectiles.find(q => !q.active);
+   281→      if (!pr) break;
+   282→      pr.active = true;
+   283→      pr.pos.copy(this.muzzleWorld);
+   284→      pr.prev.copy(this.muzzleWorld);
+   285→      pr.type = this.ammo;
+   286→      pr.shooter = ship;
+   287→      pr.age = 0;
+   288→      pr.trailT = 0;
+   289→      pr.spin = Math.random() * Math.PI * 2;
+   290→      pr.pierced = new Map();
+   291→      const spread = this.ammo === 'grape' ? 0.035 : 0.008;
+   292→      const dir = this.aimDir.clone();
+   293→      dir.x += (Math.random() - 0.5) * spread * 2;
+   294→      dir.y += (Math.random() - 0.5) * spread;
+   295→      dir.z += (Math.random() - 0.5) * spread * 2;
+   296→      dir.normalize();
+   297→      pr.vel.copy(dir).multiplyScalar(info.muzzle * (0.94 + Math.random() * 0.12));
+   298→      pr.vel.add(ship.velocity);
+   299→    }
+   300→    // вспышка выстрела: короткая и компактная (аддитивное свечение)
+   301→    this.particles.spawn(this.muzzleWorld.x, this.muzzleWorld.y, this.muzzleWorld.z,
+   302→      this.aimDir.x * 7, 1.0, this.aimDir.z * 7, 0.11, 1.15, 2, 2.4, -1.5);
+   303→    // пороховой дым: два небольших полупрозрачных клубка у дула,
+   304→    // разнесённых по высоте и направлению — не сливаются в одно облако
+   305→    for (let s = 0; s < 2; s++) {
+   306→      const jx = (Math.random() - 0.5) * 1.1;
+   307→      this.particles.smoke(
+   308→        this.muzzleWorld.x + this.aimDir.x * (0.3 + s * 0.85) + jx,
+   309→        this.muzzleWorld.y + 0.1 + s * 0.3,
+   310→        this.muzzleWorld.z + this.aimDir.z * (0.3 + s * 0.85) + jx,
+   311→        this.aimDir.x * (1.5 - s * 0.5) + (Math.random() - 0.5) * 1.1 + ship.velocity.x * 0.25,
+   312→        0.3 + Math.random() * 0.35,
+   313→        this.aimDir.z * (1.5 - s * 0.5) + (Math.random() - 0.5) * 1.1 + ship.velocity.z * 0.25,
+   314→        0.95 + Math.random() * 0.3, 0.9 + Math.random() * 0.4);
+   315→    }
+   316→    this.emit(GameEvents.CANNON_FIRED, { pos: this.muzzleWorld.clone(), power: info.muzzle / 175 });
+   317→  }
+   318→
+   319→  // ---------- ИИ ответный огонь (картечь торговца) ----------
+   320→  aiGrapeBurst(shooter: Ship) {
+   321→    const dirTo = new THREE.Vector3().subVectors(this.player.position, shooter.position).normalize();
+   322→    const pr = this.projectiles.find(q => !q.active);
+   323→    if (!pr) return;
+   324→    pr.active = true;
+   325→    pr.pos.copy(shooter.position).addScaledVector(dirTo, shooter.preset.beam * 0.6);
+   326→    pr.prev.copy(pr.pos);
+   327→    pr.pos.y += 1.2;
+   328→    pr.type = 'grape';
+   329→    pr.shooter = shooter;
+   330→    pr.age = 0;
+   331→    pr.trailT = 0;
+   332→    pr.pierced = new Map();
+   333→    pr.vel.copy(dirTo).multiplyScalar(110).add(shooter.velocity);
+   334→    this.emit(GameEvents.CANNON_FIRED, { pos: pr.pos.clone(), power: 0.6 });
+   335→  }
+   336→
+   337→  /** Залп ИИ ядрами по игроку (с упреждением и разбросом) */
+   338→  aiBallVolley(shooter: Ship, target: Ship) {
+   339→    const to = new THREE.Vector3().subVectors(target.position, shooter.position);
+   340→    const dist = to.length();
+   341→    if (dist > 400) return;
+   342→    to.normalize();
+   343→    const flight = dist / 165;
+   344→    const aim = target.position.clone().addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
+   345→    const n = 3; // бортовой залп из 3 ядер
+   346→    for (let i = 0; i < n; i++) {
+   347→      const pr = this.projectiles.find(q => !q.active);
+   348→      if (!pr) break;
+   349→      pr.active = true;
+   350→      pr.pos.copy(shooter.position).addScaledVector(aim, shooter.preset.beam * 0.55);
+   351→      pr.prev.copy(pr.pos);
+   352→      pr.pos.y += 1.0;
+   353→      pr.type = 'ball';
+   354→      pr.shooter = shooter;
+   355→      pr.age = 0;
+   356→      pr.trailT = 0;
+   357→      pr.pierced = new Map();
+   358→      const dir = aim.clone();
+   359→      dir.x += (Math.random() - 0.5) * 0.05;
+   360→      dir.y += 0.04 + (Math.random() - 0.5) * 0.03;
+   361→      dir.z += (Math.random() - 0.5) * 0.05;
+   362→      dir.normalize();
+   363→      pr.vel.copy(dir).multiplyScalar(170).add(shooter.velocity);
+   364→    }
+   365→    // дым и звук
+   366→    const muzzle = shooter.position.clone().addScaledVector(aim, shooter.preset.beam * 0.7);
+   367→    muzzle.y += 1.2;
+   368→    for (let s = 0; s < 2; s++) {
+   369→      this.particles.smoke(muzzle.x, muzzle.y, muzzle.z,
+   370→        aim.x * 1.6 + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.25,
+   371→        aim.z * 1.6 + (Math.random() - 0.5) * 0.6, 1.05 + Math.random() * 0.25, 1.0 + Math.random() * 0.2);
+   372→    }
+   373→    this.emit(GameEvents.CANNON_FIRED, { pos: muzzle, power: 0.9 });
+   374→  }
+   375→
+   376→  // ---------- обновление ----------
+   377→  update(dt: number, time: number, waterHeight: (x: number, z: number, t: number) => number,
+   378→    groundHeight: ((x: number, z: number) => number) | null = null,
+   379→    onGroundHit: ((x: number, y: number, z: number, radius: number) => number) | null = null) {
+   380→    // перезарядка
+   381→    for (let i = 0; i < this.reloads.length; i++) {
+   382→      if (this.reloads[i] > 0) this.reloads[i] -= dt;
+   383→    }
+   384→
+   385→    // снаряды
+   386→    let count = 0;
+   387→    let chainIdx = 0;
+   388→    for (const pr of this.projectiles) {
+   389→      if (!pr.active) continue;
+   390→      pr.age += dt;
+   391→      const info = AMMO_INFO[pr.type];
+   392→      pr.prev.copy(pr.pos);
+   393→      // интеграция с сопротивлением
+   394→      const dragF = Math.exp(-info.drag * dt * 3);
+   395→      pr.vel.multiplyScalar(dragF);
+   396→      pr.vel.y -= 9.81 * dt;
+   397→      pr.pos.addScaledVector(pr.vel, dt);
+   398→      // книппель кувыркается вокруг оси полёта
+   399→      if (pr.type === 'chain') pr.spin += dt * 22;
+   400→
+   401→      // дымный след — ядро видно в полёте (кроме картечи — её дробин много)
+   402→      pr.trailT += dt;
+   403→      if (pr.trailT > 0.18 && pr.type !== 'grape') {
+   404→        pr.trailT = 0;
+   405→        this.particles.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.08, 0, 0.42, 0.5);
+   406→      }
+   407→
+   408→      // вода
+   409→      const wy = waterHeight(pr.pos.x, pr.pos.z, time);
+   410→      if (pr.pos.y < wy) {
+   411→        pr.active = false;
+   412→        this.particles.splash(pr.pos.x, wy, pr.pos.z, pr.type === 'ball' ? 1.0 : 0.5);
+   413→        this.emit(GameEvents.PROJECTILE_SPLASH, { pos: pr.pos.clone() });
+   414→        continue;
+   415→      }
+   416→
+   417→      // земля (острова): фугасный удар + повал деревьев
+   418→      if (groundHeight && pr.pos.y < groundHeight(pr.pos.x, pr.pos.z)) {
+   419→        pr.active = false;
+   420→        const r = pr.type === 'ball' || pr.type === 'chain' ? 2.6 : pr.type === 'fire' ? 3.2 : 1.6;
+   421→        const trees = onGroundHit ? onGroundHit(pr.pos.x, pr.pos.y, pr.pos.z, r) : 0;
+   422→        // пыль/земля + щепа, если деревья сломаны
+   423→        this.particles.smoke(pr.pos.x, pr.pos.y + 0.4, pr.pos.z, 0, 0.6, 0, 1.6, 1.2);
+   424→        if (trees > 0) this.particles.debris(pr.pos.x, pr.pos.y + 1, pr.pos.z, 10, 1.1);
+   425→        this.emit(GameEvents.TERRAIN_HIT, { pos: pr.pos.clone(), trees });
+   426→        continue;
+   427→      }
+   428→
+   429→      // цели: мачты проверяем ПЕРВЫМИ (рангоут перекрывает корпус),
+   430→      // корпус — сегментом от prev до pos (быстрое ядро не «проскакивает»);
+   431→      // КНИППЕЛЬ пробивает рангоут насквозь: круг его разлёта ШИРЕ корпуса
+   432→      // (3.2 м > полуширины) — летя вдоль борта, сносит ВСЕ мачты коридором
+   433→      let hit: HitInfo | null = null;
+   434→      let piercedMast = false;
+   435→      const targets: Ship[] = pr.shooter === this.player ? this.others : [this.player];
+   436→      for (const t of targets) {
+   437→        if (t.sunk) continue;
+   438→        const done = pr.type === 'chain' ? (pr.pierced.get(t) ?? []) : [];
+   439→        hit = this.hitTest(pr, t, done);
+   440→        if (hit) {
+   441→          this.applyHit(pr, t, info, hit);
+   442→          if (pr.type === 'chain' && hit.mast >= 0) {
+   443→            // сквозной пролёт: пометить разорванные мачты, летим дальше
+   444→            const masts = pr.pierced.get(t) ?? [];
+   445→            for (const mi of this.chainMasts) masts.push(mi);
+   446→            pr.pierced.set(t, masts);
+   447→            piercedMast = true;
+   448→          }
+   449→          break;
+   450→        }
+   451→      }
+   452→      if (hit && !piercedMast) { pr.active = false; continue; }
+   453→      if (!hit && pr.age > 12) { pr.active = false; continue; }
+   454→
+   455→      // визуал
+   456→      if (pr.type === 'chain') {
+   457→        const mesh = this.chainMeshes[chainIdx];
+   458→        if (mesh) {
+   459→          mesh.visible = true;
+   460→          mesh.position.copy(pr.pos);
+   461→          // ось полёта → локальная X, затем кувырок вокруг неё
+   462→          const vlen = pr.vel.length();
+   463→          if (vlen > 0.01) {
+   464→            this.chainDummy.position.copy(pr.pos);
+   465→            this._vN.copy(pr.vel).divideScalar(vlen);
+   466→            this.chainDummy.quaternion.setFromUnitVectors(this.xAxis, this._vN);
+   467→            this.chainDummy.rotateX(pr.spin);
+   468→            mesh.quaternion.copy(this.chainDummy.quaternion);
+   469→          }
+   470→          chainIdx++;
+   471→        }
+   472→      } else {
+   473→        this.dummy.position.copy(pr.pos);
+   474→        this.dummy.updateMatrix();
+   475→        this.projMesh.setMatrixAt(count, this.dummy.matrix);
+   476→        count++;
+   477→      }
+   478→    }
+   479→    this.projMesh.count = count;
+   480→    this.projMesh.instanceMatrix.needsUpdate = true;
+   481→    for (let i = chainIdx; i < this.chainMeshes.length; i++) this.chainMeshes[i].visible = false;
+   482→
+   483→    // прицеливание: траектория и упреждение
+   484→    if (this.aim.active) {
+   485→      this.updateAimAssist(time, waterHeight);
+   486→    } else {
+   487→      this.trajLine.visible = false;
+   488→      this.impactRing.visible = false;
+   489→      this.leadMarker.visible = false;
+   490→    }
+   491→  }
+   492→
+   493→  private lprev = new THREE.Vector3();
+   494→  private lcur = new THREE.Vector3();
+   495→  private invQ = new THREE.Quaternion();
+   496→  private hitDir = new THREE.Vector3();
+   497→  private pathB = new THREE.Vector3();
+   498→  private _vN = new THREE.Vector3();
+   499→  /** мачты в круге разлёта книппеля (заполняет hitTest) */
+   500→  private chainMasts: number[] = [];
+   501→
+   502→  /** Проверка попадания: мачты (стоячие, swept) → корпус.
+   503→   *  Книппель ловит мачты ВЕСЬ СВОЙ КРУГ (радиус 3.2 м — шире корпуса);
+   504→   *  skipMasts — уже разорванные этим снарядом (сквозной полёт). */
+   505→  private hitTest(pr: Projectile, t: Ship, skipMasts: number[] = []): HitInfo | null {
+   506→    this.invQ.copy(t.quaternion).invert();
+   507→    this.lprev.subVectors(pr.prev, t.position).applyQuaternion(this.invQ);
+   508→    this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
+   509→    // направление полёта в связных координатах цели
+   510→    this.hitDir.subVectors(this.lcur, this.lprev);
+   511→    if (this.hitDir.lengthSq() < 1e-9) this.hitDir.set(0, 0, 1);
+   512→    else this.hitDir.normalize();
+   513→
+   514→    // --- мачты: вертикальный цилиндр в XZ, путь ядра — отрезок prev→pos ---
+   515→    const masts = t.visual.masts;
+   516→    this.chainMasts.length = 0;
+   517→    const mastR = pr.type === 'chain' ? 3.2 : 0.8; // книппель бьёт кругом разлёта (шире корпуса!)
+   518→    let first = -1;
+   519→    for (let i = 0; i < masts.length; i++) {
+   520→      if (t.mastFall[i] >= 0 || skipMasts.includes(i)) continue;
+   521→      const mz = masts[i].position.z;
+   522→      const h = ((masts[i].userData.height as number) || 20) - t.preset.draft * 0.3;
+   523→      const d = distPointSeg2D(0, mz, this.lprev.x, this.lprev.z, this.lcur.x, this.lcur.z);
+   524→      if (d < mastR && Math.max(this.lprev.y, this.lcur.y) > 0.7
+   525→        && Math.min(this.lprev.y, this.lcur.y) < h + 0.4) {
+   526→        if (first < 0) first = i;
+   527→        if (pr.type === 'chain') this.chainMasts.push(i);
+   528→      }
+   529→    }
+   530→    if (first >= 0) {
+   531→      return { mast: first, lp: this.lcur.clone(), dir: this.hitDir.clone() };
+   532→    }
+   533→
+   534→    // --- корпус (бокс в связных координатах) ---
+   535→    const L = t.preset.length, B = t.preset.beam;
+   536→    const c = this.lcur;
+   537→    if (Math.abs(c.z) < L * 0.52 && Math.abs(c.x) < B * 0.62
+   538→      && c.y > -t.preset.draft * 0.8 && c.y < t.preset.freeboard + L * 0.35) {
+   539→      return { mast: -1, lp: c.clone(), dir: this.hitDir.clone() };
+   540→    }
+   541→    return null;
+   542→  }
+   543→
+   544→  private applyHit(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType], hit: HitInfo) {
+   545→    const amount = 0.75 + Math.random() * 0.5;
+   546→    const P = this.particles;
+   547→    if (hit.mast >= 0) {
+   548→      // --- попадание в РАНГОУТ: мачта трещит и ломается ---
+   549→      // книппель — специализированный «обрыватель» такелажа: бьёт
+   550→      // ВСЕМ КРУГОМ разлёта (ломает несколько мачт за раз),
+   551→      // ядро — одну, за 2-3 попадания
+   552→      if (pr.type === 'chain') {
+   553→        const hitSet = this.chainMasts.length ? this.chainMasts : [hit.mast];
+   554→        for (const mi of hitSet) {
+   555→          const dmg = mi === hit.mast ? 30 + Math.random() * 12 : 22 + Math.random() * 10;
+   556→          const broke = t.damageMast(mi, dmg);
+   557→          t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount * (mi === hit.mast ? 1 : 0.7) });
+   558→          if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: mi, pos: pr.pos.clone() });
+   559→        }
+   560→      } else {
+   561→        const dmg = pr.type === 'ball' ? 11 + Math.random() * 8
+   562→          : pr.type === 'fire' ? 6 : 1.6;
+   563→        const broke = t.damageMast(hit.mast, dmg);
+   564→        if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount });
+   565→        if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
+   566→      }
+   567→      // щепа летит вдоль мачты
+   568→      for (let i = 0; i < 9; i++) {
+   569→        P.spawn(pr.pos.x, pr.pos.y + i * 0.35, pr.pos.z,
+   570→          (Math.random() - 0.5) * 7, 2 + Math.random() * 5, (Math.random() - 0.5) * 7,
+   571→          0.8, 0.3, 0, 0.6, 10);
+   572→      }
+   573→      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.8, 0, 1.0, 1.3);
+   574→    } else {
+   575→      // --- попадание в КОРПУС: пробоина, у ватерлинии/ниже — течь ---
+   576→      // (порог 0.6 м: при качке «у самой воды» дыры также дают течь)
+   577→      const belowWL = hit.lp.y < 0.6;
+   578→      // --- поражение ЭКИПАЖА вдоль пути снаряда через палубу ---
+   579→      // картечь косят палубу (радиус широкий), ядро/зажигательное
+   580→      // разрывает тех, кто на линии полёта
+   581→      this.pathB.copy(hit.lp).addScaledVector(hit.dir, t.preset.length * 1.25);
+   582→      let crewKilled = 0;
+   583→      if (pr.type === 'grape') {
+   584→        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 2, 2.4,
+   585→          t.position, t.quaternion);
+   586→      } else if (pr.type === 'ball' || pr.type === 'fire') {
+   587→        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'ball', 2, 1.35,
+   588→          t.position, t.quaternion);
+   589→      }
+   590→      if (pr.type === 'grape') {
+   591→        // потери команды согласованы с убитыми фигурами
+   592→        const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
+   593→        t.applyDamage({ kind: 'grape', amount: Math.max(0.6, crewKilled * per * 0.9) });
+   594→      } else {
+   595→        t.applyDamage({
+   596→          kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
+   597→          amount: info.dmgHull * amount,
+   598→          hitPoint: pr.pos.clone(),
+   599→        });
+   600→      }
+   601→      if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
+   602→      // декаль пробоины (ядро и зажигательное)
+   603→      if (pr.type === 'ball' || pr.type === 'fire') t.addHole(hit.lp, belowWL);
+   604→      // щепки и дым
+   605→      for (let i = 0; i < 6; i++) {
+   606→        P.spawn(pr.pos.x, pr.pos.y, pr.pos.z,
+   607→          (Math.random() - 0.5) * 6, 2 + Math.random() * 4, (Math.random() - 0.5) * 6,
+   608→          0.7, 0.28, 0, 0.6, 10);
+   609→      }
+   610→      P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.7, 0, 0.95, 1.2);
+   611→    }
+   612→    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
+   613→  }
+   614→
+   615→  private updateAimAssist(time: number, waterHeight: (x: number, z: number, t: number) => number) {
+   616→    const ship = this.player;
+   617→    const info = AMMO_INFO[this.ammo];
+   618→    const start = new THREE.Vector3().copy(ship.position);
+   619→    start.y += ship.preset.freeboard * 0.55;
+   620→    const vel = this.aimDirection(new THREE.Vector3()).multiplyScalar(info.muzzle).add(ship.velocity);
+   621→
+   622→    // симуляция траектории
+   623→    const attr = this.trajLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+   624→    const arr = attr.array as Float32Array;
+   625→    let px = start.x, py = start.y, pz = start.z;
+   626→    let vx = vel.x, vy = vel.y, vz = vel.z;
+   627→    const stp = 0.06;
+   628→    let range = 0;
+   629→    let i = 0;
+   630→    for (; i < 48; i++) {
+   631→      arr[i * 3] = px; arr[i * 3 + 1] = py; arr[i * 3 + 2] = pz;
+   632→      for (let s = 0; s < 4; s++) {
+   633→        const d = Math.exp(-info.drag * stp * 3);
+   634→        vx *= d; vy *= d; vz *= d;
+   635→        vy -= 9.81 * stp;
+   636→        px += vx * stp; py += vy * stp; pz += vz * stp;
+   637→        range += Math.hypot(vx, vy, vz) * stp;
+   638→        if (py < waterHeight(px, pz, time)) break;
+   639→      }
+   640→      if (py < waterHeight(px, pz, time)) { i++; if (i < 48) { arr[i * 3] = px; arr[i * 3 + 1] = Math.max(py, waterHeight(px, pz, time)); arr[i * 3 + 2] = pz; } break; }
+   641→    }
+   642→    attr.needsUpdate = true;
+   643→    this.trajLine.geometry.setDrawRange(0, Math.max(2, i));
+   644→    this.aim.range = range;
+   645→
+   646→    // кольцо в точке падения
+   647→    if (i > 0 && py < waterHeight(px, pz, time)) {
+   648→      const wy = waterHeight(px, pz, time);
+   649→      this.impactRing.position.set(px, wy + 0.3, pz);
+   650→      this.impactRing.scale.setScalar(1 + Math.sin(time * 6) * 0.12);
+   651→      this.impactRing.visible = true;
+   652→    } else {
+   653→      this.impactRing.visible = false;
+   654→    }
+   655→
+   656→    // упреждение: ближайшая цель в секторе
+   657→    const dir = this.aimDirection(new THREE.Vector3());
+   658→    this.aim.target = null;
+   659→    this.aim.targetLead = null;
+   660→    let best: Ship | null = null;
+   661→    let bestScore = Infinity;
+   662→    const toT = new THREE.Vector3();
+   663→    for (const t of this.others) {
+   664→      if (t.sunk || t.sinking) continue;
+   665→      toT.subVectors(t.position, ship.position);
+   666→      const dist = toT.length();
+   667→      if (dist > 900) continue;
+   668→      toT.normalize();
+   669→      const dot = toT.dot(dir);
+   670→      if (dot < 0.92) continue; // в пределах ~23° от прицела
+   671→      const score = dist * (2 - dot);
+   672→      if (score < bestScore) { bestScore = score; best = t; }
+   673→    }
+   674→    if (best) {
+   675→      const dist = best.position.distanceTo(ship.position);
+   676→      const flight = dist / info.muzzle;
+   677→      const lead = new THREE.Vector3().copy(best.position).addScaledVector(best.velocity, flight);
+   678→      lead.y += 1.5;
+   679→      this.aim.target = best;
+   680→      this.aim.targetLead = lead;
+   681→      this.leadMarker.position.copy(lead);
+   682→      this.leadMarker.rotation.y = time * 2;
+   683→      this.leadMarker.scale.setScalar(1 + Math.sin(time * 5) * 0.15);
+   684→      this.leadMarker.visible = true;
+   685→    } else {
+   686→      this.leadMarker.visible = false;
+   687→    }
+   688→  }
+   689→
+   690→  /** Готовность орудий (0..1) для HUD */
+   691→  readiness(): number {
+   692→    let ready = 0;
+   693→    for (const r of this.reloads) if (r <= 0) ready++;
+   694→    return ready / this.reloads.length;
+   695→  }
+   696→}
+   697→

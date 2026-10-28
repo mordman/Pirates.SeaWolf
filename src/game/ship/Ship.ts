@@ -40,6 +40,7 @@ export class Ship {
   inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
   private probes: Probe[] = [];
   private reserve: Probe[] = [];   // запас плавучести надводного борта
+  private kHeave = 0;              // жёсткость подъёма «на гребень» (Н/м)
   private force = new THREE.Vector3();
   private torque = new THREE.Vector3();
   private _f = new THREE.Vector3();
@@ -130,14 +131,15 @@ export class Ship {
       this.mass * (B * B + F * F) / 12 * 1.5,   // roll (z)
     );
 
-    // зонды плавучести: 7 шпангоутов × 3 точки (ниже ватерлинии).
-    // Жёстче прежнего (нейтральная глубина 0.38 осадки) — корабль
-    // быстрее следует за гребнем волны, не проваливается в него.
-    const NZ = 7;
+    // зонды плавучести: 9 шпангоутов × 3 точки (ниже ватерлинии),
+    // вплоть до носа/кормы (±0.47 полудлины). Пружины жёсткие
+    // (нейтраль 0.38 осадки, запас ×1.35) и демпфер ζ≈0.62 — корпус
+    // БЫСТРО всходит на гребень и не проваливается внутрь волны.
+    const NZ = 9;
     let n = 0;
     for (let i = 0; i < NZ; i++) {
       const t = i / (NZ - 1);
-      const z = THREE.MathUtils.lerp(-L * 0.44, L * 0.44, t);
+      const z = THREE.MathUtils.lerp(-L * 0.47, L * 0.47, t);
       const prof = this.halfWidthAt(z);
       const offs = [0, -prof * 0.75, prof * 0.75];
       for (const x of offs) {
@@ -146,10 +148,11 @@ export class Ship {
       }
     }
     const neutral = D * 0.38;
-    const kTotal = this.mass * G / neutral;
+    this.kHeave = this.mass * G / neutral;
+    const kTotal = this.kHeave * 1.35;
     for (const p of this.probes) {
       p.k = kTotal / n;
-      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.5; // демпфер качки
+      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.62; // демпфер качки
     }
     // Резервные зонды по скулам борта чуть выше спокойной ватерлинии:
     // моделируют запас плавучести корпуса до планширя — гребень, накрывший
@@ -250,9 +253,13 @@ export class Ship {
     this.force.y -= m * G;
 
     // --- плавучесть по зондам (τ = r × F, F = (0, fl, 0)) ---
+    // попутно считаем статистику поверхности: подъём «на гребень»
+    let wMax = -Infinity, wSum = 0, wN = 0;
     for (const p of this.probes) {
       const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
       const wy = waterHeightAt(wp.x, wp.z, time);
+      if (wy > wMax) wMax = wy;
+      wSum += wy; wN++;
       const depth = wy - wp.y;
       if (depth > 0) {
         const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
@@ -263,6 +270,15 @@ export class Ship {
         this.force.y += fl;
         this.torque.x += -rz * fl;
         this.torque.z += rx * fl;
+      }
+    }
+    // --- «езда по гребню»: равновесие зондов — СРЕДНЯЯ высота воды
+    // под корпусом, из-за чего на гребне корабль сидел глубоко внутри
+    // волны. Добавка поднимает корпус К ГРЕБНЮ — корабль едет ПО волне ---
+    if (!this.sinking && !this.grounded) {
+      const crest = wMax - wSum / Math.max(1, wN);
+      if (crest > 0.04) {
+        this.force.y += this.kHeave * Math.min(crest, 1.6) * 0.45;
       }
     }
     // --- запас плавучести бортов (пока не тонем) ---
@@ -299,10 +315,11 @@ export class Ship {
     this.force.x += f.x * thrust * m * 0.06;
     this.force.z += f.z * thrust * m * 0.06;
     // крен от ветра: боковая составляющая ветра на парусах
+    // (умеренный: в шторм подветренный борт не зарывается в волну)
     const wf = new THREE.Vector3(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
     const windTravel = wf.clone().multiplyScalar(-this.wind.speed);
     const lateral = windTravel.dot(right);
-    const heelF = lateral * this.sailFrac * windPower * m * 0.05;
+    const heelF = lateral * this.sailFrac * windPower * m * 0.034;
     this.torque.z += heelF;
     // ... и небольшое боковое сносовое усилие
     this.force.x += right.x * lateral * this.sailFrac * m * 0.004;
@@ -348,10 +365,11 @@ export class Ship {
     this.angular.copy(ab.applyQuaternion(this.quaternion));
 
     // --- ограничение крена/дифферента (мягкие стопы) ---
-    // дифферент жёстко: 0.14 рад (8°) — нос не может нырнуть под гребень;
+    // дифферент свободнее прежнего: 0.21 рад (12°) — нос всходит
+    // на крутой фронт волны, а не прорезает его;
     // крен 0.36 рад (20°) — подветренный борт остаётся над водой
     const roll = e.z, pitch = e.x;
-    const rollLim = 0.36, pitchLim = 0.14;
+    const rollLim = 0.36, pitchLim = 0.21;
     if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
     if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
     // затопление кренит корабль в сторону пробоин
@@ -508,6 +526,12 @@ export class Ship {
   addLeak(rate: number) {
     this.leakRate = Math.min(1.8, this.leakRate + rate);
     if (this.leakRate < 0) this.leakRate = 0;
+  }
+
+  /** Урон ПАРУСАМ: пробоины картечи/книппеля снижают тягу (sailHP).
+   *  Дыры рисуются отдельно — см. combat.applySailHit + sailAddHole. */
+  damageSails(n: number) {
+    this.sailHP = Math.max(0, this.sailHP - n);
   }
 
   /** Пробоина в борту: декаль + течь (ниже ватерлинии) + кренящий момент */

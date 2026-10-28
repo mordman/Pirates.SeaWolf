@@ -129,7 +129,14 @@ export interface ShipVisual {
 export interface SailRig {
   sails: SailInfo[];
 }
-interface SailInfo {
+/** Квадралateral полотна для проверки прострелов (координаты КОРАБЛЯ) */
+export interface SailHitQuad {
+  pivot: THREE.Vector3;      // ось брасопки (у мачты) в координатах корабля
+  corners: THREE.Vector3[];  // 4 угла полотна при brace=0
+  uvs: THREE.Vector2[];      // UV углов (для пробоин)
+  rotates: boolean;          // квадратный парус вращается брасопкой
+}
+export interface SailInfo {
   mesh: THREE.Mesh;
   mat: THREE.ShaderMaterial;      // свой материал на парус (своё рифление uFurl)
   brace?: THREE.Group;            // поворотная группа (рея+парус) — брасопка
@@ -138,6 +145,23 @@ interface SailInfo {
   square: boolean;                // квадратный парус (рея брасопится)
   braceAngle: number;             // текущий угол брасопки (рад)
   mastIndex: number;              // мачта-носитель (падает вместе с ней)
+  quad: SailHitQuad;              // зона прострела полотна
+  holeW: number;                  // размер полотна вдоль UV.u, м (круглые дыры)
+  holeH: number;                  // размер полотна вдоль UV.v, м
+}
+
+/** Пробоина в парусе (UV + радиус в долях holeH) — пишется в uniform-массив */
+export function sailAddHole(s: SailInfo, u: number, v: number, r: number) {
+  const arr = s.mat.uniforms.uHoles.value as THREE.Vector3[];
+  const n = s.mat.uniforms.uHoleN.value as number;
+  if (n < arr.length) {
+    arr[n].set(u, v, r);
+    s.mat.uniforms.uHoleN.value = n + 1;
+  } else {
+    // парус уже изрешечён — рвём существующюю дыру шире
+    const h = arr[(Math.random() * arr.length) | 0];
+    h.z = Math.min(0.34, h.z + r * 0.6);
+  }
 }
 
 // ---------- шейдер паруса ----------
@@ -151,6 +175,10 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uColor: { value: new THREE.Color(baseColor) },
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) },
       uFurl: { value: 0 },
+      // пробоины от картечи/ядер/книппеля: (u, v, радиус в долях высоты)
+      uHoles: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, 0)) },
+      uHoleN: { value: 0 },
+      uAspect: { value: 1 },      // ширина/высота — дыры круглые в метрах
     },
     vertexShader: /* glsl */`
       uniform float uBelly, uTime, uFurl, uFlutter;
@@ -193,6 +221,9 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       varying float vDmgU;
       uniform vec3 uColor;
       uniform vec3 uSunDir;
+      uniform vec3 uHoles[8];
+      uniform float uHoleN;
+      uniform float uAspect;
       float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
       float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
         return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
@@ -206,6 +237,20 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         float patches = step(0.55, vnoise(vUv * 4.7 + 7.3)) * dmg;
         col = mix(col, col * 0.55, patches);
         float holes = step(0.82 - dmg * 0.15, vnoise(vUv * 7.1 + 2.9)) * dmg * 1.4;
+        // ===== ПРОБОИНЫ от снарядов (картечь/ядро/книппель) =====
+        // рваный тёмный край + сквозная дыра (discard);
+        // uAspect приводит UV к метрам — дыры круглые
+        for (int i = 0; i < 8; i++) {
+          if (float(i) >= uHoleN) break;
+          vec2 hd = (vUv - uHoles[i].xy) * vec2(uAspect, 1.0);
+          float hdist = length(hd);
+          float n = vnoise(vUv * 17.0 + float(i) * 7.31);
+          float rr = uHoles[i].z * (0.78 + 0.5 * n);
+          if (hdist < rr) {
+            col *= 0.42;
+            if (hdist < rr * 0.58) discard;   // рваный сквозной проём
+          }
+        }
         // простое освещение
         float ndl = max(dot(normalize(vN), normalize(uSunDir)), 0.0) * 0.5 + 0.55;
         col *= ndl;
@@ -926,7 +971,9 @@ export function buildShip(P: ShipPreset): ShipVisual {
 
   // корпус
   const { geometry: hullGeo, outline } = buildHull(P);
-  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.05 });
+  // DoubleSide: даже если камера (или волна) заглянет под корпус/за корму —
+  // стенки видны, «прозрачной кормы» нет (изнутри односторонние грани куллятся)
+  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.05, side: THREE.DoubleSide });
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
   group.add(hull);
@@ -990,6 +1037,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
     const g = new THREE.PlaneGeometry(width, height, 10, 7);
     g.translate(0, -height / 2, 0); // верхняя кромка у реи
     const mat = sailMaterial(P.colors.sail);
+    mat.uniforms.uAspect.value = width / height;
     const mesh = new THREE.Mesh(g, mat);
     const y = md.h * level - P.draft * 0.3;
     // поворотная группа: ось вращения — мачта (брасопка рея по ветру)
@@ -1003,7 +1051,23 @@ export function buildShip(P: ShipPreset): ShipVisual {
     mesh.position.set(0, 0, -0.25);
     pivot.add(mesh);
     masts[mastIndex].add(pivot);
-    sails.push({ mesh, mat, brace: pivot, setAt, furl: 1, square: true, braceAngle: 0, mastIndex });
+    // зона прострела: прямоугольник полотна в координатах корабля (brace=0);
+    // при проверке поворачивается на текущий угол брасопки вокруг мачты
+    const quad: SailHitQuad = {
+      pivot: new THREE.Vector3(0, y + 0.05, md.z),
+      corners: [
+        new THREE.Vector3(-width / 2, -height, -0.25), // uv(0,0) — нижний-лево
+        new THREE.Vector3(width / 2, -height, -0.25),  // uv(1,0)
+        new THREE.Vector3(width / 2, 0, -0.25),        // uv(1,1)
+        new THREE.Vector3(-width / 2, 0, -0.25),       // uv(0,1)
+      ],
+      uvs: [
+        new THREE.Vector2(0, 0), new THREE.Vector2(1, 0),
+        new THREE.Vector2(1, 1), new THREE.Vector2(0, 1),
+      ],
+      rotates: true,
+    };
+    sails.push({ mesh, mat, brace: pivot, setAt, furl: 1, square: true, braceAngle: 0, mastIndex, quad, holeW: width, holeH: height });
   };
   // латинский парус (каравелла): длинная рейка от мачты к носу,
   // треугольное полотно в диаметральной плоскости, «пузо» — на борт
@@ -1039,6 +1103,10 @@ export function buildShip(P: ShipPreset): ShipVisual {
     g.setIndex(idx);
     g.computeVertexNormals();
     const mat = sailMaterial(P.colors.sail);
+    // зона прострела латинского паруса — треугольник H(голова)-T(конец реи)-C(шкот):
+    // в локалях меша +X -> нос после поворота меша на -90° вокруг Y
+    const yardLenM = Math.hypot(T.x - H.x, T.y - H.y);
+    mat.uniforms.uAspect.value = Math.max(0.3, (yardLenM + Math.abs(C.x)) / Math.max(1, drop));
     const mesh = new THREE.Mesh(g, mat);
     mesh.rotation.y = -Math.PI / 2; // локальный +X -> нос, «пузо» -> борт
     mesh.frustumCulled = false;
@@ -1052,7 +1120,22 @@ export function buildShip(P: ShipPreset): ShipVisual {
     pivot.add(yard);
     pivot.add(mesh);
     masts[mastIndex].add(pivot);
-    sails.push({ mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex });
+    // поворот меша -90° вокруг Y: (x, y, 0) -> (0, y, x)
+    const rotP = (x: number, y: number) => new THREE.Vector3(0, y, x);
+    const pv = new THREE.Vector3(0, md.h * 0.72 - P.draft * 0.3, md.z);
+    const quad: SailHitQuad = {
+      pivot: pv,
+      corners: [rotP(H.x, H.y), rotP(T.x, T.y), rotP(C.x, C.y), rotP(C.x, C.y)],
+      uvs: [
+        new THREE.Vector2(0, 0), new THREE.Vector2(1, 0),
+        new THREE.Vector2(1, 1), new THREE.Vector2(1, 1),
+      ],
+      rotates: false,
+    };
+    sails.push({
+      mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex,
+      quad, holeW: yardLenM + Math.abs(C.x), holeH: drop,
+    });
   };
   if (P.rig === 'single') {
     // когг: один большой прямой парус на мачту
@@ -1107,12 +1190,29 @@ export function buildShip(P: ShipPreset): ShipVisual {
     g.setIndex(idx);
     g.computeVertexNormals();
     const mat = sailMaterial(P.colors.sail);
+    mat.uniforms.uAspect.value = Math.max(0.3, Math.hypot(a.x, a.y) / Math.max(1, Math.hypot(b.x, b.y)));
     const mesh = new THREE.Mesh(g, mat);
     mesh.position.set(head.x, head.y, head.z - mastZ);
     mesh.rotation.y = Math.PI / 2; // локальный Z (пузо) -> мир X (борт)
     mesh.frustumCulled = false;
     masts[0].add(mesh); // потомок фок-мачты — падает вместе с ней
-    sails.push({ mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex: 0 });
+    // зона прострела: треугольник голова-(конец штага)-(галсовый угол);
+    // поворот меша +90° вокруг Y: (x, y, 0) -> (0, y, -x)
+    const rotP = (x: number, y: number) => new THREE.Vector3(0, y, -x);
+    const pv = new THREE.Vector3(head.x, head.y, head.z);
+    const quad: SailHitQuad = {
+      pivot: pv,
+      corners: [rotP(0, 0), rotP(a.x, a.y), rotP(b.x, b.y), rotP(b.x, b.y)],
+      uvs: [
+        new THREE.Vector2(0, 0), new THREE.Vector2(1, 0),
+        new THREE.Vector2(1, 1), new THREE.Vector2(1, 1),
+      ],
+      rotates: false,
+    };
+    sails.push({
+      mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex: 0,
+      quad, holeW: Math.hypot(a.x, a.y), holeH: Math.hypot(b.x, b.y),
+    });
   };
   // кливера — только на «полных» вооружениях (у когга и каравеллы их нет)
   const foreTop = mastDefs[0];

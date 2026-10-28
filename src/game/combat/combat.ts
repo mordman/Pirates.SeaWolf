@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Ship } from '../ship/Ship';
+import { sailAddHole, SailInfo } from '../ship/buildShip';
 import type { Particles } from '../fx/particles';
 import { clamp } from '../core/rng';
 import { GameEvents } from '../core/events';
@@ -31,7 +32,7 @@ function distPointSeg2D(px: number, pz: number, ax: number, az: number, bx: numb
 export const AMMO_INFO: Record<AmmoType, { name: string; short: string; muzzle: number; dmgHull: number; dmgSail: number; dmgCrew: number; pellets: number; drag: number; fireChance: number }> = {
   ball:  { name: 'Ядро',            short: 'ЯДР',  muzzle: 175, dmgHull: 15, dmgSail: 2,  dmgCrew: 0.6, pellets: 1, drag: 0.02, fireChance: 0.02 },
   chain: { name: 'Книппель',        short: 'КНП',  muzzle: 150, dmgHull: 3,  dmgSail: 24, dmgCrew: 0.4, pellets: 1, drag: 0.05, fireChance: 0 },
-  grape: { name: 'Картечь',         short: 'КРТ',  muzzle: 130, dmgHull: 2,  dmgSail: 1,  dmgCrew: 2.2, pellets: 6, drag: 0.35, fireChance: 0 },
+  grape: { name: 'Картечь',         short: 'КРТ',  muzzle: 130, dmgHull: 2,  dmgSail: 1,  dmgCrew: 2.2, pellets: 12, drag: 0.35, fireChance: 0 },
   fire:  { name: 'Зажигательное',   short: 'ЗЖГ',  muzzle: 160, dmgHull: 7,  dmgSail: 4,  dmgCrew: 0.5, pellets: 1, drag: 0.03, fireChance: 0.38 },
 };
 
@@ -72,6 +73,8 @@ export class CombatSystem {
 
   private projectiles: Projectile[] = [];
   private projMesh: THREE.InstancedMesh;
+  /** картечь: россыпь МЕЛКИХ пуль (свой пул — не гигантские ядра) */
+  private grapeMesh: THREE.InstancedMesh;
   /** книппели: отдельный пул мешей (два полушара на цепи, кувыркаются) */
   private chainMeshes: THREE.Group[] = [];
   private chainGeoCache: THREE.Group | null = null;
@@ -98,6 +101,13 @@ export class CombatSystem {
     this.projMesh = new THREE.InstancedMesh(sph, mat, 128);
     this.projMesh.frustumCulled = false;
     this.projMesh.count = 0;
+    // пул КАРТЕЧИ: свинцовые пульки ~11 см — в полёте видны роем,
+    // а не одиночными огромными ядрами
+    const grapeGeo = new THREE.SphereGeometry(0.055, 6, 5);
+    const grapeMat = new THREE.MeshStandardMaterial({ color: 0x26262c, roughness: 0.45, metalness: 0.8 });
+    this.grapeMesh = new THREE.InstancedMesh(grapeGeo, grapeMat, 192);
+    this.grapeMesh.frustumCulled = false;
+    this.grapeMesh.count = 0;
     for (let i = 0; i < 128; i++) {
       this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0, spin: 0, pierced: new Map() });
     }
@@ -138,6 +148,7 @@ export class CombatSystem {
 
   addTo(parent: THREE.Object3D) {
     parent.add(this.projMesh);
+    parent.add(this.grapeMesh);
     for (const c of this.chainMeshes) parent.add(c);
     parent.add(this.trajLine);
     parent.add(this.impactRing);
@@ -288,11 +299,13 @@ export class CombatSystem {
       pr.trailT = 0;
       pr.spin = Math.random() * Math.PI * 2;
       pr.pierced = new Map();
-      const spread = this.ammo === 'grape' ? 0.035 : 0.008;
+      // картечь — ШИРОКИЙ веер пуль (горизонтальный), остальное — точно
+      const spreadH = this.ammo === 'grape' ? 0.075 : 0.008;
+      const spreadV = this.ammo === 'grape' ? 0.05 : 0.006;
       const dir = this.aimDir.clone();
-      dir.x += (Math.random() - 0.5) * spread * 2;
-      dir.y += (Math.random() - 0.5) * spread;
-      dir.z += (Math.random() - 0.5) * spread * 2;
+      dir.x += (Math.random() - 0.5) * spreadH * 2;
+      dir.z += (Math.random() - 0.5) * spreadH * 2;
+      dir.y += (Math.random() - 0.5) * spreadV * 2;
       dir.normalize();
       pr.vel.copy(dir).multiplyScalar(info.muzzle * (0.94 + Math.random() * 0.12));
       pr.vel.add(ship.velocity);
@@ -316,22 +329,29 @@ export class CombatSystem {
     this.emit(GameEvents.CANNON_FIRED, { pos: this.muzzleWorld.clone(), power: info.muzzle / 175 });
   }
 
-  // ---------- ИИ ответный огонь (картечь торговца) ----------
+  // ---------- ИИ ответный огонь (картечь торговца — роем пуль) ----------
   aiGrapeBurst(shooter: Ship) {
     const dirTo = new THREE.Vector3().subVectors(this.player.position, shooter.position).normalize();
-    const pr = this.projectiles.find(q => !q.active);
-    if (!pr) return;
-    pr.active = true;
-    pr.pos.copy(shooter.position).addScaledVector(dirTo, shooter.preset.beam * 0.6);
-    pr.prev.copy(pr.pos);
-    pr.pos.y += 1.2;
-    pr.type = 'grape';
-    pr.shooter = shooter;
-    pr.age = 0;
-    pr.trailT = 0;
-    pr.pierced = new Map();
-    pr.vel.copy(dirTo).multiplyScalar(110).add(shooter.velocity);
-    this.emit(GameEvents.CANNON_FIRED, { pos: pr.pos.clone(), power: 0.6 });
+    for (let i = 0; i < 8; i++) {
+      const pr = this.projectiles.find(q => !q.active);
+      if (!pr) break;
+      pr.active = true;
+      pr.pos.copy(shooter.position).addScaledVector(dirTo, shooter.preset.beam * 0.6);
+      pr.prev.copy(pr.pos);
+      pr.pos.y += 1.2;
+      pr.type = 'grape';
+      pr.shooter = shooter;
+      pr.age = 0;
+      pr.trailT = 0;
+      pr.pierced = new Map();
+      const dir = dirTo.clone();
+      dir.x += (Math.random() - 0.5) * 0.12;
+      dir.z += (Math.random() - 0.5) * 0.12;
+      dir.y += (Math.random() - 0.5) * 0.08;
+      dir.normalize();
+      pr.vel.copy(dir).multiplyScalar(100 + Math.random() * 18).add(shooter.velocity);
+    }
+    this.emit(GameEvents.CANNON_FIRED, { pos: pr ? pr.pos.clone() : shooter.position.clone(), power: 0.6 });
   }
 
   /** Залп ИИ ядрами по игроку (с упреждением и разбросом) */
@@ -384,6 +404,7 @@ export class CombatSystem {
 
     // снаряды
     let count = 0;
+    let grapeCount = 0;
     let chainIdx = 0;
     for (const pr of this.projectiles) {
       if (!pr.active) continue;
@@ -426,15 +447,20 @@ export class CombatSystem {
         continue;
       }
 
-      // цели: мачты проверяем ПЕРВЫМИ (рангоут перекрывает корпус),
-      // корпус — сегментом от prev до pos (быстрое ядро не «проскакивает»);
-      // КНИППЕЛЬ пробивает рангоут насквозь: круг его разлёта ШИРЕ корпуса
-      // (3.2 м > полуширины) — летя вдоль борта, сносит ВСЕ мачты коридором
+      // цели: ПАРУСА прошиваются насквозь (дыры + урон такелажу,
+      // снаряд летит дальше), затем мачты (рангоут перекрывает
+      // корпус), корпус — сегментом от prev до pos (быстрое ядро
+      // не «проскакивает"); КНИППЕЛЬ пробивает рангоут насквозь:
+      // круг его разлёта ШИРЕ корпуса (3.2 м > полуширины) — летя
+      // вдоль борта, сносит ВСЕ мачты коридором
       let hit: HitInfo | null = null;
       let piercedMast = false;
       const targets: Ship[] = pr.shooter === this.player ? this.others : [this.player];
       for (const t of targets) {
         if (t.sunk) continue;
+        // паруса: картечь дырявит полотно россвелью пробоин, книппель
+        // рвёт широкими прорехами, ядро пробивает круглую дыру
+        this.sailPass(pr, t);
         const done = pr.type === 'chain' ? (pr.pierced.get(t) ?? []) : [];
         hit = this.hitTest(pr, t, done);
         if (hit) {
@@ -469,6 +495,14 @@ export class CombatSystem {
           }
           chainIdx++;
         }
+      } else if (pr.type === 'grape') {
+        // свинцовые пульки — рой МЕЛКИХ шаров (не ядра!)
+        if (grapeCount < 192) {
+          this.dummy.position.copy(pr.pos);
+          this.dummy.updateMatrix();
+          this.grapeMesh.setMatrixAt(grapeCount, this.dummy.matrix);
+          grapeCount++;
+        }
       } else {
         this.dummy.position.copy(pr.pos);
         this.dummy.updateMatrix();
@@ -478,6 +512,8 @@ export class CombatSystem {
     }
     this.projMesh.count = count;
     this.projMesh.instanceMatrix.needsUpdate = true;
+    this.grapeMesh.count = grapeCount;
+    this.grapeMesh.instanceMatrix.needsUpdate = true;
     for (let i = chainIdx; i < this.chainMeshes.length; i++) this.chainMeshes[i].visible = false;
 
     // прицеливание: траектория и упреждение
