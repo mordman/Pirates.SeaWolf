@@ -531,7 +531,15 @@ export default function Home() {
                     <Bar pct={hud.waterPct} color="bg-sky-500" />
                   </>
                 )}
-                {hud.onFire && <div className="text-center text-[11px] font-bold text-orange-400">🔥 ПОЖАР! Держите R</div>}
+                {hud.onFire && (
+                  <>
+                    <div className="flex items-center justify-between text-[11px] font-bold text-orange-400">
+                      <span>🔥 ПОЖАР! Держите R</span>
+                      <span>{Math.round(hud.firePct * 100)}%</span>
+                    </div>
+                    <Bar pct={hud.firePct} color={hud.firePct > 0.6 ? 'bg-red-500' : 'bg-orange-400'} />
+                  </>
+                )}
                 {hud.sinking && <div className="text-center text-[11px] font-bold text-red-400">МЫ ТОНЕМ!</div>}
               </div>
             </Panel>

@@ -56,6 +56,7 @@ export interface HudState {
   crew: number; maxCrew: number;
   waterPct: number;
   onFire: boolean;
+  firePct: number;        // сила пожара 0..1
   anchored: boolean;
   grounded: boolean;
   sinking: boolean;
@@ -924,7 +925,7 @@ export class Game {
       started: false, dead: false,
       speed: 0, headingDeg: 0, windFromDeg: 0, windSpeed: 0, windRelDeg: 0,
       sailLevel: 0, rudder: 0, hullPct: 1, sailPct: 1, crew: 0, maxCrew: 0, waterPct: 0,
-      onFire: false, anchored: false, grounded: false, sinking: false,
+      onFire: false, firePct: 0, anchored: false, grounded: false, sinking: false,
       ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cargo: {},
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
       cameraLabel: CAMERA_LABEL.iso, clock: '', seaState: 0, repairAction: null,
@@ -956,6 +957,7 @@ export class Game {
     h.maxCrew = p.preset.maxCrew;
     h.waterPct = clamp(p.water / p.holdCap, 0, 1);
     h.onFire = p.onFire;
+    h.firePct = clamp(p.fireIntensity, 0, 1);
     h.anchored = p.anchored;
     h.grounded = p.grounded;
     h.sinking = p.sinking;
@@ -1061,6 +1063,40 @@ export class Game {
     return waterHeightAt(x, z, this.time);
   }
 
+  // ---------- пожары: перекидывание огня на соседей + дождь ----------
+  /** Шаг системы пожаров (вызывается из кадра с dt кадра; детерминирован
+   *  для E2E — можно дергать напрямую). Открытое пламя (I > 0.35) летит
+   *  на близкие корабли: ПО ВЕТРУ огонь перекидывается втрое охотнее */
+  updateFires(dt: number) {
+    const rain = this.proving ? 0 : this.weatherVis.rainI;
+    const ships: Ship[] = [this.player, ...this.aiShips.map(a => a.ship)];
+    if (this.pgTarget) ships.push(this.pgTarget.ship);
+    // дождь мочит все палубы
+    for (const s of ships) s.rainRate = rain;
+    // перекидывание: источник горит, цель рядом и не тонет
+    for (const src of ships) {
+      if (!src.onFire || src.fireIntensity < 0.35 || src.sinking || src.sunk) continue;
+      // направление КУДА дует ветер (откуда + PI)
+      const wdx = -Math.cos(this.wind.from), wdz = -Math.sin(this.wind.from);
+      for (const dst of ships) {
+        if (dst === src || dst.onFire || dst.sinking || dst.sunk) continue;
+        const dx = dst.position.x - src.position.x;
+        const dz = dst.position.z - src.position.z;
+        const dist = Math.hypot(dx, dz);
+        const reach = 26 + (src.preset.length + dst.preset.length) * 0.35;
+        if (dist > reach) continue;
+        const downwind = (dx * wdx + dz * wdz) / Math.max(1, dist); // −1..1
+        const chance = dt * 0.045 * src.fireIntensity
+          * (1 - dist / (reach * 1.05))
+          * (downwind > 0.2 ? 2.4 : downwind < -0.5 ? 0.25 : 1);
+        if (Math.random() < chance) {
+          dst.ignite(0.25 + Math.random() * 0.2);
+          this.pushMessage(`${dst === this.player ? 'Наш корабль' : dst.preset.name}: пламя перекинулось с ${src.preset.name}!`);
+        }
+      }
+    }
+  }
+
   // ---------- кадр ----------
   private frame = () => {
     this.rafId = requestAnimationFrame(this.frame);
@@ -1082,6 +1118,7 @@ export class Game {
       this.player.fixedStep(STEP, this.time);
       for (const ai of this.aiShips) ai.ship.fixedStep(STEP, this.time);
       if (this.pgTarget) this.pgTarget.ship.fixedStep(STEP, this.time);
+      this.updateFires(STEP);
       for (const ai of this.aiShips) {
         ai.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
       }
@@ -1153,6 +1190,8 @@ export class Game {
       tgtSinkPhase: tgt ? tgt.sinkPhase : -1,
       tgtSinkT: tgt ? +tgt.sinkT.toFixed(1) : -1,
       tgtSunk: tgt && tgt.sunk ? 1 : 0,
+      tgtFire: tgt ? +tgt.fireIntensity.toFixed(2) : -1,
+      playerFire: +p.fireIntensity.toFixed(2),
       debrisAlive: debrisAlive(),
       tgtShown: tgt ? tgt.crew3d.shown : -1,
       tgtCrewDead: tgt ? tgt.crew3d.dead : -1,
@@ -1320,7 +1359,7 @@ export class Game {
     p.hullHP = p.hullMax;
     p.sailHP = p.sailMax;
     p.crew = Math.round(p.preset.maxCrew * 0.8);
-    p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0;
+    p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0; p.fireIntensity = 0;
     p.sinking = false; p.sinkT = 0; p.sunk = false;
     p.mastsBroken = 0; p.mastAnim = -1;
     for (let i = 0; i < p.mastHP.length; i++) { p.mastHP[i] = p.mastMaxHP; p.mastFall[i] = -1; }

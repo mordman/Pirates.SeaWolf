@@ -69,6 +69,14 @@ export class AIShip {
     const s = this.ship;
     if (s.sunk || s.sinking) return;
 
+    // команда тушит пожар ведёрными цепями (медленнее, чем игрок с R:
+    // у ИИ нет полного внимания — руление/орудия важнее)
+    if (s.onFire) {
+      const grow = 0.008 + 0.022 * s.fireIntensity;
+      s.fireIntensity = Math.max(0, s.fireIntensity - Math.max(0, 0.05 - grow) * dt);
+      if (s.fireIntensity <= 0.01) { s.onFire = false; s.fireT = 0; }
+    }
+
     // уклонение от суши: смотреть вперёд
     this.avoidTimer -= dt;
     const look = new THREE.Vector3().copy(s.position).addScaledVector(s.forward, 90);

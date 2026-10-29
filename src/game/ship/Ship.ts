@@ -90,6 +90,12 @@ export class Ship {
   leakRate = 0;            // м³/с суммарная течь
   onFire = false;
   fireT = 0;
+  /** сила пожара 0..1: 0.3 — очаг, 1.0 — палуба в огне.
+   *  Растёт (сухое дерево + ветер), урон корпусу/парусам/экипажу
+   *  масштабируется от интенсивности; перекидывается на соседей */
+  fireIntensity = 0;
+  /** дождь 0..1 (задаёт game.ts) — тушит пожар */
+  rainRate = 0;
   mastsBroken = 0;         // число сломанных (для тяги)
   mastAnim = -1;           // (легаси) для совместимости
   mastHP: number[] = [];   // HP каждой мачты
@@ -503,13 +509,37 @@ export class Ship {
     }
     if (this.onFire) {
       this.fireT += dt;
-      this.hullHP -= dt * 1.6;
-      if (this.fireT > 26) { this.onFire = false; this.fireT = 0; } // выгорит
-      if (Math.random() < dt * 1.2) {
-        const p = this.particles;
-        const wp = this.position.clone();
-        p.fire(wp.x + (Math.random() - 0.5) * 4, this.waterlineY() + 1 + Math.random() * 2, wp.z + (Math.random() - 0.5) * 10);
-        p.smoke(wp.x + (Math.random() - 0.5) * 4, this.waterlineY() + 3, wp.z + (Math.random() - 0.5) * 10, this.wind ? Math.cos(this.wind.from + Math.PI) * 2 : 0, 2.2, this.wind ? Math.sin(this.wind.from + Math.PI) * 2 : 0, 2.8, 3.0);
+      const I = this.fireIntensity;
+      // рост: сухая палуба разгорается, сильный ветер раздувает;
+      // после 40 с горения топливо прогорает — интенсивность падает
+      let dI: number;
+      if (this.fireT > 40) dI = -0.05;                             // догорело
+      else dI = 0.008 + 0.022 * I + Math.min(0.012, this.wind.speed * 0.0009);
+      // дождь тушит
+      dI -= this.rainRate * 0.03;
+      this.fireIntensity = clamp(this.fireIntensity + dI * dt, 0, 1);
+      if (this.fireIntensity <= 0.01) {
+        this.onFire = false; this.fireT = 0;
+      } else {
+        // урон: корпус горит всегда, паруса — от 0.4, команда — от 0.6,
+        // такелаж вспыхивает на полном огне
+        this.hullHP -= dt * (0.5 + 2.8 * I);
+        if (I > 0.4) this.sailHP = Math.max(0, this.sailHP - dt * I * 2.2);
+        if (I > 0.6) this.crew = Math.max(0, this.crew - dt * 0.22 * I);
+        if (I > 0.9 && Math.random() < dt * 0.05) this.breakMast();
+        // визуал: частота и размер пламени от интенсивности
+        if (Math.random() < dt * (0.8 + 3.2 * I)) {
+          const p = this.particles;
+          const wp = this.position;
+          const spread = 3 + I * 6;
+          p.fire(wp.x + (Math.random() - 0.5) * spread, this.waterlineY() + 0.8 + Math.random() * 2.5,
+            wp.z + (Math.random() - 0.5) * spread * 2.2);
+          p.smoke(wp.x + (Math.random() - 0.5) * spread, this.waterlineY() + 3,
+            wp.z + (Math.random() - 0.5) * spread * 2.2,
+            this.wind ? Math.cos(this.wind.from + Math.PI) * 2 : 0, 2.2,
+            this.wind ? Math.sin(this.wind.from + Math.PI) * 2 : 0,
+            2.2 + I * 1.6, 2.6 + I);
+        }
       }
     }
     // порог затопления
@@ -587,7 +617,7 @@ export class Ship {
       }
       case 'fire': {
         this.hullHP -= d.amount;
-        if (rng() < 0.35 && !this.onFire) { this.onFire = true; this.fireT = 0; }
+        if (rng() < 0.35) this.ignite(0.3 + rng() * 0.25); // очаг на палубе
         if (rng() < 0.08) { this.addLeak(0.03); }
         break;
       }
@@ -616,6 +646,15 @@ export class Ship {
   addLeak(rate: number) {
     this.leakRate = Math.min(1.8, this.leakRate + rate);
     if (this.leakRate < 0) this.leakRate = 0;
+  }
+
+  /** Зажечь палубу: strength — начальная сила очага 0..1.
+   *  Существующий пожар не ослабляет — новое пламя добавляет силы */
+  ignite(strength: number): boolean {
+    if (this.sinking || this.sunk) return false;
+    this.onFire = true;
+    this.fireIntensity = clamp(Math.max(this.fireIntensity, strength), 0, 1);
+    return true;
   }
 
   /** Урон ПАРУСАМ: пробоины картечи/книппеля снижают тягу (sailHP).
@@ -718,6 +757,7 @@ export class Ship {
     this.leakBias = 0;
     this.onFire = false;
     this.fireT = 0;
+    this.fireIntensity = 0;
     this.sinking = false;
     this.sinkT = 0;
     this.sinkPhase = 0;
@@ -761,7 +801,8 @@ export class Ship {
     this.sinking = true;
     this.sinkT = 0;
     this.sinkPhase = 1;
-    this.onFire = false;
+    // ВНИМАНИЕ: пожар НЕ гасим — горящий корабль, уходящий носом в воду,
+    // дотягивает пламя до фазы 2 (палуба под водой — там вода его гасит)
     this.sailTarget = 0;
     this.rudderTarget = 0;
     // сценарий гибели: валиться в сторону пробоин (или наугад),
@@ -804,6 +845,24 @@ export class Ship {
     if (this.sinkPhase === 1 && (subFrac > 0.22 || this.sinkT > 9)) this.enterSinkPhase2();
     if (this.sinkPhase === 2 && (subFrac > 0.88 || this.sinkT > 17)) this.sinkPhase = 3;
 
+    // --- пожар фазы 1: надводная часть ещё горит (картина гибели
+    //     брандера — пламя + дым, пока палуба не ушла под воду) ---
+    if (this.onFire && this.sinkPhase === 1) {
+      const I = this.fireIntensity;
+      if (Math.random() < dt * (1.2 + 2.2 * I)) {
+        this.particles.fire(
+          this.position.x + (Math.random() - 0.5) * B * 0.6,
+          this.position.y + F * 0.5 + Math.random() * 2,
+          this.position.z + (Math.random() - 0.5) * L * 0.5);
+        this.particles.smoke(
+          this.position.x + (Math.random() - 0.5) * B,
+          this.position.y + F + 2,
+          this.position.z + (Math.random() - 0.5) * L * 0.6,
+          (Math.random() - 0.5) * 1.5, 2.6, (Math.random() - 0.5) * 1.5,
+          2.8 + I * 1.4, 3.6);
+      }
+    }
+
     // --- вертикаль: погружение ускоряется по мере заполнения отсеков ---
     const vSink = this.sinkPhase === 1 ? 0.20
       : this.sinkPhase === 2 ? 0.42
@@ -844,6 +903,20 @@ export class Ship {
    *  с палубы и всплывают рядом, надстройки рушатся давлением */
   private enterSinkPhase2() {
     this.sinkPhase = 2;
+    // палуба под водой — пожар погас, но догорающий пар дымит столбом
+    if (this.onFire) {
+      this.onFire = false;
+      this.fireIntensity = 0;
+      for (let i = 0; i < 6; i++) {
+        this.particles.smoke(
+          this.position.x + (Math.random() - 0.5) * this.preset.beam,
+          this.waterlineY() + 2 + Math.random() * 3,
+          this.position.z + (Math.random() - 0.5) * this.preset.length * 0.6,
+          (Math.random() - 0.5) * 1.5, 2.4, (Math.random() - 0.5) * 1.5,
+          3.4, 4.5);
+      }
+      this.particles.splash(this.position.x, waterHeightAt(this.position.x, this.position.z, 0), this.position.z, 1.2);
+    }
     // рангоут: оставшиеся мачты ломаются и валятся (паруса в воде)
     for (let i = 0; i < this.mastFall.length; i++) {
       if (this.mastFall[i] < 0) this.breakMast(i);
@@ -981,9 +1054,21 @@ export class Ship {
     }
   }
 
-  /** Действие команды (R): пожар -> течь -> ремонт */
+  /** Действие команды (R): пожар -> течь -> ремонт.
+   *  Тушение — БОРЬБА с огнём: интенсивность падает тем быстрее,
+   *  чем больше живых людей; наверху огонь всё равно разгорается */
   crewAction(dt: number): string | null {
-    if (this.onFire) { this.fireT += dt * 3; if (this.fireT > 4) { this.onFire = false; this.fireT = 0; return 'Пожар потушен'; } return 'Тушение пожара...'; }
+    if (this.onFire) {
+      const crewFrac = clamp(this.crew / Math.max(1, this.preset.maxCrew), 0.05, 1);
+      const pump = 0.07 + 0.17 * crewFrac;               // ведёрные цепи
+      const grow = 0.008 + 0.022 * this.fireIntensity;   // огонь не ждёт
+      this.fireIntensity = clamp(this.fireIntensity - (pump - grow) * dt, 0, 1);
+      if (this.fireIntensity <= 0.01) {
+        this.onFire = false; this.fireT = 0;
+        return 'Пожар потушен!';
+      }
+      return `Тушение пожара... ${Math.round(this.fireIntensity * 100)}%`;
+    }
     if (this.water > 0.01) {
       const pump = 0.05 + this.crew * 0.004;
       this.water = Math.max(0, this.water - pump * dt);
