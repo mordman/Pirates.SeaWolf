@@ -5,6 +5,7 @@ import { clamp } from './core/rng';
 import { Water } from './water/Water';
 import { SEA, waterHeightAt } from './water/waves';
 import { Ship } from './ship/Ship';
+import { PRESETS } from './ship/buildShip';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt } from './world/world';
@@ -74,6 +75,9 @@ export interface HudState {
   canDock: boolean;
   canBoard: boolean;
   boardedName: string | null;
+  shipId: string;        // пресет корабля игрока (подсветка в порту)
+  shipName: string;
+  shipClass: string;
   docked: boolean;
   messages: HudMessage[];
   mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string }[];
@@ -236,6 +240,28 @@ export class Game {
       t.position.copy(this.pgTargetPos());
       t.position.y = 0;
       this.pushMessage(`Мишень переставлена: ${s.gameplay.provingDistance} м`);
+    }
+    // боезапас: изменение настройки сразу выдается игроку (песочница)
+    const prevAmmo = prev.gameplay.startingAmmo;
+    const nextAmmo = s.gameplay.startingAmmo;
+    if (prevAmmo.ball !== nextAmmo.ball || prevAmmo.chain !== nextAmmo.chain
+      || prevAmmo.grape !== nextAmmo.grape || prevAmmo.fire !== nextAmmo.fire) {
+      this.player.ammo = { ...nextAmmo };
+      this.pushMessage(`Боезапас: ядра ${nextAmmo.ball} · книппели ${nextAmmo.chain} · картечь ${nextAmmo.grape} · зажигательные ${nextAmmo.fire}`);
+    }
+    // прочность: перемасштабировать корпуса/парусы/мачты ВСЕХ кораблей
+    if (prev.gameplay.hullDurability !== s.gameplay.hullDurability) {
+      const k = s.gameplay.hullDurability / prev.gameplay.hullDurability;
+      const rescale = (sh: Ship) => {
+        sh.hullMax *= k; sh.hullHP *= k;
+        sh.sailMax *= k; sh.sailHP *= k;
+        sh.mastMaxHP *= k;
+        for (let i = 0; i < sh.mastHP.length; i++) sh.mastHP[i] *= k;
+      };
+      rescale(this.player);
+      for (const a of this.aiShips) rescale(a.ship);
+      if (this.pgTarget) rescale(this.pgTarget.ship);
+      this.pushMessage(`Прочность кораблей: ×${s.gameplay.hullDurability.toFixed(2)}`);
     }
     this.water.setFoamQuality(g.foamQuality);
     this.rig.camera.far = g.drawDistance * 2 + 4000;
@@ -552,6 +578,56 @@ export class Game {
     this.pushMessage('Возврат к Пальмовой гавани');
   }
 
+  // ===== Смена корабля игрока (верфь в порту, песочница — бесплатно) =====
+  changeShip(presetId: string): string | null {
+    if (!PRESETS[presetId]) return 'Судно не найдено на верфи';
+    if (presetId === this.player.preset.id) return 'Вы уже на этом корабле';
+    const old = this.player;
+    // сохранить состояние игрока
+    const pos = old.position.clone();
+    const quat = old.quaternion.clone();
+    const gold = old.gold, planks = old.planks, crew = old.crew;
+    const cargo = { ...old.cargo };
+    const ammo = { ...old.ammo };
+    const sailTarget = old.sailTarget;
+    // убрать старый корабль из сцены
+    this.worldGroup.remove(old.visual.group);
+    this.worldGroup.remove(old.foam.mesh);
+    this.worldGroup.remove(old.wake.mesh);
+    old.dispose();
+    // новый корабль (прочность — из настроек)
+    const gp = this.settings.gameplay;
+    const np = new Ship(presetId, true, this.wind, (x, z) => heightAt(x, z), this.particles,
+      { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo } });
+    // не отнимать боезапас при смене (берём максимум из текущего и стартового)
+    (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
+      np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
+    });
+    np.position.copy(pos);
+    np.position.y = 0;
+    np.quaternion.copy(quat);
+    np.velocity.set(0, 0, 0);
+    np.angular.set(0, 0, 0);
+    np.gold = gold;
+    np.planks = planks;
+    np.cargo = cargo;
+    np.crew = Math.min(crew, np.preset.maxCrew);
+    np.sailTarget = sailTarget;
+    np.sailOverride = null;
+    np.anchored = old.anchored;
+    this.player = np;
+    this.combat.player = np;
+    this.combat.aim.active = false;
+    this.combat.aim.target = null;
+    this.boardingTarget = null;
+    this.worldGroup.add(np.visual.group);
+    this.worldGroup.add(np.foam.mesh);
+    this.worldGroup.add(np.wake.mesh);
+    this.rig.snap();
+    this.pushMessage(`⚓ Новый корабль: ${np.preset.name} (${np.preset.shipClass})`);
+    return null;
+  }
+
   pushMessage(text: string) {
     this.messages.push({ id: this.msgId++, text });
     this.msgTtl.push(4.5);
@@ -647,28 +723,34 @@ export class Game {
   fastTravelTo(islandName: string): string | null {
     const isl = this.world.islands.find(i => i.name === islandName);
     if (!isl) return 'Остров не найден';
-    if (!this.world.discovered.has(islandName)) return 'Остров ещё не открыт — подплывите ближе';
+    if (!this.started) this.start();
     const p = this.player;
     if (p.sinking) return 'Мы тонем — не до путешествий';
     const d = Math.hypot(p.position.x - isl.cx, p.position.z - isl.cz);
     if (d < isl.r + 420) return 'Вы уже рядом с этим островом';
-    // ищем глубокую воду у берега (перебор углов от направления на игрока)
+    // ищем глубокую воду у берега: расходящиеся кольца от r+240,
+    // в каждом 16 направлений, стартуя со стороны игрока
     const baseA = Math.atan2(p.position.x - isl.cx, p.position.z - isl.cz);
-    let pos = new THREE.Vector3(isl.cx, 0, isl.cz);
-    for (let k = 0; k < 16; k++) {
-      const a = baseA + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * 0.4;
-      const rr = isl.r + 300;
-      const x = isl.cx + Math.sin(a) * rr;
-      const z = isl.cz + Math.cos(a) * rr;
-      if (heightAt(x, z) < -8) { pos.set(x, 0, z); break; }
-      if (k === 15) pos.set(x, 0, z);
+    let pos: THREE.Vector3 | null = null;
+    outer:
+    for (const rr of [isl.r + 240, isl.r + 400, isl.r + 600]) {
+      for (let k = 0; k < 16; k++) {
+        const a = baseA + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * 0.4;
+        const x = isl.cx + Math.sin(a) * rr;
+        const z = isl.cz + Math.cos(a) * rr;
+        if (heightAt(x, z) < -6) { pos = new THREE.Vector3(x, 0, z); break outer; }
+      }
     }
+    if (!pos) pos = new THREE.Vector3(isl.cx + isl.r + 700, 0, isl.cz);
     if (this.docked) this.undock();
     p.position.copy(pos);
     p.velocity.set(0, 0, 0);
     p.angular.set(0, 0, 0);
     p.anchored = false;
+    p.wake.clear();
     p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(isl.cx - pos.x, isl.cz - pos.z), 0));
+    this.combat.aim.active = false;
+    this.rig.snap();
     this.pushMessage(`Быстрое перемещение: ${isl.name}`);
     this.audio.bell();
     return null;
@@ -836,7 +918,7 @@ export class Game {
       ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cargo: {},
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
       cameraLabel: CAMERA_LABEL.iso, clock: '', seaState: 0, repairAction: null,
-      canDock: false, canBoard: false, boardedName: null, docked: false,
+      canDock: false, canBoard: false, boardedName: null, shipId: 'sloop', shipName: '', shipClass: '', docked: false,
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
       proving: false, target: null,
@@ -888,6 +970,9 @@ export class Game {
     h.canDock = this.canDock();
     h.canBoard = !!this.boardingTarget;
     h.boardedName = this.boardingTarget?.ship.preset.name ?? null;
+    h.shipId = p.preset.id;
+    h.shipName = p.preset.name;
+    h.shipClass = p.preset.shipClass;
     h.docked = this.docked;
     h.messages = [...this.messages];
     h.mapIslands = this.world.islands.map(i => ({ x: i.cx, z: i.cz, r: i.r, name: i.name, discovered: this.world.discovered.has(i.name), type: i.type }));

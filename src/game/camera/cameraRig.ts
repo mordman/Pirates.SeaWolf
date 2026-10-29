@@ -53,6 +53,8 @@ export class CameraRig {
   private pos = new THREE.Vector3(0, 60, 120);
   private look = new THREE.Vector3();
   private shake = 0;
+  // мгновенный переход к цели (после телепорта/смены корабля)
+  private snapNext = false;
 
   // стабилизация (против укачивания): 1 = полная стабилизация
   stabilization = 0.75;
@@ -68,6 +70,9 @@ export class CameraRig {
   }
 
   addShake(v: number) { this.shake = Math.min(1.2, this.shake + v); }
+
+  /** следующий кадр — без сглаживания (телепорт по карте, смена корабля) */
+  snap() { this.snapNext = true; }
 
   // ---- отладочные сеттеры (E2E/съёмка): поза свободной камеры ----
   freeAzimSet(a: number) { this.freeAzim = a; }
@@ -183,8 +188,15 @@ export class CameraRig {
     // не нырять под воду
     if (target.y < 3) target.y = 3;
 
-    this.pos.lerp(target, t);
-    this.look.lerp(lookTarget, t);
+    if (this.snapNext) {
+      // телепорт: без полёта камеры через весь океан
+      this.pos.copy(target);
+      this.look.copy(lookTarget);
+      this.snapNext = false;
+    } else {
+      this.pos.lerp(target, t);
+      this.look.lerp(lookTarget, t);
+    }
 
     // тряска (залпы, попадания)
     this.shake = Math.max(0, this.shake - dt * 2.2);

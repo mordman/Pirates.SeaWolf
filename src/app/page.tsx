@@ -293,6 +293,8 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [encyOpen, setEncyOpen] = useState(false);
   const [encyId, setEncyId] = useState(ENCYCLOPEDIA[0].id);
+  const [shipPicker, setShipPicker] = useState(false);
+  const [pickerCat, setPickerCat] = useState<'war' | 'merchant'>('war');
   const [settings, setSettings] = useState<GameSettings>(() =>
     typeof window === 'undefined' ? structuredClone(DEFAULT_SETTINGS) : loadSettings());
   const [portMsg, setPortMsg] = useState<string | null>(null);
@@ -370,18 +372,18 @@ export default function Home() {
     const cx = W / 2, cy = H / 2;
     const px = (x: number) => cx + x * scale;
     const pz = (z: number) => cy + z * scale;
-    // острова
+    // острова: все подписаны (навигационная карта); неоткрытые — пунктиром
     for (const isl of hud.mapIslands) {
       const r = Math.max(4, isl.r * scale);
       if (!isl.discovered) {
-        ctx.strokeStyle = 'rgba(220,200,150,0.25)';
+        ctx.strokeStyle = 'rgba(220,200,150,0.35)';
         ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(220,200,150,0.35)';
+        ctx.fillStyle = 'rgba(232,198,122,0.55)';
         ctx.font = '10px serif';
         ctx.textAlign = 'center';
-        ctx.fillText('?', px(isl.x), pz(isl.z) + 3);
+        ctx.fillText(isl.name, px(isl.x), pz(isl.z) + r + 13);
         continue;
       }
       const grad = ctx.createRadialGradient(px(isl.x), pz(isl.z), r * 0.2, px(isl.x), pz(isl.z), r);
@@ -423,6 +425,31 @@ export default function Home() {
     const res = fn(g);
     setPortMsg(typeof res === 'string' ? res : null);
   }, []);
+
+  // быстрое перемещение: клик по острову на навигационной карте
+  const onMapClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!hud) return;
+    const cv = mapCanvasRef.current;
+    if (!cv) return;
+    e.stopPropagation(); // клик по карте не закрывает её (только кнопка/затемнение)
+    const rect = cv.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (cv.width / rect.width);
+    const my = (e.clientY - rect.top) * (cv.height / rect.height);
+    const scale = 0.055;
+    const wx = (mx - cv.width / 2) / scale;
+    const wz = (my - cv.height / 2) / scale;
+    let bestName: string | null = null;
+    let bestD = Infinity;
+    for (const isl of hud.mapIslands) {
+      const d = Math.hypot(isl.x - wx, isl.z - wz);
+      if (d < isl.r + 240 && d < bestD) { bestD = d; bestName = isl.name; }
+    }
+    if (bestName) {
+      const nm = bestName;
+      act(g => g.fastTravelTo(nm));
+      setMapOpen(false);
+    }
+  };
 
   const g = gameRef.current;
 
@@ -617,7 +644,7 @@ export default function Home() {
                     value={settings.gameplay.provingDistance}
                     onChange={e => {
                       const v = Number(e.target.value);
-                      applySettings({ ...structuredClone(settings), gameplay: { provingDistance: v } });
+                      applySettings({ ...structuredClone(settings), gameplay: { ...settings.gameplay, provingDistance: v } });
                     }}
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-stone-700 accent-amber-500" />
                 </div>
@@ -733,23 +760,107 @@ export default function Home() {
       {/* ---- меню порта ---- */}
       {hud?.docked && g && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50">
-          <div className="w-[480px] rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 shadow-2xl">
-            <h2 className="mb-1 font-serif text-2xl font-bold text-amber-300">⚓ Пальмовая гавань</h2>
-            <p className="mb-4 text-xs text-stone-400">Верфь · Таверна · Рынок — всё в одном месте</p>
-            <div className="mb-3 rounded-lg border border-amber-900/50 bg-black/30 p-3 text-sm">
-              <div className="mb-2 flex justify-between">
-                <span className="text-stone-400">Золото</span>
-                <span className="font-bold text-amber-300">🪙 {hud.gold}</span>
-              </div>
-              <div className="flex justify-between text-xs text-stone-400">
-                <span>Корпус</span><span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span>
-              </div>
-              <div className="flex justify-between text-xs text-stone-400">
-                <span>Команда</span><span>{hud.crew} / {hud.maxCrew} · найм 30 зол.</span>
-              </div>
-            </div>
-            {portMsg && <div className="mb-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-1.5 text-xs text-red-300">{portMsg}</div>}
-            <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className={`rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 shadow-2xl ${shipPicker ? 'w-[620px]' : 'w-[480px]'}`}>
+            {shipPicker ? (
+              <>
+                <div className="mb-1 flex items-center justify-between">
+                  <h2 className="font-serif text-2xl font-bold text-amber-300">⚓ Верфь</h2>
+                  <button onClick={() => setShipPicker(false)}
+                    className="rounded border border-stone-600 bg-stone-900 px-3 py-1 text-xs text-stone-300 transition hover:border-amber-600 hover:text-amber-200">
+                    ← Назад в гавань
+                  </button>
+                </div>
+                <p className="mb-3 text-xs text-stone-400">
+                  Смена корабля — бесплатно (песочница). Золото, груз и команда сохраняются.
+                </p>
+                {/* вкладки: военные / торговые */}
+                <div className="mb-3 flex gap-1.5">
+                  {([['war', '⚓ Военные'], ['merchant', '📦 Торговые']] as ['war' | 'merchant', string][]).map(([cat, label]) => (
+                    <button key={cat} onClick={() => setPickerCat(cat)}
+                      className={`pointer-events-auto rounded-lg border px-4 py-1.5 text-sm font-semibold transition ${
+                        pickerCat === cat
+                          ? 'border-amber-500 bg-amber-800/60 text-amber-100'
+                          : 'border-stone-700 bg-stone-900/60 text-stone-400 hover:text-amber-200'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {/* список судов по классам */}
+                <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
+                  {(() => {
+                    const ships = ENCYCLOPEDIA.filter(s => s.category === pickerCat);
+                    const groups: { cls: string; ships: typeof ships }[] = [];
+                    for (const s of ships) {
+                      let grp = groups.find(g => g.cls === s.shipClass);
+                      if (!grp) { grp = { cls: s.shipClass, ships: [] }; groups.push(grp); }
+                      grp.ships.push(s);
+                    }
+                    return groups.map(grp => (
+                      <div key={grp.cls}>
+                        <div className="sticky top-0 z-10 bg-[#1a120a] py-1 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
+                          {grp.cls}
+                        </div>
+                        {grp.ships.map(sh => {
+                          const current = sh.id === hud.shipId;
+                          return (
+                            <button key={sh.id} disabled={current}
+                              onClick={() => { act(gg => gg.changeShip(sh.id)); setShipPicker(false); }}
+                              className={`mb-1 flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition ${
+                                current
+                                  ? 'border-amber-500/80 bg-amber-900/40'
+                                  : 'border-stone-700 bg-stone-900/60 hover:border-amber-700 hover:bg-stone-800/70'}`}>
+                              <span className="min-w-0">
+                                <span className={`block truncate text-sm font-semibold ${current ? 'text-amber-200' : 'text-stone-200'}`}>{sh.name}</span>
+                                <span className="text-[10px] text-stone-500">
+                                  {sh.year ? `${sh.year} · ${sh.country}` : sh.era}{sh.oars ? ' · 🚣 гребной' : ''}
+                                </span>
+                              </span>
+                              <span className="flex shrink-0 items-center gap-3 text-[11px] text-stone-400">
+                                <span title="орудий на борт">💥{sh.stats.guns}</span>
+                                <span title="экипаж">🧑‍⚖{sh.stats.crew}</span>
+                                <span title="скорость, уз">💨{sh.stats.speed}</span>
+                                <span title="прочность корпуса">🛡{sh.stats.hullHP}</span>
+                                <span className={`rounded border px-2 py-0.5 text-[10px] font-bold ${
+                                  current ? 'border-amber-600 bg-amber-800/50 text-amber-200' : 'border-stone-600 bg-stone-800 text-stone-300'}`}>
+                                  {current ? 'Текущий' : 'Взять'}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="mb-1 font-serif text-2xl font-bold text-amber-300">⚓ Пальмовая гавань</h2>
+                <p className="mb-4 text-xs text-stone-400">Верфь · Таверна · Рынок — всё в одном месте</p>
+                <div className="mb-3 rounded-lg border border-amber-900/50 bg-black/30 p-3 text-sm">
+                  <div className="mb-2 flex justify-between">
+                    <span className="text-stone-400">Золото</span>
+                    <span className="font-bold text-amber-300">🪙 {hud.gold}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-stone-400">
+                    <span>Корабль</span>
+                    <span className="text-amber-200">{hud.shipName || '—'}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-stone-400">
+                    <span>Корпус</span>
+                    <span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-stone-400">
+                    <span>Команда</span>
+                    <span>{hud.crew} / {hud.maxCrew} · найм 30 зол.</span>
+                  </div>
+                </div>
+                {portMsg && <div className="mb-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-1.5 text-xs text-red-300">{portMsg}</div>}
+                <button onClick={() => { setShipPicker(true); setPortMsg(null); }}
+                  className="pointer-events-auto mb-2 w-full rounded-lg border border-amber-700 bg-gradient-to-b from-amber-700/40 to-amber-900/40 px-3 py-2 text-left text-sm transition hover:border-amber-500 hover:from-amber-700/60">
+                  ⚓ Сменить корабль на верфи<div className="text-[11px] text-stone-400">29 судов: военные и торговые, от шлюпа до линейного корабля</div>
+                </button>
+                <div className="grid grid-cols-2 gap-2 text-sm">
               <button onClick={() => act(gg => gg.portRepair())}
                 className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
                 🔨 Полный ремонт<div className="text-[11px] text-stone-400">корпус + паруса, {g.repairCost} зол.</div>
@@ -783,10 +894,12 @@ export default function Home() {
                 🧑‍⚓ Нанять матроса<div className="text-[11px] text-stone-400">30 зол. · быстрее перезарядка</div>
               </button>
             </div>
-            <button onClick={() => { act(gg => gg.undock()); setPortMsg(null); }}
+            <button onClick={() => { act(gg => gg.undock()); setPortMsg(null); setShipPicker(false); }}
               className="pointer-events-auto mt-4 w-full rounded-lg border border-amber-600 bg-gradient-to-b from-amber-600 to-amber-800 px-4 py-2.5 font-serif font-bold text-amber-50 transition hover:from-amber-500 active:scale-[0.98]">
               Отдать швартовы!
             </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -797,9 +910,11 @@ export default function Home() {
           <div className="rounded-xl border-2 border-amber-800 bg-[#12222a] p-3 shadow-2xl">
             <div className="mb-2 flex items-baseline justify-between px-1">
               <span className="font-serif text-lg font-bold text-amber-200">Навигационная карта</span>
-              <span className="text-xs text-stone-400">Tab / клик — закрыть</span>
+              <span className="text-xs text-stone-400">Tab / клик — закрыть · 🖱 клик по острову — быстрое перемещение</span>
             </div>
-            <canvas ref={mapCanvasRef} width={640} height={520} className="rounded-lg" />
+            <canvas ref={mapCanvasRef} width={640} height={520}
+              onClick={onMapClick}
+              className="cursor-pointer rounded-lg" />
             <div className="mt-2 flex justify-center gap-4 text-[11px] text-stone-400">
               <span><span className="text-sky-300">▲</span> — ваш корабль</span>
               <span><span className="text-amber-400">●</span> — торговец</span>
@@ -852,27 +967,35 @@ export default function Home() {
         return (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
             onClick={() => setEncyOpen(false)}>
-            <div className="w-[720px] max-h-[88vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
+            <div className="w-[780px] max-h-[88vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
               onClick={ev => ev.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
                 <h2 className="font-serif text-xl font-bold text-amber-300">📖 Энциклопедия кораблей</h2>
+                <span className="text-[10px] text-stone-500">3D-модель: вращайте мышью, масштаб — колесом</span>
                 <button onClick={() => setEncyOpen(false)}
                   className="rounded border border-stone-600 bg-stone-900 px-3 py-1 text-xs text-stone-300 hover:border-amber-600 hover:text-amber-200">
                   Закрыть
                 </button>
               </div>
               <div className="flex max-h-[74vh]">
-                {/* список судов */}
+                {/* список судов: военные / торговые */}
                 <div className="w-52 shrink-0 overflow-y-auto border-r border-amber-900/40 py-2">
-                  {ENCYCLOPEDIA.map(s => (
-                    <button key={s.id} onClick={() => setEncyId(s.id)}
-                      className={`block w-full px-4 py-2 text-left text-xs leading-tight transition ${
-                        s.id === encyId
-                          ? 'bg-amber-700/50 text-amber-100'
-                          : 'text-stone-400 hover:bg-stone-800/60 hover:text-amber-200'}`}>
-                      <span className="block font-semibold">{s.name}</span>
-                      <span className="text-[10px] text-stone-500">{s.era}</span>
-                    </button>
+                  {(['war', 'merchant'] as const).map(cat => (
+                    <div key={cat}>
+                      <div className="sticky top-0 z-10 bg-[#1a120a] px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
+                        {cat === 'war' ? '⚓ Военные' : '📦 Торговые'}
+                      </div>
+                      {ENCYCLOPEDIA.filter(s => s.category === cat).map(s => (
+                        <button key={s.id} onClick={() => setEncyId(s.id)}
+                          className={`block w-full px-4 py-1.5 text-left text-xs leading-tight transition ${
+                            s.id === encyId
+                              ? 'bg-amber-700/50 text-amber-100'
+                              : 'text-stone-400 hover:bg-stone-800/60 hover:text-amber-200'}`}>
+                          <span className="block font-semibold">{s.name}</span>
+                          <span className="text-[10px] text-stone-500">{s.shipClass}{s.oars ? ' · 🚣' : ''}</span>
+                        </button>
+                      ))}
+                    </div>
                   ))}
                 </div>
                 {/* статья */}
@@ -881,7 +1004,21 @@ export default function Home() {
                     <h3 className="font-serif text-lg font-bold text-amber-200">{e.name}</h3>
                     <span className="rounded border border-amber-800/60 bg-stone-900/70 px-2 py-0.5 text-[10px] text-amber-300/90">{e.role}</span>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-stone-500">{e.type} · {e.era}</div>
+                  {/* бейджи: тип · класс · страна · год · гребной */}
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span className={`rounded border px-1.5 py-0.5 font-semibold ${
+                      e.category === 'war' ? 'border-red-800/70 bg-red-950/40 text-red-300' : 'border-amber-800/70 bg-amber-950/40 text-amber-300'}`}>
+                      {e.category === 'war' ? '⚓ Военный' : '📦 Торговый'}
+                    </span>
+                    <span className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5 text-stone-300">{e.shipClass}</span>
+                    {e.country && <span className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5 text-stone-300">{e.country}</span>}
+                    {e.year && <span className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5 text-stone-300">{e.year} г.</span>}
+                    {e.oars ? <span className="rounded border border-sky-800/70 bg-sky-950/40 px-1.5 py-0.5 text-sky-300">🚣 гребной · {e.oars} вёсел/борт</span> : null}
+                  </div>
+                  {/* 3D-модель корабля */}
+                  <div className="mt-3 h-[230px] shrink-0 overflow-hidden rounded-lg border border-stone-700/60">
+                    <ShipViewer3D presetId={e.id} />
+                  </div>
                   {/* ТТХ */}
                   <div className="mt-3 grid grid-cols-4 gap-1.5">
                     {([

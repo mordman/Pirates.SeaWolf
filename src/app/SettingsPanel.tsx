@@ -50,6 +50,22 @@ function Slider({ value, min, max, step, onChange, format }:
   );
 }
 
+/** Числовой ввод количества боеприпасов (0..999) с кнопками ±5 */
+function AmmoInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const set = (v: number) => onChange(Math.min(999, Math.max(0, Math.round(v) || 0)));
+  return (
+    <div className="flex items-center gap-1">
+      <button onClick={() => set(value - 5)}
+        className="h-6 w-6 rounded border border-stone-600 bg-stone-900 text-xs font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">−</button>
+      <input type="number" min={0} max={999} value={value}
+        onChange={e => set(Number(e.target.value))}
+        className="w-16 rounded border border-stone-600 bg-stone-900 px-1.5 py-1 text-center text-[11px] font-semibold text-amber-200 focus:border-amber-500 focus:outline-none" />
+      <button onClick={() => set(value + 5)}
+        className="h-6 w-6 rounded border border-stone-600 bg-stone-900 text-xs font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">+</button>
+    </div>
+  );
+}
+
 const inputCls = 'rounded border border-stone-600 bg-stone-900 px-2 py-1 text-[11px] text-stone-200 focus:border-amber-500 focus:outline-none';
 
 export default function SettingsPanel({ initial, onApply, onClose }:
@@ -297,6 +313,41 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 <div className="mt-1 text-[10px] text-stone-500">
                   Полигон доступен из главного меню — корабли стоят параллельно,
                   мишень на якоре с правого борта.
+                </div>
+              </div>
+              <div className="py-2">
+                <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Боезапас (применяется сразу)</div>
+                <Row label="⚫ Ядра" hint="основной калибр — корпус и экипаж">
+                  <AmmoInput value={s.gameplay.startingAmmo.ball}
+                    onChange={v => update(d => { d.gameplay.startingAmmo.ball = v; })} />
+                </Row>
+                <Row label="⛓ Книппели" hint="два ядра на цепи — рвут паруса и мачты">
+                  <AmmoInput value={s.gameplay.startingAmmo.chain}
+                    onChange={v => update(d => { d.gameplay.startingAmmo.chain = v; })} />
+                </Row>
+                <Row label="🧨 Картечь" hint="россыпь пуль — экипаж и лёгкий корпус">
+                  <AmmoInput value={s.gameplay.startingAmmo.grape}
+                    onChange={v => update(d => { d.gameplay.startingAmmo.grape = v; })} />
+                </Row>
+                <Row label="🔥 Зажигательные" hint="поджигают палубы">
+                  <AmmoInput value={s.gameplay.startingAmmo.fire}
+                    onChange={v => update(d => { d.gameplay.startingAmmo.fire = v; })} />
+                </Row>
+                <Row label="♾ Не расходовать боеприпасы" hint="чит-режим для испытаний">
+                  <input type="checkbox" checked={s.gameplay.infiniteAmmo}
+                    onChange={e => update(d => { d.gameplay.infiniteAmmo = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+              </div>
+              <div className="py-2">
+                <Row label="Прочность кораблей" hint="корпус, паруса и мачты всех судов — применяется сразу">
+                  <Slider value={s.gameplay.hullDurability} min={0.5} max={3} step={0.25}
+                    onChange={v => update(d => { d.gameplay.hullDurability = v; })}
+                    format={v => `×${v.toFixed(2)}`} />
+                </Row>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  ×0.5 — «стеклянные» корпуса, ×3 — морские крепости.
+                    При смене прочности текущие повреждения сохраняются пропорционально.
                 </div>
               </div>
             </div>
