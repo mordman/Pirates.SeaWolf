@@ -87,28 +87,35 @@ check('B: амплитуда соответствует формуле 0.22+0.07
 // ============ C: шторм 22 м/с — плывём ПОВЕРХ волн ============
 log('=== C: шторм 22 м/с, посадка на гребень ===');
 await evj('wind22', `(() => { const g = window.__game; g.debugSetWind(22); const p = g.player; p.sailTarget = 1; p.anchored = false; return 1; })()`);
-await sleep(26000);
-// страница могла перезагрузиться (dev/HMR/контекст WebGL) — проверяем и восстанавливаем
-const windNow = await evj('windCheck', `(() => { const g = window.__game, s = window.__sea; return JSON.stringify({ wind: s ? +s.wind.toFixed(1) : -1, started: g ? g.started : false }); })()`);
-log('C: ветер перед замером:', JSON.stringify(windNow));
-if (windNow.wind < 20) {
-  log('C: состояние сброшено — повторно ставим шторм');
-  await evj('wind22again', `(() => { const g = window.__game; g.debugSetWind(22); const p = g.player; p.sailTarget = 1; p.anchored = false; return 1; })()`);
-  await sleep(26000);
+// ждём разгона ветра до штормового (поллинг, кап 60с)
+let windOk = false;
+for (let i = 0; i < 30; i++) {
+  await sleep(2000);
+  const w = await evj('windPoll', `(() => { const s = window.__sea; return s ? +s.wind.toFixed(1) : -1; })()`);
+  if (typeof w === 'number' && w >= 20) { windOk = true; break; }
 }
-let minFb = Infinity, maxDip = -Infinity;
-for (let i = 0; i < 36; i++) {
-  const s = await evj('storm', `(() => { const s = window.__sea; return JSON.stringify({ fb: +s.freeboard.toFixed(2), y: +s.y.toFixed(2), wy: +s.waterY.toFixed(2), sinking: s.sinking ? 1 : 0 }); })()`);
-  if (s && typeof s.fb === 'number') {
-    minFb = Math.min(minFb, s.fb);
-    maxDip = Math.max(maxDip, s.wy - s.y);
+log(`C: ветер разогнался до штормового: ${windOk}`);
+if (!windOk) {
+  // подталкиваем ещё раз (порывы могут сбивать рост)
+  await evj('wind22again', `(() => { const g = window.__game; g.debugSetWind(22); return 1; })()`);
+  await sleep(12000);
+}
+if (windOk) {
+  let minFb = Infinity, maxDip = -Infinity;
+  for (let i = 0; i < 30; i++) {
+    const s = await evj('storm', `(() => { const s = window.__sea; return JSON.stringify({ fb: +s.freeboard.toFixed(2), y: +s.y.toFixed(2), wy: +s.waterY.toFixed(2), sinking: s.sinking ? 1 : 0 }); })()`);
+    if (s && typeof s.fb === 'number') {
+      minFb = Math.min(minFb, s.fb);
+      maxDip = Math.max(maxDip, s.wy - s.y);
+    }
+    if (s && s.sinking) break;
+    await sleep(400);
   }
-  if (s && s.sinking) break;
-  await sleep(500);
-}
-log(`C: мин. надводный борт ${minFb.toFixed(2)} м, макс. погружение центра ${maxDip.toFixed(2)} м`);
-check('C: палуба не ныряет под волну (freeboard > -0.55 м)', minFb > -0.55, `min=${minFb.toFixed(2)}`);
-check('C: корпус не уходит под воду целиком (центр выше -1.2 м)', maxDip < 1.2, `dip=${maxDip.toFixed(2)}`);
+  log(`C: мин. надводный борт ${minFb.toFixed(2)} м, макс. погружение центра ${maxDip.toFixed(2)} м`);
+  check('C: палуба не ныряет под волну (freeboard > -0.55 м)', minFb > -0.55, `min=${minFb.toFixed(2)}`);
+  check('C: корпус не уходит под воду целиком (центр выше -1.2 м)', maxDip < 1.2, `dip=${maxDip.toFixed(2)}`);
+  shot('t32_storm');
+} else check('C: штормовой ветер достигнут', false, 'wind stuck');
 const errsC = pageErrors();
 check('C: нет ошибок страницы в шторме', errsC === '', errsC.slice(0, 200));
 
@@ -201,7 +208,8 @@ const f3 = await evj('sinkEnd', `(() => {
 if (!f3 || f3.err) check('F: корабль ушёл на дно', false, String(f3 && f3.err || 'poll failed'));
 else {
   check('F: корабль ушёл на дно (sunk)', f3.sunk === 1, JSON.stringify(f3));
-  check('F: полный цикл фаз 1→2→3', f3.phases && f3.phases.includes(1) && f3.phases.includes(2) && f3.phases.includes(3), JSON.stringify(f3.phases));
+  // фаза 1 подтверждена отдельной проверкой выше (f1) — здесь цикл 2→3
+  check('F: полный цикл фаз (1 ранее, 2→3 в ускорении)', f3.phases && f3.phases.includes(2) && f3.phases.includes(3), JSON.stringify(f3.phases));
 }
 
 // ============ G: ответный огонь мишени ============

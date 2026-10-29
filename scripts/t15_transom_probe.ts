@@ -2,7 +2,7 @@
 // каждый луч внутрь контура кормового шпангоута должен ВСТРЕТИТЬ
 // геометрию. Если луч проходит насквозь — дыра в транце.
 // (buildShip рисует canvas-текстуру палубы — в Node подменяем document)
-const handler = (): ProxyHandler<unknown> => ({
+const handler = (): ProxyHandler<object> => ({
   get: (_t, prop) => {
     if (prop === 'addColorStop') return () => undefined;
     if (prop === 'width' || prop === 'height') return 512;
