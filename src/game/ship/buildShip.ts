@@ -20,7 +20,7 @@ export interface ShipPreset {
   hullHP: number; sailHP: number; maxCrew: number;
   cargo: number;         // грузоподъёмность, т
   colors: { hull: number; deck: number; trim: number; sail: number };
-  flagKind: 'pirate' | 'merchant' | 'navy';
+  flagKind: FlagKind;
   // --- классификация (энциклопедия, мини-карта) ---
   category: 'war' | 'merchant';          // военный / торговый
   shipClass: string;                     // класс/ранг судна
@@ -247,6 +247,19 @@ export const PRESETS: Record<string, ShipPreset> = {
     rig: 'lateen', oars: 12,
     category: 'war', shipClass: 'Военная галера (гребная)', year: 1750, country: 'Средиземноморье',
   },
+  blackpearl: {
+    // Легендарный корабль: чёрный корпус, чёрные паруса и
+    // СВЕРХЪЕСТЕСТВЕННАЯ скорость — обгоняет даже «Летучего
+    // голландца». 32 пушки: 18 на нижней палубе + 14 на верхней
+    id: 'blackpearl', name: 'Чёрная жемчужина',
+    length: 40, beam: 10, draft: 3.4, freeboard: 3.6,
+    masts: 3, gunsPerSide: 16, gunportRows: 2,
+    mass: 640_000, maxSpeed: 10.6,
+    hullHP: 430, sailHP: 220, maxCrew: 130, cargo: 160,
+    colors: { hull: 0x141419, deck: 0x453c33, trim: 0x1e1e26, sail: 0x1a1a20 },
+    flagKind: 'pirate', gallery: true, beakhead: true,
+    category: 'war', shipClass: 'Легендарный галеон', year: 1693, country: 'Карибское море',
+  },
 
   // ================= торговые и гражданские суда XVIII века =================
   amsterdam: {
@@ -376,6 +389,8 @@ export interface ShipVisual {
   /** Ломаемые детали палубы: штурвал, шпиль, фонарь, носовая фигура —
    *  срываются прямыми попаданиями и при затоплении (Ship.damageProp) */
   breakables: THREE.Object3D[];
+  /** материалы дерева корпуса (для скина «цвет корабля») — без экипажа */
+  tintMats: THREE.MeshStandardMaterial[];
 }
 
 export interface SailRig {
@@ -516,19 +531,51 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
 }
 
 // ---------- флаг ----------
-function makeFlagTexture(kind: 'pirate' | 'merchant' | 'navy'): THREE.Texture {
+/** Все флаги игры (скины): стандартные + покупные расцветки */
+export type FlagKind = 'pirate' | 'merchant' | 'navy' | 'pirateRed' | 'jollyCrown' | 'blackplain' | 'maiden';
+
+function drawSkull(x: CanvasRenderingContext2D, bone: string, skull: string) {
+  x.fillStyle = skull;
+  x.beginPath(); x.arc(64, 32, 13, 0, Math.PI * 2); x.fill(); // череп
+  x.fillStyle = bone;
+  x.beginPath(); x.arc(59, 30, 3, 0, Math.PI * 2); x.arc(69, 30, 3, 0, Math.PI * 2); x.fill();
+  x.fillStyle = skull;
+  x.save(); x.translate(64, 50); x.rotate(0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
+  x.save(); x.translate(64, 50); x.rotate(-0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
+}
+
+function makeFlagTexture(kind: FlagKind): THREE.Texture {
   const c = document.createElement('canvas');
   c.width = 128; c.height = 80;
   const x = c.getContext('2d')!;
   if (kind === 'pirate') {
     x.fillStyle = '#14100c'; x.fillRect(0, 0, 128, 80);
-    x.fillStyle = '#e8e4d8';
-    x.beginPath(); x.arc(64, 34, 13, 0, Math.PI * 2); x.fill(); // череп
-    x.fillStyle = '#14100c';
-    x.beginPath(); x.arc(59, 32, 3, 0, Math.PI * 2); x.arc(69, 32, 3, 0, Math.PI * 2); x.fill();
-    x.fillStyle = '#e8e4d8';
-    x.save(); x.translate(64, 52); x.rotate(0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
-    x.save(); x.translate(64, 52); x.rotate(-0.5); x.fillRect(-26, -2.5, 52, 5); x.restore();
+    drawSkull(x, '#14100c', '#e8e4d8');
+  } else if (kind === 'pirateRed') {
+    // «Кровавый Роджер»: алое поле, чёрный череп
+    x.fillStyle = '#8a1f16'; x.fillRect(0, 0, 128, 80);
+    drawSkull(x, '#8a1f16', '#1a1512');
+  } else if (kind === 'jollyCrown') {
+    // «Роджер с короной»: чёрное поле, череп в золотой короне
+    x.fillStyle = '#0d0a08'; x.fillRect(0, 0, 128, 80);
+    drawSkull(x, '#0d0a08', '#e8e4d8');
+    x.fillStyle = '#d8b45a';
+    x.beginPath();
+    x.moveTo(52, 20); x.lineTo(56, 12); x.lineTo(61, 19); x.lineTo(64, 9);
+    x.lineTo(67, 19); x.lineTo(72, 12); x.lineTo(76, 20); x.closePath(); x.fill();
+  } else if (kind === 'blackplain') {
+    // «Проклятый»: чисто чёрное полотнище
+    x.fillStyle = '#0a0908'; x.fillRect(0, 0, 128, 80);
+  } else if (kind === 'maiden') {
+    // «Дева моря»: белое поле, алое сердце и якорь
+    x.fillStyle = '#efe7d2'; x.fillRect(0, 0, 128, 80);
+    x.fillStyle = '#a3362c';
+    x.beginPath();
+    x.moveTo(64, 58); x.bezierCurveTo(38, 40, 44, 20, 64, 32);
+    x.bezierCurveTo(84, 20, 90, 40, 64, 58); x.fill();
+    x.strokeStyle = '#2c3a4a'; x.lineWidth = 5;
+    x.beginPath(); x.moveTo(64, 30); x.lineTo(64, 60); x.stroke();
+    x.beginPath(); x.arc(64, 52, 9, Math.PI * 0.15, Math.PI * 0.85, true); x.stroke();
   } else if (kind === 'merchant') {
     x.fillStyle = '#efe7d2'; x.fillRect(0, 0, 128, 80);
     x.fillStyle = '#a3362c'; x.fillRect(0, 32, 128, 16);
@@ -542,7 +589,7 @@ function makeFlagTexture(kind: 'pirate' | 'merchant' | 'navy'): THREE.Texture {
   return t;
 }
 
-function flagMesh(kind: 'pirate' | 'merchant' | 'navy'): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial } {
+function flagMesh(kind: FlagKind): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial } {
   const g = new THREE.PlaneGeometry(2.0, 1.2, 12, 5);
   g.translate(1.0, 0, 0); // крепление у древка (x=0)
   const mat = new THREE.ShaderMaterial({
@@ -1253,7 +1300,11 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
 }
 
 /** Вёсла гребных судов (шебека, галера): вальные порты по борту +
- *  вёсла с лопастями, наклонённые к воде; гребки анимирует Ship.updateVisual */
+ *  вёсла с лопастями. ВАЖНО: вал строится ВНАРУЖУ от своего борта
+ *  (dir = side) — раньше оба борта строились в +X и левые вёсла
+ *  торчали СКВОЗЬ корпус на правый край.
+ *  УБРАНОЕ положение (stow): вал поднят вертикально у борта —
+  *  вываливаются на воду только при гребле (Ship.oarsDeployT) */
 function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] } {
   const group = new THREE.Group();
   const oars: THREE.Object3D[] = [];
@@ -1275,20 +1326,25 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
       const port = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.26, 0.3), portMat);
       port.position.set(side * (hw + 0.01), y, z);
       group.add(port);
-      // весло: вал + лопасть, наклонены вниз-наружу к воде
+      // весло: вал + лопасть — ВНАРУЖУ борта (side), наклон к воде
+      const dir = side;
       const oar = new THREE.Group();
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, oarLen, 5), shaftMat);
       shaft.rotation.z = Math.PI / 2;
-      shaft.position.x = oarLen * 0.42;
+      shaft.position.x = dir * oarLen * 0.42;
       oar.add(shaft);
       const blade = new THREE.Mesh(new THREE.BoxGeometry(oarLen * 0.3, 0.03, 0.2), shaftMat);
-      blade.position.x = oarLen * 0.92;
+      blade.position.x = dir * oarLen * 0.92;
       oar.add(blade);
       oar.position.set(side * (hw + 0.04), y, z);
-      oar.rotation.z = side * -0.34;
+      // СТАРТ: убрано (вал вертикально у борта); на воду вывалит
+      // Ship.updateVisual при oarsDeployT → 1
+      const stow = side * 1.52;
+      oar.rotation.z = stow;
       oar.userData.phase = t * Math.PI * 2 + (side > 0 ? Math.PI : 0);
       oar.userData.side = side;
       oar.userData.base = side * -0.34;
+      oar.userData.stow = stow;
       group.add(oar);
       oars.push(oar);
     }
@@ -1739,10 +1795,22 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // ломаемые детали палубы: срываются попаданиями / давлением воды
   const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figure, rudderMesh];
 
+  // материалы дерева для скина «цвет корабля» (собираем ДО того, как
+  // в группу добавится экипаж с общим CREW_MAT — его тонировать нельзя)
+  const tintSet = new Set<THREE.MeshStandardMaterial>();
+  group.traverse(o => {
+    const m = (o as THREE.Mesh).material;
+    if (!m) return;
+    const arr = Array.isArray(m) ? m : [m];
+    for (const mm of arr) {
+      if ((mm as THREE.MeshStandardMaterial).isMeshStandardMaterial) tintSet.add(mm as THREE.MeshStandardMaterial);
+    }
+  });
+
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
-    masts, lantern, wheel, detail, breakables,
+    masts, lantern, wheel, detail, breakables, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
   };
 }
@@ -1753,4 +1821,32 @@ export function enableLantern(vis: ShipVisual) {
   vis.lantern = new THREE.PointLight(0xffa644, 6, 26, 1.6);
   vis.lantern.position.set(0, vis.dims.length * 0.06, -vis.dims.length / 2 - 0.4);
   vis.group.add(vis.lantern);
+}
+
+// ---------- скины (порт): флаг, паруса, корпус ----------
+/** Сменить флаг корабля (купленный скин) */
+export function setFlagKind(vis: ShipVisual, kind: FlagKind) {
+  const old = vis.flagMat.uniforms.uTex.value as THREE.Texture;
+  vis.flagMat.uniforms.uTex.value = makeFlagTexture(kind);
+  old.dispose();
+}
+
+/** Сменить цвет парусов (у каждого полотна свой uniform) */
+export function setSailColor(vis: ShipVisual, hex: number) {
+  const c = new THREE.Color(hex);
+  for (const s of vis.sails.sails) (s.mat.uniforms.uColor.value as THREE.Color).copy(c);
+}
+
+/** Сменить тон корпуса/палубы — множитель над вершинными цветами дерева */
+export function setHullTint(vis: ShipVisual, hex: number) {
+  const c = new THREE.Color(hex);
+  for (const m of vis.tintMats) m.color.copy(c);
+}
+
+/** Цена судна на верфи (золото) — от ТТХ; легендарные суда дороже */
+export function shipPrice(P: ShipPreset): number {
+  if (P.id === 'blackpearl') return 35000; // легенда не продаётся дёшево
+  const p = P.hullHP * 3 + Math.pow(P.gunsPerSide, 1.6) * 90
+    + P.maxCrew * 3 + P.cargo * 0.8 + P.maxSpeed * 120;
+  return Math.round(p / 10) * 10;
 }

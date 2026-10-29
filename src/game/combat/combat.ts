@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Ship } from '../ship/Ship';
 import { sailAddHole, SailInfo } from '../ship/buildShip';
+import { CREW_PER_FIGURE } from '../ship/crew';
 import { spawnDebrisAt } from '../fx/debris';
 import type { Particles } from '../fx/particles';
 import { clamp } from '../core/rng';
@@ -698,12 +699,13 @@ export class CombatSystem {
         const broke = t.damageMast(hit.mast, dmg);
         if (pr.type === 'grape') {
           // картечь по рангоуту: вахтенные у мачты гибнут только при
-          // прямом простреле (узкая трасса), не «по факту залпа»
+          // прямом простреле (узкая трасса), не «по факту залпа»;
+          // одна фигура на палубе = CREW_PER_FIGURE единиц экипажа
           this.pathB.copy(hit.lp).addScaledVector(hit.dir, t.preset.length * 1.25);
           const killed = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 1, 0.55,
             t.position, t.quaternion);
-          const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
-          t.applyDamage({ kind: 'grape', amount: Math.max(0.4, killed * per * 0.8) });
+          if (killed > 0) t.crew = Math.max(0, Math.round(t.crew - killed * CREW_PER_FIGURE));
+          t.applyDamage({ kind: 'grape', amount: 0.4 * killed }); // щепки по корпусу
         }
         if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
       }
@@ -733,10 +735,11 @@ export class CombatSystem {
         crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'ball', 2, 0.5,
           t.position, t.quaternion);
       }
-      // потери команды = УБИТЫМ фигурам (1 фигура ≈ per живых людей)
-      const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
+      // потери команды = УБИТЫМ фигурам × CREW_PER_FIGURE (одна
+      // фигура на палубе представляет 10 живых людей)
       if (pr.type === 'grape') {
-        t.applyDamage({ kind: 'grape', amount: Math.max(0.5, crewKilled * per * 0.85) });
+        if (crewKilled > 0) t.crew = Math.max(0, Math.round(t.crew - crewKilled * CREW_PER_FIGURE));
+        t.applyDamage({ kind: 'grape', amount: 0.5 + crewKilled * 0.35 });
       } else {
         t.applyDamage({
           kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
@@ -744,7 +747,7 @@ export class CombatSystem {
           hitPoint: pr.pos.clone(),
         });
         if (crewKilled > 0) {
-          t.crew = Math.max(0, t.crew - crewKilled * per * 0.9);
+          t.crew = Math.max(0, Math.round(t.crew - crewKilled * CREW_PER_FIGURE));
         }
       }
       if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });

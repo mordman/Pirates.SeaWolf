@@ -9,11 +9,28 @@ import type { Particles } from '../fx/particles';
 // нявки/банданы/треуголки. Роли: капитан (шкафут у штурвала),
 // боцман (у шпиля), канониры у пушек, вахтенные у мачт,
 // «ходоки» — бродят по палубе.
+// ЧИСЛЕННОСТЬ: одна фигура представляет CREW_PER_FIGURE единиц
+// экипажа; на палубе находится доля от общей численности
+// (малые суда 80%, средние 50%, крупные 20%) — см.
+// deckShareForPreset. При экипаже 0 палуба ПУСТА.
 // ПОТЕРИ: картечь ВАЛИТ фигуры (падают трупами на палубу),
-// ядро насквозь РАЗРЫВАЕТ на куски (гибы + кровь); абстракт-
+// ядро насквозь РАЗРЫВАЕТ на куски (гибы + кровь); каждая
+// убитая фигура = −CREW_PER_FIGURE единиц экипажа. Абстракт-
 // ные потери тоже обращаются в трупы. При затоплении экипаж
 // «покидает» корабль.
 // ============================================================
+
+/** Одна фигура на палубе представляет столько единиц экипажа */
+export const CREW_PER_FIGURE = 10;
+
+/** Доля экипажа, находящаяся НА ПАЛУБЕ (остальные — в трюме,
+ *  на орудийных деках и на вахтах ниже): малые суда 80%,
+ *  средние 50%, крупные 20% */
+export function deckShareForPreset(P: ShipPreset): number {
+  if (P.maxCrew < 40) return 0.8;
+  if (P.maxCrew < 250) return 0.5;
+  return 0.2;
+}
 
 // глобальные эффекты для смертей (один экземпляр на игру)
 let FX: { gibs: GibPool | null; particles: Particles | null } = { gibs: null, particles: null };
@@ -331,6 +348,8 @@ export interface CrewVisual {
   total: number;
   shown: number;          // живые видимые фигуры
   dead: number;           // потери (трупы + разорванные)
+  /** доля экипажа на палубе (0.8/0.5/0.2 по размеру судна) */
+  deckShare: number;
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
   /** Поражение экипажа вдоль пути снаряда (a→b в ЛОКАЛЬНЫХ координатах
@@ -343,7 +362,9 @@ export interface CrewVisual {
   reset(): void;
 }
 
-/** Собрать экипаж для корабля (local coords: +Z нос, +X порт) */
+/** Собрать экипаж для корабля (local coords: +Z нос, +X порт).
+ *  Число фигур = maxCrew × доля на палубе ÷ CREW_PER_FIGURE —
+ *  от 1 фигуры на шлюпе до ~21 на линейном корабле */
 export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   const group = new THREE.Group();
   const L = P.length;
@@ -366,47 +387,63 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   let s = seed * 104729 + 7;
   const nextSeed = () => { s = (s * 16807) % 2147483647; return s % 100000; };
 
-  // капитан — у штурвала, лицом к носу
-  place(buildFigure('captain', rollTraits(rot, 'captain'), nextSeed()), 0.55, -L * 0.245, 0.3);
-  // РУЛЕВОЙ — за штурвалом (руки на ободе), лицом к носу;
-  // та же формула позиции штурвала, что в buildShip (wheelT)
+  // === СКОЛЬКО ЛЮДЕЙ НА ПАЛУБЕ: одна фигура = CREW_PER_FIGURE
+  // единиц; доля от численности зависит от размера судна ===
+  const deckShare = deckShareForPreset(P);
+  const nDeck = Math.max(1, Math.min(26, Math.round(P.maxCrew * deckShare / CREW_PER_FIGURE)));
+
+  const mastZ = P.masts === 2 ? [L * 0.16, -L * 0.10] : [L * 0.18, -L * 0.05, -L * 0.28];
+  const deckGuns = gunLayout(P).filter(sl => sl.tier === 0).map(sl => sl.z);
   const wheelT = P.castleH ? 0.29 : 0.2;
   const wheelZ = THREE.MathUtils.lerp(-L / 2, L / 2, wheelT);
-  place(buildFigure('helmsman', rollTraits(rot, 'helmsman'), nextSeed()), 0, wheelZ - 0.52, 0);
-  // боцман — у шпиля (шпиль на -L*0.16), спиной к ветру, лицом к носу-борту
-  place(buildFigure('boatswain', rollTraits(rot, 'boatswain'), nextSeed()), -0.75, -L * 0.115, 0.5);
 
-  // канониры: за ПАЛУБНЫМИ орудиями обоих бортов (через одно — чтобы
-  // не толпиться); позиции — из ЕДИНОЙ раскладки gunLayout (tier 0)
-  const deckGuns = gunLayout(P).filter(s => s.tier === 0).map(s => s.z);
-  const nGuns = deckGuns.length;
-  let gi = 0;
-  for (let i = 0; i < nGuns; i += 2) {
-    const z = deckGuns[i];
-    const w = halfW(z);
-    for (const side of [-1, 1]) {
-      const f = buildFigure('gunner', rollTraits(rot, 'gunner'), nextSeed());
-      place(f, side * (w * 0.56), z + 0.55, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+  // план ролей по приоритету: капитан → рулевой → боцман →
+  // канониры у орудий → вахтенные у мачт → ходоки
+  const plan: CrewRole[] = ['captain'];
+  if (nDeck >= 2) plan.push('helmsman');
+  if (nDeck >= 4) plan.push('boatswain');
+  const nRest = nDeck - plan.length;
+  const nGunners = Math.min(Math.floor(nRest * 0.5), deckGuns.length * 2, 8);
+  const nWatch = Math.min(Math.max(0, nRest - nGunners), P.masts, 3);
+  const nWalk = Math.max(0, nRest - nGunners - nWatch);
+  for (let i = 0; i < nGunners; i++) plan.push('gunner');
+  for (let i = 0; i < nWatch; i++) plan.push('watch');
+  for (let i = 0; i < nWalk; i++) plan.push('walker');
+
+  let gi = 0, wi = 0, ki = 0;
+  for (const role of plan) {
+    const f = buildFigure(role, rollTraits(rot, role), nextSeed());
+    if (role === 'captain') {
+      place(f, 0.55, -L * 0.245, 0.3);
+    } else if (role === 'helmsman') {
+      // рулевой — за штурвалом (руки на ободе), лицом к носу
+      place(f, 0, wheelZ - 0.52, 0);
+    } else if (role === 'boatswain') {
+      // боцман — у шпиля (шпиль на -L*0.16), лицом к носу-борту
+      place(f, -0.75, -L * 0.115, 0.5);
+    } else if (role === 'gunner') {
+      // канонир — за ПАЛУБНЫМ орудием (через одно), борт чередуется
+      const z = deckGuns[Math.floor(gi / 2) % Math.max(1, deckGuns.length)];
+      const side = gi % 2 === 0 ? -1 : 1;
       gi++;
+      const w = halfW(z);
+      place(f, side * (w * 0.56), z + 0.55, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    } else if (role === 'watch') {
+      // вахтенный — у мачты, борт чередуется
+      const mz = mastZ[wi % mastZ.length];
+      const side = wi % 2 === 0 ? -1 : 1;
+      wi++;
+      place(f, side * Math.max(0.7, halfW(mz) * 0.42), mz + 0.9, side * (Math.PI / 2));
+    } else {
+      // ходок — гуляет по палубе туда-обратно
+      f.xPath = (ki % 2 ? 1 : -1) * Math.max(0.55, halfW(0) * 0.34);
+      f.walkA = P.castleH ? -L * 0.22 : -L * 0.3;
+      f.walkB = P.castleH ? L * 0.2 : L * 0.28;
+      f.walkT = rot();
+      ki++;
+      figures.push(f);
+      group.add(f.group);
     }
-  }
-  // вахтенные у мачт
-  const mastZ = P.masts === 2 ? [L * 0.16, -L * 0.10] : [L * 0.18, -L * 0.05, -L * 0.28];
-  mastZ.forEach((mz, i) => {
-    const f = buildFigure('watch', rollTraits(rot, 'watch'), nextSeed());
-    place(f, (i % 2 ? 1 : -1) * Math.max(0.7, halfW(mz) * 0.42), mz + 0.9, (i % 2 ? 1 : -1) * (Math.PI / 2));
-  });
-
-  // ходоки: 2–3 фигуры гуляют по палубе
-  const nWalk = P.masts === 3 ? 3 : 2;
-  for (let i = 0; i < nWalk; i++) {
-    const f = buildFigure('walker', rollTraits(rot, 'walker'), nextSeed());
-    f.xPath = (i % 2 ? 1 : -1) * Math.max(0.55, halfW(0) * 0.34);
-    f.walkA = P.castleH ? -L * 0.22 : -L * 0.3;
-    f.walkB = P.castleH ? L * 0.2 : L * 0.28;
-    f.walkT = rot();
-    figures.push(f);
-    group.add(f.group);
   }
 
   group.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
@@ -466,7 +503,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   };
 
   const vis: CrewVisual = {
-    group, total: figures.length, shown: figures.length, dead: 0,
+    group, total: figures.length, shown: figures.length, dead: 0, deckShare,
     setVisible(v: boolean) { group.visible = v; },
     killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
       // ТОЧНОЕ поражение: путь снаряда (a→b, локальные координаты корабля)
@@ -528,20 +565,26 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
         }
       }
 
-      // --- потери команды: недостающие фигуры становятся трупами ---
-      const frac = Math.max(ship.crew, 0) / Math.max(ship.maxCrew, 1);
+      // --- потери команды: живых фигур РОВНО столько, сколько
+      // людей на палубе (crew × доля ÷ CREW_PER_FIGURE).
+      // crew = 0 → палуба ПУСТАЕТ (все фигуры погибают).
+      // Избыток умирает по одной за кадр — трупы падают естественно
+      const target = Math.max(0, Math.min(figures.length,
+        Math.round(Math.max(ship.crew, 0) * vis.deckShare / CREW_PER_FIGURE)));
       const nAlive = figures.reduce((a, f) => a + (f.dead ? 0 : 1), 0);
-      const budget = Math.max(1, Math.ceil(nAlive * Math.min(1, frac * 1.3)));
       const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'helmsman', 'captain'];
       let shownAlive = 0;
       let excess: CrewFigure | null = null; // одна «потеря» за кадр
-      for (const role of order) {
-        for (const f of figures) {
-          if (f.role !== role || f.dead) continue;
-          if (shownAlive < budget) shownAlive++;
-          else if (!excess) excess = f;
+      if (nAlive > target) {
+        outer:
+        for (const role of order) {
+          for (const f of figures) {
+            if (f.role !== role || f.dead) continue;
+            if (shownAlive < target) shownAlive++;
+            else { excess = f; break outer; }
+          }
         }
-      }
+      } else shownAlive = nAlive;
       if (excess) killFigure(excess, 'grape', excess.group.position,
         excess.group.position.clone().add(new THREE.Vector3(0, 0, 1)),
         ship.position, ship.quaternion);

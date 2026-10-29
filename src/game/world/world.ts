@@ -14,9 +14,37 @@ export interface IslandDef {
   discovered: boolean;
 }
 
+// ---------- порты: по одному на КАЖДОМ острове ----------
+/** Уровень порта зависит от размера острова: пристань → деревня →
+ *  городок → город-крепость с пушками и населением */
+export interface PortDef {
+  island: IslandDef;
+  name: string;          // название гавани (совпадает с островом)
+  tier: 0 | 1 | 2 | 3;   // пристань / деревня / городок / город-крепость
+  tierName: string;
+  population: number;    // население посёлка/города
+  dockEnd: THREE.Vector3; // конец пирса (точка швартовки)
+  /** направление от берега в море (куда смотрит пирс) */
+  dir: THREE.Vector3;
+  /** множитель цен на товары: <1 — порт производит (дёшево покупает),
+   *  >1 — порт требует (дорого продаёт) — основа торговых маршрутов */
+  priceMul: number;
+}
+
+export const TIER_NAMES = ['Пристань', 'Деревня', 'Городок', 'Город-крепость'] as const;
+
+function tierForIsland(isl: IslandDef): 0 | 1 | 2 | 3 {
+  if (isl.r >= 200) return 3;
+  if (isl.r >= 150) return 2;
+  if (isl.r >= 100) return 1;
+  return 0;
+}
+
 export const WORLD_SEED = 20261027;
 
-// 8 «рукописных» островов (порт + ориентиры) — их индексы используют животные
+// 8 «рукописных» островов (порт + ориентиры) — их индексы используют животные.
+// 9-й — ПИРАТСКОЕ ЛОГОВО у полигона (2300, 2300): остров, густо
+// набитый пиратской эскадрой (эскадра спавнится в game.ts)
 const BASE_ISLANDS: IslandDef[] = [
   { cx: 450, cz: 350, r: 240, maxH: 26, type: 'port', name: 'Пальмовая гавань', discovered: false },
   { cx: -650, cz: 500, r: 175, maxH: 13, type: 'jungle', name: 'Зелёный атолл', discovered: false },
@@ -26,6 +54,7 @@ const BASE_ISLANDS: IslandDef[] = [
   { cx: -1500, cz: -220, r: 150, maxH: 15, type: 'jungle', name: 'Дальний ключ', discovered: false },
   { cx: -1050, cz: 1150, r: 75, maxH: 24, type: 'rock', name: 'Клык', discovered: false },
   { cx: 250, cz: -1400, r: 185, maxH: 11, type: 'atoll', name: 'Плёс', discovered: false },
+  { cx: 2950, cz: 2050, r: 150, maxH: 17, type: 'jungle', name: 'Логово пиратов', discovered: false },
 ];
 
 /** Процедурная генерация архипелага: детерминированно по сиду —
@@ -198,10 +227,10 @@ interface Circler { island: IslandDef; a: number; r: number; speed: number; h: n
 export class World {
   group = new THREE.Group();
   islands: IslandDef[] = ISLANDS;
-  port = {
-    dockEnd: new THREE.Vector3(190, 0, 588),
-    name: 'Пальмовая гавань',
-  };
+  /** все гавани архипелага — по одной на каждом острове */
+  ports: PortDef[] = [];
+  /** главная гавань (остров 0) — прежнее имя поля для совместимости */
+  get port(): PortDef { return this.ports[0]; }
   discovered = new Set<string>();
 
   // животные
@@ -235,7 +264,7 @@ export class World {
   constructor() {
     this.buildIslands();
     this.buildVegetation();
-    this.buildPort();
+    this.buildPorts();
     this.buildAnimals();
   }
 
@@ -397,29 +426,64 @@ export class World {
     return broke;
   }
 
-  // ---------- порт ----------
-  private buildPort() {
-    const isl = this.islands[0];
-    // найти берег в юго-западном направлении
-    const dir = new THREE.Vector3(-1, 0, 1).normalize();
-    let shore = new THREE.Vector3(isl.cx, 0, isl.cz);
-    for (let d = 0; d < isl.r * 1.4; d += 4) {
-      const p = new THREE.Vector3(isl.cx, 0, isl.cz).addScaledVector(dir, d);
-      if (heightAt(p.x, p.z) < 0.4) { shore = p; break; }
-    }
-    const dockEnd = shore.clone().addScaledVector(dir, 42);
-    dockEnd.y = 0;
-    this.port.dockEnd.copy(dockEnd);
+  // ---------- порты: по одному на каждом острове, размер по острову ----------
+  private buildPorts() {
+    const rng = new RNG(WORLD_SEED + 4242);
+    this.islands.forEach((isl, idx) => {
+      const tier = tierForIsland(isl);
+      // остров 0: прежнее направление пирса (гавань не двигаем — там
+      // спавнится игрок); остальные — пирс в сторону открытого моря
+      const dir = idx === 0
+        ? new THREE.Vector3(-1, 0, 1).normalize()
+        : new THREE.Vector3(isl.cx, 0, isl.cz).normalize();
+      let shore = new THREE.Vector3(isl.cx, 0, isl.cz);
+      for (let d = 0; d < isl.r * 1.4; d += 4) {
+        const p = new THREE.Vector3(isl.cx, 0, isl.cz).addScaledVector(dir, d);
+        if (heightAt(p.x, p.z) < 0.4) { shore = p; break; }
+      }
+      const dockLen = [26, 36, 46, 52][tier];
+      const dockEnd = shore.clone().addScaledVector(dir, dockLen - 4);
+      dockEnd.y = 0;
+      // детерминированный множитель цен из имени острова (0.78..1.32)
+      const hash = Array.from(isl.name).reduce((a, ch) => a + ch.charCodeAt(0) * 7, 3);
+      const priceMul = +(0.78 + ((hash * 2654435761) % 1000) / 1000 * 0.54).toFixed(2);
+      const population = [
+        8 + Math.floor(rng.range(0, 18)),
+        40 + Math.floor(rng.range(0, 120)),
+        250 + Math.floor(rng.range(0, 450)),
+        900 + Math.floor(rng.range(0, 1700)),
+      ][tier];
+      this.ports.push({
+        island: isl, name: isl.name, tier, tierName: TIER_NAMES[tier],
+        population, dockEnd, dir, priceMul,
+      });
+      this.buildPortStructs(this.ports[idx], rng);
+    });
+  }
+
+  /** Геометрия гавани: пирс + фонари + хижины; деревня — 3 хижины;
+   *  городок — рынок и амбар; город-крепость — церковь и ФОРТ с пушками.
+   *  Пиратское логово — чёрный флаг на пирсе */
+  private buildPortStructs(port: PortDef, rng: RNG) {
+    const isl = port.island;
+    const tier = port.tier;
+    const dir = port.dir;
+    const dockLen = [26, 36, 46, 52][tier];
+    const shore = port.dockEnd.clone().addScaledVector(dir, -(dockLen - 4));
 
     const wood = new THREE.MeshStandardMaterial({ color: 0x7a5c38, roughness: 0.85 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0xb09055, roughness: 0.95 });
+    const stone = new THREE.MeshStandardMaterial({ color: 0x8d867a, roughness: 0.95 });
+    const stoneDark = new THREE.MeshStandardMaterial({ color: 0x6e6759, roughness: 0.95 });
+    const iron = new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.5, metalness: 0.7 });
+    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+    const dirA = Math.atan2(dir.x, dir.z);
 
-    const dockLen = 46;
+    // --- пирс ---
     const dock = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.3, dockLen), wood);
     const mid = shore.clone().addScaledVector(dir, dockLen / 2 - 2);
     dock.position.set(mid.x, 1.15, mid.z);
-    dock.rotation.y = Math.atan2(dir.x, dir.z);
+    dock.rotation.y = dirA;
     dock.castShadow = true;
     this.group.add(dock);
     // сваи
@@ -427,14 +491,14 @@ export class World {
       const p = shore.clone().addScaledVector(dir, i * (dockLen / 7));
       for (const side of [-1, 1]) {
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 4.4, 6), dark);
-        post.position.set(p.x + Math.cos(Math.atan2(dir.x, dir.z)) * side * 2.0, -0.8, p.z - Math.sin(Math.atan2(dir.x, dir.z)) * side * 2.0);
+        post.position.set(p.x + perp.x * side * 2.0, -0.8, p.z + perp.z * side * 2.0);
         this.group.add(post);
       }
     }
     // фонари на конце пирса
     for (const side of [-1, 1]) {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.4, 6), dark);
-      const p = dockEnd.clone().add(new THREE.Vector3(Math.cos(Math.atan2(dir.x, dir.z)) * side * 1.9, 0, -Math.sin(Math.atan2(dir.x, dir.z)) * side * 1.9));
+      const p = port.dockEnd.clone().add(new THREE.Vector3(perp.x * side * 1.9, 0, perp.z * side * 1.9));
       pole.position.set(p.x, 2.6, p.z);
       this.group.add(pole);
       const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8),
@@ -442,33 +506,209 @@ export class World {
       lamp.position.set(p.x, 4.4, p.z);
       this.group.add(lamp);
     }
-    // хижины на берегу
-    const hutBase = shore.clone().addScaledVector(dir, -16);
-    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
-    for (let i = -1; i <= 1; i++) {
-      const hp = hutBase.clone().addScaledVector(perp, i * 12);
-      const h = heightAt(hp.x, hp.z);
+
+    // --- хижины на берегу (число — от уровня порта) ---
+    const mkHut = (hp: THREE.Vector3, w: number, dpt: number, wallC: number, roofC: number) => {
       const hut = new THREE.Group();
-      const walls = new THREE.Mesh(new THREE.BoxGeometry(5.5, 3.2, 4.6),
-        new THREE.MeshStandardMaterial({ color: 0xbfa27a, roughness: 0.9 }));
+      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, dpt),
+        new THREE.MeshStandardMaterial({ color: wallC, roughness: 0.9 }));
       walls.position.y = 1.6;
       hut.add(walls);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(4.6, 2.6, 4), roofMat);
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, dpt) * 0.82, 2.6, 4),
+        new THREE.MeshStandardMaterial({ color: roofC, roughness: 0.95 }));
       roof.position.y = 4.4;
       roof.rotation.y = Math.PI / 4;
       hut.add(roof);
       const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.15), dark);
-      door.position.set(0, 1.1, 2.35);
+      door.position.set(0, 1.1, dpt / 2 + 0.05);
       hut.add(door);
-      hut.position.set(hp.x, Math.max(h, 0.8), hp.z);
-      hut.rotation.y = Math.atan2(dir.x, dir.z) + (Math.random() - 0.5) * 0.5;
+      hut.position.set(hp.x, Math.max(heightAt(hp.x, hp.z), 0.8), hp.z);
+      hut.rotation.y = dirA + (rng.next() - 0.5) * 0.5;
       hut.castShadow = true;
       this.group.add(hut);
+    };
+    const hutBase = shore.clone().addScaledVector(dir, -16);
+    const nHuts = [1, 3, 5, 6][tier];
+    const wallColors = [0xbfa27a, 0xc9ad84, 0xa8906a];
+    const roofColors = [0xb09055, 0x8a5c38, 0x74553a];
+    for (let i = 0; i < nHuts; i++) {
+      const row = tier >= 2 ? i % 2 : 0; // город: два ряда
+      const off = nHuts === 1 ? 0 : (i - (nHuts - 1) / 2) * (tier >= 2 ? 11 : 13);
+      const hp = hutBase.clone()
+        .addScaledVector(perp, off)
+        .addScaledVector(dir, -row * 12);
+      mkHut(hp, tier >= 2 ? 6 : 5.5, tier >= 2 ? 5 : 4.6,
+        wallColors[i % 3], roofColors[i % 3]);
     }
-    // пальмы у порта гуще
-    const rng = new RNG(WORLD_SEED + 777);
-    for (let i = 0; i < 26; i++) {
-      const a = rng.range(0, Math.PI * 2), rr = rng.range(18, 60);
+
+    // --- городок: рынок и амбар ---
+    if (tier >= 2) {
+      const market = hutBase.clone().addScaledVector(dir, -26).addScaledVector(perp, 14);
+      for (let i = 0; i < 3; i++) {
+        const st = new THREE.Group();
+        const table = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.15, 1.6), wood);
+        table.position.y = 0.95;
+        st.add(table);
+        for (const sx of [-1.4, 1.4]) {
+          for (const sz of [0.6, -0.6]) {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.95, 0.12), dark);
+            leg.position.set(sx, 0.48, sz);
+            st.add(leg);
+          }
+        }
+        const awn = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.1, 2.2),
+          new THREE.MeshStandardMaterial({ color: i % 2 ? 0xa3362c : 0x3c6b8a, roughness: 0.9 }));
+        awn.position.set(0, 2.3, 0);
+        awn.rotation.x = 0.16;
+        st.add(awn);
+        for (const px of [-1.6, 1.6]) {
+          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.3, 0.09), dark);
+          pole.position.set(px, 1.15, 0.9);
+          st.add(pole);
+        }
+        const mp = market.clone().addScaledVector(perp, i * 6 - 6);
+        st.position.set(mp.x, Math.max(heightAt(mp.x, mp.z), 0.8), mp.z);
+        st.rotation.y = dirA + Math.PI / 2;
+        this.group.add(st);
+      }
+      // амбар (склад товаров)
+      const wh = hutBase.clone().addScaledVector(dir, -24).addScaledVector(perp, -16);
+      const warehouse = new THREE.Group();
+      const whWalls = new THREE.Mesh(new THREE.BoxGeometry(9, 4.6, 6.5),
+        new THREE.MeshStandardMaterial({ color: 0x8f7550, roughness: 0.92 }));
+      whWalls.position.y = 2.3;
+      warehouse.add(whWalls);
+      const whRoof = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.4, 9.6, 3, 1),
+        new THREE.MeshStandardMaterial({ color: 0x5c4128, roughness: 0.95 }));
+      whRoof.rotation.z = Math.PI / 2;
+      whRoof.scale.set(1, 1, 0.42);
+      whRoof.position.y = 5.4;
+      warehouse.add(whRoof);
+      warehouse.position.set(wh.x, Math.max(heightAt(wh.x, wh.z), 0.8), wh.z);
+      warehouse.rotation.y = dirA;
+      warehouse.castShadow = true;
+      this.group.add(warehouse);
+    }
+
+    // --- город-крепость: церковь + ФОРТ с пушками ---
+    if (tier >= 3) {
+      const ch = hutBase.clone().addScaledVector(dir, -34).addScaledVector(perp, 24);
+      const church = new THREE.Group();
+      const nave = new THREE.Mesh(new THREE.BoxGeometry(5, 4, 9),
+        new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
+      nave.position.y = 2;
+      church.add(nave);
+      const nroof = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.1, 9.6, 3, 1),
+        new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.9 }));
+      nroof.rotation.z = Math.PI / 2;
+      nroof.scale.set(1, 1, 0.46);
+      nroof.position.y = 4.6;
+      church.add(nroof);
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(3.2, 9.5, 3.2),
+        new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
+      tower.position.set(0, 4.75, 4.6);
+      church.add(tower);
+      const spire = new THREE.Mesh(new THREE.ConeGeometry(2.4, 3.4, 4),
+        new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.85 }));
+      spire.position.set(0, 11.2, 4.6);
+      spire.rotation.y = Math.PI / 4;
+      church.add(spire);
+      church.position.set(ch.x, Math.max(heightAt(ch.x, ch.z), 0.8), ch.z);
+      church.rotation.y = dirA;
+      church.castShadow = true;
+      this.group.add(church);
+
+      // ФОРТ: квадрат каменных стен, 4 угловые башни, 8 пушек
+      const fb = hutBase.clone().addScaledVector(dir, -52);
+      const fy = Math.max(heightAt(fb.x, fb.z), 1.0);
+      const S = 15;
+      const wallH = 5.2, wallT = 1.4;
+      const fort = new THREE.Group();
+      const wallsSpec: [number, number, number, number][] = [
+        [0, S, S * 2, wallT], [0, -S, S * 2, wallT],
+        [S, 0, wallT, S * 2], [-S, 0, wallT, S * 2],
+      ];
+      for (const [wx, wz, ww, wd] of wallsSpec) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, wallH, wd), stone);
+        wall.position.set(wx, wallH / 2, wz);
+        wall.castShadow = true;
+        fort.add(wall);
+        for (let k = -S + 1.5; k < S; k += 3) {
+          const merlon = new THREE.Mesh(new THREE.BoxGeometry(
+            ww > wallT ? 1.5 : wallT + 0.2, 1.1, wd > wallT ? 1.5 : wallT + 0.2), stoneDark);
+          merlon.position.set(ww > wallT ? k : wx, wallH + 0.55, wd > wallT ? k : wz);
+          fort.add(merlon);
+        }
+      }
+      for (const [tx, tz] of [[S, S], [S, -S], [-S, S], [-S, -S]] as [number, number][]) {
+        const ftower = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.4, wallH + 3.6, 8), stone);
+        ftower.position.set(tx, (wallH + 3.6) / 2, tz);
+        ftower.castShadow = true;
+        fort.add(ftower);
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 2.4, 8), stoneDark);
+        cap.position.set(tx, wallH + 3.6 + 1.2, tz);
+        fort.add(cap);
+      }
+      // 8 пушек: по 2 на стену, стволы в сторону моря
+      const mkCannon = (cx: number, cz: number, ry: number) => {
+        const g = new THREE.Group();
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.22, 2.0, 8), iron);
+        barrel.rotation.z = Math.PI / 2;
+        barrel.position.set(0, 0.62, 0.9);
+        g.add(barrel);
+        const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 1.3), dark);
+        carriage.position.y = 0.25;
+        g.add(carriage);
+        for (const wx of [-0.34, 0.34]) {
+          const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.05, 5, 10), dark);
+          wheel.rotation.y = Math.PI / 2;
+          wheel.position.set(wx, 0.26, 0);
+          g.add(wheel);
+        }
+        g.position.set(cx, wallH + 0.3, cz);
+        g.rotation.y = ry;
+        fort.add(g);
+      };
+      for (let i = 0; i < 8; i++) {
+        const side = i % 4;
+        const k = i < 4 ? -6 : 6;
+        if (side === 0) mkCannon(k, S - wallT / 2, dirA);
+        else if (side === 1) mkCannon(k, -S + wallT / 2, dirA + Math.PI);
+        else if (side === 2) mkCannon(S - wallT / 2, k, dirA + Math.PI / 2);
+        else mkCannon(-S + wallT / 2, k, dirA - Math.PI / 2);
+      }
+      fort.position.set(fb.x, fy, fb.z);
+      fort.rotation.y = dirA;
+      this.group.add(fort);
+    }
+
+    // --- пиратское логово: чёрный флаг на пирсе ---
+    if (isl.name === 'Логово пиратов') {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 40;
+      const x2 = c.getContext('2d')!;
+      x2.fillStyle = '#0d0a08'; x2.fillRect(0, 0, 64, 40);
+      x2.fillStyle = '#e8e4d8';
+      x2.beginPath(); x2.arc(32, 16, 8, 0, Math.PI * 2); x2.fill();
+      x2.save(); x2.translate(32, 27); x2.rotate(0.5); x2.fillRect(-16, -1.5, 32, 3); x2.restore();
+      x2.save(); x2.translate(32, 27); x2.rotate(-0.5); x2.fillRect(-16, -1.5, 32, 3); x2.restore();
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 9, 6), dark);
+      const fp = port.dockEnd.clone().addScaledVector(dir, -3).add(new THREE.Vector3(perp.x * 3.2, 0, perp.z * 3.2));
+      pole.position.set(fp.x, 5.2, fp.z);
+      this.group.add(pole);
+      const banner = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.1),
+        new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.9 }));
+      banner.position.set(fp.x + 1.7, 8.6, fp.z);
+      banner.rotation.y = dirA + Math.PI / 2;
+      this.group.add(banner);
+    }
+
+    // --- пальмы у гавани (гуще у больших портов) ---
+    const nPalms = [3, 10, 16, 22][tier];
+    for (let i = 0; i < nPalms; i++) {
+      const a = rng.range(0, Math.PI * 2), rr = rng.range(16, 52);
       const x = hutBase.x + Math.cos(a) * rr, z = hutBase.z + Math.sin(a) * rr;
       const h = heightAt(x, z);
       if (h < 1.0 || h > 8) continue;

@@ -51,6 +51,7 @@ export interface ControlsSettings {
   repair: string;
   map: string;
   help: string;
+  oars: string;           // вёсла: вывалить/убрать (гребные суда)
   ammo: [string, string, string, string];
 }
 
@@ -98,6 +99,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     repair: 'KeyR',
     map: 'Tab',
     help: 'KeyH',
+    oars: 'KeyO',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
   },
   audio: { volume: 0.55 },
@@ -258,6 +260,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   repair: 'Ремонт / откачка',
   map: 'Карта',
   help: 'Помощь',
+  oars: 'Вёсла: вывалить/убрать',
   ammo: 'Боеприпасы 1–4',
 };
 

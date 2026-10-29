@@ -71,13 +71,13 @@ check('A: нет ошибок страницы', errsA === '', errsA.slice(0, 20
 log('=== B: боезапас/прочность ===');
 run('open http://localhost:3000/');
 await sleep(1500);
-ev(`localStorage.setItem('seawolves.settings.v1', JSON.stringify({v: 2, gameplay:{startingAmmo:{ball:7,chain:3,grape:5,fire:2}, hullDurability:2, infiniteAmmo:false}}))`);
+ev(`localStorage.setItem('seawolves.settings.v1', JSON.stringify({v: 3, gameplay:{startingAmmo:{ball:7,chain:3,grape:5,fire:2}, hullDurability:2, infiniteAmmo:false, ammoJitter:false}}))`);
 run('reload'); await sleep(8000);
 clickBtn('Поднять флаг');
 await sleep(2500);
 const st1 = jparse(ev(`(() => { const g = window.__game; return JSON.stringify({ammo: g.player.ammo, hullMax: g.player.hullMax}); })()`));
 log('B: старт:', JSON.stringify(st1));
-check('B: стартовый боезапас из настроек (7/3/5/2)',
+check('B: стартовый боезапас из настроек (7/3/5/2, без джиттера)',
   st1.ammo && st1.ammo.ball === 7 && st1.ammo.chain === 3 && st1.ammo.grape === 5 && st1.ammo.fire === 2, JSON.stringify(st1));
 check('B: прочность x2 применена при создании (шлюп 100 -> 200)', st1.hullMax === 200, JSON.stringify(st1));
 // выстрел: боезапас тратится
@@ -127,26 +127,39 @@ ev(`localStorage.removeItem('seawolves.settings.v1')`);
 run('reload'); await sleep(8000);
 clickBtn('Поднять флаг');
 await sleep(2500);
-// «швартуемся» — открыть порт
-ev(`(() => { const g = window.__game; g.player.velocity.set(0,0,0); g.docked = true; g.player.anchored = true; return 'docked'; })()`);
+// швартуемся в главной гавани, НЕ сходя с глубокой воды стапеля
+// (телепорт прямо к пирсу сажает крупные суда на мель у отмели)
+ev(`(() => { const g = window.__game; g.player.velocity.set(0,0,0); g.dock(); return 'docked ' + (g.dockedPort ? g.dockedPort.name : '?'); })()`);
 await sleep(600);
 shot('v30_port');
-const r1 = await clickRetry('Сменить корабль');
+const r1 = await clickRetry('Верфь');
 await sleep(600);
 shot('v30_yard_war');
 const r2 = await clickRetry('Торговые');
 await sleep(500);
 shot('v30_yard_merchant');
-const yardCount = jparse(ev(`(() => { const btns = [...document.querySelectorAll('button')].filter(b => b.textContent.includes('Взять')); return JSON.stringify(btns.length); })()`));
-log('C: кнопок «Взять» (торговые):', yardCount);
+// под нагрузкой headless React может коммитить список с задержкой —
+// опрашиваем кнопки с ценой до 6 с
+let yardCount = 0;
+let yardDbg = '';
+for (let i = 0; i < 12 && yardCount === 0; i++) {
+  const r = jparse(ev(`(() => { const btns = [...document.querySelectorAll('button')]; const priced = btns.filter(b => /\\d+ зол\\./.test(b.textContent)); if (priced.length === 0 && ${i} === 3) { return JSON.stringify({ dbg: btns.slice(0, 18).map(b => b.textContent.trim().slice(0, 30)) }); } return JSON.stringify(priced.length); })()`));
+  if (r && typeof r === 'object' && r.dbg) { yardDbg = JSON.stringify(r.dbg); yardCount = 0; }
+  else yardCount = r;
+  if (yardCount === 0) await sleep(500);
+}
+if (yardDbg) log('C: DOM при нуле:', yardDbg.slice(0, 500));
+log('C: кнопок с ценой (торговые):', yardCount);
 check('C: торговые суда на верфи > 5', yardCount > 5, String(yardCount));
 log('C: клики:', r1, r2);
+// верфь теперь платная: выдаем золото на Amsterdam
+ev(`(() => { const g = window.__game; g.player.gold = 20000; return 'gold'; })()`);
 const r3 = clickBtn('Amsterdam');
 await sleep(1500);
 const ship1 = jparse(ev(`(() => { const g = window.__game; return JSON.stringify({id: g.player.preset.id, name: g.player.preset.name, hull: g.player.hullMax, gold: g.player.gold}); })()`));
 log('C: после смены:', JSON.stringify(ship1), 'клик:', r3);
 check('C: игрок на Amsterdam', ship1.id === 'amsterdam', JSON.stringify(ship1));
-check('C: золото сохранено (350)', ship1.gold === 350, JSON.stringify(ship1));
+check('C: покупка списала золото (20000 → меньше)', ship1.gold < 20000 && ship1.gold > 0, JSON.stringify(ship1));
 await sleep(800);
 shot('v30_ship_amsterdam');
 // отшвартоваться и поставить паруса (в порту ввод блокируется)
@@ -172,7 +185,7 @@ shot('v30_travel_arrived');
 // вторая смена: галера (гребной, военные)
 ev(`(() => { const g = window.__game; g.docked = true; return 'docked2'; })()`);
 await sleep(500);
-log('C: пикер2:', await clickRetry('Сменить корабль'));
+log('C: пикер2:', await clickRetry('Верфь'));
 await sleep(600);
 log('C: таб военные:', await clickRetry('Военные'));
 await sleep(400);

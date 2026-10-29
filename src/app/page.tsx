@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { Game, HudState } from '@/game/game';
+import { GOODS, SKINS, UPGRADE_INFO, UPGRADE_MAX, goodName, type ShipUpgrades } from '@/game/game';
 import type { AmmoType } from '@/game/combat/combat';
 import SettingsPanel from './SettingsPanel';
 import { ENCYCLOPEDIA, type ShipEntry } from '@/game/ship/encyclopedia';
+import { PRESETS, shipPrice } from '@/game/ship/buildShip';
 import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings } from '@/game/core/settings';
 
 // ============================================================
@@ -293,7 +295,7 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [encyOpen, setEncyOpen] = useState(false);
   const [encyId, setEncyId] = useState(ENCYCLOPEDIA[0].id);
-  const [shipPicker, setShipPicker] = useState(false);
+  const [portTab, setPortTab] = useState<'harbor' | 'market' | 'yard' | 'upgrades' | 'skins'>('harbor');
   const [pickerCat, setPickerCat] = useState<'war' | 'merchant'>('war');
   const [settings, setSettings] = useState<GameSettings>(() =>
     typeof window === 'undefined' ? structuredClone(DEFAULT_SETTINGS) : loadSettings());
@@ -479,6 +481,7 @@ export default function Home() {
               <span><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — боеприпасы</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера (изометрия и др.)</span>
               <span><b className="text-amber-200">Колесо</b> — зум</span>
+              <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">O</b> — вывалить</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
@@ -577,6 +580,22 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+              {/* вёсла (гребные суда) */}
+              {hud.oars && (
+                <div className="text-center">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
+                    Вёсла ({keyLabel(settings.controls.oars)} · Alt+W/S)
+                  </div>
+                  <div className={`rounded-sm border px-2 py-1 text-[11px] font-semibold ${
+                    hud.oars.out
+                      ? hud.oars.rowing !== 0
+                        ? 'border-emerald-400 bg-emerald-900/50 text-emerald-200'
+                        : 'border-amber-400 bg-amber-900/40 text-amber-200'
+                      : 'border-stone-700 bg-stone-900 text-stone-500'}`}>
+                    {!hud.oars.out ? 'убраны' : hud.oars.deploy < 0.95 ? 'вываливаются…' : hud.oars.rowing > 0 ? 'гребля вперёд' : hud.oars.rowing < 0 ? 'гребля назад' : 'на воде'}
+                  </div>
+                </div>
+              )}
               {/* руль */}
               <div className="text-center">
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
@@ -605,19 +624,18 @@ export default function Home() {
             </Panel>
           </div>
 
-          {/* ---- золото и груз (право-низ) ---- */}
+          {/* ---- золото, груз и трюм (право-низ) ---- */}
           <div className="absolute bottom-3 right-3">
             <Panel className="p-3 text-right text-xs">
               <div className="font-serif text-lg font-bold text-amber-300">🪙 {hud.gold}</div>
-              <div className="mt-1 text-stone-400">Доски: {hud.planks}</div>
-              {(hud.cargo.sugar > 0 || hud.cargo.rum > 0 || hud.cargo.timber > 0) && (
-                <div className="mt-1 text-[11px] text-stone-300">
-                  {hud.cargo.sugar > 0 && <div>Сахар ×{hud.cargo.sugar}</div>}
-                  {hud.cargo.rum > 0 && <div>Ром ×{hud.cargo.rum}</div>}
-                  {hud.cargo.timber > 0 && <div>Древесина ×{hud.cargo.timber}</div>}
-                </div>
-              )}
-              <div className="mt-1 text-[10px] text-stone-500">Камера: {hud.cameraLabel} (C)</div>
+              <div className="mt-1 text-stone-400">Трюм: {hud.cargoT} / {hud.cargoMaxT} т</div>
+              <Bar pct={hud.cargoMaxT > 0 ? hud.cargoT / hud.cargoMaxT : 0} color="bg-amber-700" />
+              <div className="mt-1 text-[11px] text-stone-300">
+                {GOODS.filter(gd => (hud.cargo[gd.key] ?? 0) > 0).map(gd => (
+                  <div key={gd.key}>{gd.icon} {gd.name} ×{hud.cargo[gd.key]}</div>
+                ))}
+              </div>
+              <div className="mt-1 text-[10px] text-stone-500">Доски: {hud.planks} · Камера: {hud.cameraLabel} (C)</div>
             </Panel>
           </div>
 
@@ -641,10 +659,10 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
-                  <div className="text-[10px] uppercase tracking-wide text-stone-500">Ваш корабль</div>
+                  <div className="text-[10px] uppercase tracking-wide text-stone-500">Ваш корабль (полигон — бесплатно)</div>
                   <select
                     value={hud.shipId}
-                    onChange={e => { if (e.target.value !== hud.shipId) act(gg => gg.changeShip(e.target.value)); }}
+                    onChange={e => { if (e.target.value !== hud.shipId) act(gg => gg.changeShip(e.target.value, true)); }}
                     className="pointer-events-auto w-full rounded border border-stone-600 bg-stone-900 px-1.5 py-1 text-[11px] text-amber-100 focus:border-amber-500 focus:outline-none">
                     {ENCYCLOPEDIA.map(sh => (
                       <option key={sh.id} value={sh.id}>
@@ -751,7 +769,7 @@ export default function Home() {
             )}
             {hud.canDock && !hud.aiming && (
               <div className="rounded-lg border border-amber-600 bg-[#1f1608]/90 px-5 py-2 text-sm text-amber-200 shadow-lg animate-pulse">
-                <b>E</b> — пришвартоваться в Пальмовой гавани
+                <b>E</b> — пришвартоваться: {hud.nearPortName ?? 'гавань'}
               </div>
             )}
             {hud.anchored && <div className="text-xs text-stone-300">⚓ Якорь отдан (F — поднять)</div>}
@@ -776,21 +794,134 @@ export default function Home() {
         </div>
       )}
 
-      {/* ---- меню порта ---- */}
+      {/* ---- меню порта (вкладки: гавань / рынок / верфь / улучшения / скины) ---- */}
       {hud?.docked && g && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50">
-          <div className={`rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 shadow-2xl ${shipPicker ? 'w-[620px]' : 'w-[480px]'}`}>
-            {shipPicker ? (
-              <>
-                <div className="mb-1 flex items-center justify-between">
-                  <h2 className="font-serif text-2xl font-bold text-amber-300">⚓ Верфь</h2>
-                  <button onClick={() => setShipPicker(false)}
-                    className="rounded border border-stone-600 bg-stone-900 px-3 py-1 text-xs text-stone-300 transition hover:border-amber-600 hover:text-amber-200">
-                    ← Назад в гавань
-                  </button>
+          <div className={`rounded-xl border-2 border-amber-800 bg-[#1a120a] p-6 shadow-2xl ${portTab === 'yard' ? 'w-[640px]' : 'w-[540px]'}`}>
+            <div className="mb-1 flex items-center justify-between">
+              <h2 className="font-serif text-2xl font-bold text-amber-300">⚓ {hud.portInfo?.name ?? 'Гавань'}</h2>
+              <button onClick={() => { act(gg => gg.undock()); setPortMsg(null); setPortTab('harbor'); }}
+                className="pointer-events-auto rounded-lg border border-amber-600 bg-gradient-to-b from-amber-600 to-amber-800 px-4 py-1.5 font-serif text-sm font-bold text-amber-50 transition hover:from-amber-500 active:scale-[0.98]">
+                Отдать швартовы!
+              </button>
+            </div>
+            <p className="mb-3 text-xs text-stone-400">
+              {hud.portInfo?.tierName} · {hud.portInfo?.population} жителей ·
+              {' '}цены {g.dockedPort ? (g.dockedPort.priceMul < 0.95 ? 'низкие (порт производит)' : g.dockedPort.priceMul > 1.1 ? 'высокие (порт требует)' : 'обычные') : ''}
+            </p>
+            <div className="mb-3 rounded-lg border border-amber-900/50 bg-black/30 p-3 text-sm">
+              <div className="mb-2 flex justify-between">
+                <span className="text-stone-400">Золото</span>
+                <span className="font-bold text-amber-300">🪙 {hud.gold}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-stone-400">
+                <div className="flex justify-between"><span>Корабль</span><span className="text-amber-200">{hud.shipName || '—'}</span></div>
+                <div className="flex justify-between"><span>Корпус</span><span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span></div>
+                <div className="flex justify-between"><span>Команда</span><span>{hud.crew} / {hud.maxCrew}</span></div>
+                <div className="flex justify-between"><span>Трюм</span>
+                  <span className={hud.cargoT >= hud.cargoMaxT - 0.01 ? 'text-red-400 font-bold' : 'text-amber-200'}>
+                    {hud.cargoT} / {hud.cargoMaxT} т
+                  </span>
                 </div>
+              </div>
+              <div className="mt-1.5"><Bar pct={hud.cargoMaxT > 0 ? hud.cargoT / hud.cargoMaxT : 0} color="bg-amber-700" /></div>
+            </div>
+            {portMsg && <div className="mb-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-1.5 text-xs text-red-300">{portMsg}</div>}
+            {/* вкладки */}
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {([
+                ['harbor', '🔨 Гавань'], ['market', '📦 Рынок'], ['yard', '⚓ Верфь'],
+                ['upgrades', '⬆ Улучшения'], ['skins', '🎭 Скины'],
+              ] as [typeof portTab, string][]).map(([tab, label]) => (
+                <button key={tab} onClick={() => { setPortTab(tab); setPortMsg(null); }}
+                  className={`pointer-events-auto rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
+                    portTab === tab
+                      ? 'border-amber-500 bg-amber-800/60 text-amber-100'
+                      : 'border-stone-700 bg-stone-900/60 text-stone-400 hover:text-amber-200'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* ===== ГАВАНЬ: ремонт, припасы, команда ===== */}
+            {portTab === 'harbor' && (
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <button onClick={() => act(gg => gg.portRepair())}
+                  className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
+                  🔨 Полный ремонт<div className="text-[11px] text-stone-400">корпус + паруса, {g.repairCost} зол.</div>
+                </button>
+                <button onClick={() => act(gg => gg.portSellCargo())}
+                  className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
+                  📦 Продать весь груз<div className="text-[11px] text-stone-400">по ценам этого порта</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyAmmo('ball'))}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  ⚫ Ядра ×10<div className="text-[11px] text-stone-400">4 зол. · 0.2 т</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyAmmo('grape'))}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  🧨 Картечь ×10<div className="text-[11px] text-stone-400">5 зол. · 0.25 т</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyAmmo('chain'))}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  ⛓ Книппели ×5<div className="text-[11px] text-stone-400">9 зол. · рвут такелаж</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyAmmo('fire'))}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  🔥 Зажигательные ×10<div className="text-[11px] text-stone-400">12 зол. · поджигают</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyPlanks())}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  🪵 Доски ×5<div className="text-[11px] text-stone-400">15 зол. · ремонт в море</div>
+                </button>
+                <button onClick={() => act(gg => gg.portHireCrew())}
+                  className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
+                  🧑‍⚓ Нанять матроса<div className="text-[11px] text-stone-400">30 зол. · быстрее перезарядка</div>
+                </button>
+              </div>
+            )}
+
+            {/* ===== РЫНОК: товары по ценам порта ===== */}
+            {portTab === 'market' && (
+              <div className="max-h-[42vh] space-y-1.5 overflow-y-auto pr-1">
+                <p className="text-[11px] text-stone-500">
+                  Цены зависят от порта: покупайте там, где дёшево, продавайте там, где дорого. Вес груза ограничен трюмом.
+                </p>
+                {GOODS.map(gd => {
+                  const buy = g.portGoodPrice(gd, 'buy');
+                  const sell = g.portGoodPrice(gd, 'sell');
+                  const have = hud.cargo[gd.key] ?? 0;
+                  return (
+                    <div key={gd.key} className="flex items-center gap-2 rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2">
+                      <span className="w-6 text-center text-lg">{gd.icon}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-stone-200">{gd.name}</span>
+                        <span className="text-[10px] text-stone-500">
+                          покупка {buy} зол. · продажа {sell} зол. · {gd.weight} т/шт · в трюме: {have}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 gap-1">
+                        <button onClick={() => act(gg => gg.portBuyGood(gd.key, 1))}
+                          className="pointer-events-auto rounded border border-stone-600 bg-stone-800 px-2 py-1 text-[11px] text-amber-200 transition hover:border-amber-500">×1</button>
+                        <button onClick={() => act(gg => gg.portBuyGood(gd.key, 10))}
+                          className="pointer-events-auto rounded border border-stone-600 bg-stone-800 px-2 py-1 text-[11px] text-amber-200 transition hover:border-amber-500">×10</button>
+                        <button disabled={have <= 0} onClick={() => act(gg => gg.portSellGood(gd.key, have))}
+                          className={`pointer-events-auto rounded border px-2 py-1 text-[11px] transition ${have > 0 ? 'border-emerald-700 bg-emerald-950/50 text-emerald-200 hover:bg-emerald-900/60' : 'border-stone-800 bg-stone-900 text-stone-600'}`}>
+                          продать всё
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ===== ВЕРФЬ: покупка кораблей (цена − возврат за текущий) ===== */}
+            {portTab === 'yard' && (
+              <>
                 <p className="mb-3 text-xs text-stone-400">
-                  Смена корабля — бесплатно (песочница). Золото, груз и команда сохраняются.
+                  Покупка за золото: за текущий корабль верфь возвращает 40% его цены.
+                  На полигоне смена корабля остаётся бесплатной.
                 </p>
                 {/* вкладки: военные / торговые */}
                 <div className="mb-3 flex gap-1.5">
@@ -805,9 +936,10 @@ export default function Home() {
                   ))}
                 </div>
                 {/* список судов по классам */}
-                <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
+                <div className="max-h-[40vh] space-y-2 overflow-y-auto pr-1">
                   {(() => {
                     const ships = ENCYCLOPEDIA.filter(s => s.category === pickerCat);
+                    const refund = Math.round(shipPrice(PRESETS[hud.shipId]) * 0.4);
                     const groups: { cls: string; ships: typeof ships }[] = [];
                     for (const s of ships) {
                       let grp = groups.find(g => g.cls === s.shipClass);
@@ -821,9 +953,11 @@ export default function Home() {
                         </div>
                         {grp.ships.map(sh => {
                           const current = sh.id === hud.shipId;
+                          const price = shipPrice(PRESETS[sh.id]);
+                          const cost = price - refund;
                           return (
                             <button key={sh.id} disabled={current}
-                              onClick={() => { act(gg => gg.changeShip(sh.id)); setShipPicker(false); }}
+                              onClick={() => { act(gg => gg.changeShip(sh.id)); }}
                               className={`mb-1 flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition ${
                                 current
                                   ? 'border-amber-500/80 bg-amber-900/40'
@@ -838,10 +972,14 @@ export default function Home() {
                                 <span title="орудий на борт">💥{sh.stats.guns}</span>
                                 <span title="экипаж">🧑‍⚖{sh.stats.crew}</span>
                                 <span title="скорость, уз">💨{sh.stats.speed}</span>
-                                <span title="прочность корпуса">🛡{sh.stats.hullHP}</span>
+                                <span title="грузоподъёмность, т">📦{sh.stats.cargo}</span>
                                 <span className={`rounded border px-2 py-0.5 text-[10px] font-bold ${
-                                  current ? 'border-amber-600 bg-amber-800/50 text-amber-200' : 'border-stone-600 bg-stone-800 text-stone-300'}`}>
-                                  {current ? 'Текущий' : 'Взять'}
+                                  current
+                                    ? 'border-amber-600 bg-amber-800/50 text-amber-200'
+                                    : cost > hud.gold
+                                      ? 'border-red-900 bg-red-950/40 text-red-300'
+                                      : 'border-amber-600 bg-amber-800/40 text-amber-200'}`}>
+                                  {current ? 'Текущий' : `${cost} зол.`}
                                 </span>
                               </span>
                             </button>
@@ -852,72 +990,86 @@ export default function Home() {
                   })()}
                 </div>
               </>
-            ) : (
-              <>
-                <h2 className="mb-1 font-serif text-2xl font-bold text-amber-300">⚓ Пальмовая гавань</h2>
-                <p className="mb-4 text-xs text-stone-400">Верфь · Таверна · Рынок — всё в одном месте</p>
-                <div className="mb-3 rounded-lg border border-amber-900/50 bg-black/30 p-3 text-sm">
-                  <div className="mb-2 flex justify-between">
-                    <span className="text-stone-400">Золото</span>
-                    <span className="font-bold text-amber-300">🪙 {hud.gold}</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-stone-400">
-                    <span>Корабль</span>
-                    <span className="text-amber-200">{hud.shipName || '—'}</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-stone-400">
-                    <span>Корпус</span>
-                    <span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-stone-400">
-                    <span>Команда</span>
-                    <span>{hud.crew} / {hud.maxCrew} · найм 30 зол.</span>
-                  </div>
+            )}
+
+            {/* ===== УЛУЧШЕНИЯ: корпус / паруса / мачты / трюм ===== */}
+            {portTab === 'upgrades' && (() => {
+              const up: ShipUpgrades = g.shipUpgrades[hud.shipId] ?? { hull: 0, sails: 0, masts: 0, cargo: 0 };
+              return (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-stone-500">
+                    Улучшения привязаны к типу судна и сохраняются при возврате к нему. Максимум — {UPGRADE_MAX} уровня.
+                  </p>
+                  {UPGRADE_INFO.map(u => {
+                    const lvl = up[u.key];
+                    const maxed = lvl >= UPGRADE_MAX;
+                    const price = maxed ? 0 : g.upgradePrice(u.key, lvl + 1);
+                    return (
+                      <div key={u.key} className="flex items-center gap-3 rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2">
+                        <span className="w-7 text-center text-lg">{u.icon}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-stone-200">{u.name}</span>
+                          <span className="text-[10px] text-stone-500">{u.desc}</span>
+                          <span className="mt-0.5 flex gap-0.5">
+                            {Array.from({ length: UPGRADE_MAX }, (_, i) => (
+                              <span key={i} className={`h-1.5 w-6 rounded-sm ${i < lvl ? 'bg-amber-400' : 'bg-stone-700'}`} />
+                            ))}
+                          </span>
+                        </span>
+                        <button disabled={maxed} onClick={() => act(gg => gg.buyUpgrade(u.key))}
+                          className={`pointer-events-auto shrink-0 rounded border px-3 py-1.5 text-[11px] font-bold transition ${
+                            maxed
+                              ? 'border-stone-800 bg-stone-900 text-stone-600'
+                              : price > hud.gold
+                                ? 'border-red-900 bg-red-950/40 text-red-300'
+                                : 'border-amber-600 bg-amber-800/40 text-amber-200 hover:bg-amber-700/50'}`}>
+                          {maxed ? 'МАКС' : `${price} зол.`}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
-                {portMsg && <div className="mb-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-1.5 text-xs text-red-300">{portMsg}</div>}
-                <button onClick={() => { setShipPicker(true); setPortMsg(null); }}
-                  className="pointer-events-auto mb-2 w-full rounded-lg border border-amber-700 bg-gradient-to-b from-amber-700/40 to-amber-900/40 px-3 py-2 text-left text-sm transition hover:border-amber-500 hover:from-amber-700/60">
-                  ⚓ Сменить корабль на верфи<div className="text-[11px] text-stone-400">29 судов: военные и торговые, от шлюпа до линейного корабля</div>
-                </button>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-              <button onClick={() => act(gg => gg.portRepair())}
-                className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
-                🔨 Полный ремонт<div className="text-[11px] text-stone-400">корпус + паруса, {g.repairCost} зол.</div>
-              </button>
-              <button onClick={() => act(gg => gg.portSellCargo())}
-                className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
-                📦 Продать груз<div className="text-[11px] text-stone-400">сахар 24 · ром 46 · дерево 9</div>
-              </button>
-              <button onClick={() => act(gg => gg.portBuyAmmo('ball'))}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                ⚫ Ядра ×10<div className="text-[11px] text-stone-400">4 зол.</div>
-              </button>
-              <button onClick={() => act(gg => gg.portBuyAmmo('grape'))}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                🧨 Картечь ×10<div className="text-[11px] text-stone-400">5 зол.</div>
-              </button>
-              <button onClick={() => act(gg => gg.portBuyAmmo('chain'))}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                ⛓ Книппели ×5<div className="text-[11px] text-stone-400">9 зол. · рвут паруса</div>
-              </button>
-              <button onClick={() => act(gg => gg.portBuyAmmo('fire'))}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                🔥 Зажигательные ×10<div className="text-[11px] text-stone-400">12 зол. · поджигают</div>
-              </button>
-              <button onClick={() => act(gg => gg.portBuyPlanks())}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                🪵 Доски ×5<div className="text-[11px] text-stone-400">15 зол. · ремонт в море</div>
-              </button>
-              <button onClick={() => act(gg => gg.portHireCrew())}
-                className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
-                🧑‍⚓ Нанять матроса<div className="text-[11px] text-stone-400">30 зол. · быстрее перезарядка</div>
-              </button>
-            </div>
-            <button onClick={() => { act(gg => gg.undock()); setPortMsg(null); setShipPicker(false); }}
-              className="pointer-events-auto mt-4 w-full rounded-lg border border-amber-600 bg-gradient-to-b from-amber-600 to-amber-800 px-4 py-2.5 font-serif font-bold text-amber-50 transition hover:from-amber-500 active:scale-[0.98]">
-              Отдать швартовы!
-            </button>
-              </>
+              );
+            })()}
+
+            {/* ===== СКИНЫ: флаг / паруса / корпус ===== */}
+            {portTab === 'skins' && (
+              <div className="max-h-[42vh] space-y-3 overflow-y-auto pr-1">
+                <p className="text-[11px] text-stone-500">
+                  Купленные скины переносятся на любой ваш корабль. «Штатные» возвращают заводской вид.
+                </p>
+                {([['flag', '🏴 Флаги'], ['sail', '⛵ Паруса'], ['hull', '🛡 Корпус']] as ['flag' | 'sail' | 'hull', string][]).map(([kind, label]) => (
+                  <div key={kind}>
+                    <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">{label}</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {SKINS.filter(s => s.kind === kind).map(sk => {
+                        const owned = g.skinsOwned.has(sk.id);
+                        const equipped = (kind === 'flag' && g.skinsOn.flag === sk.flag)
+                          || (kind === 'sail' && ((sk.hex ?? -1) < 0 ? g.skinsOn.sail == null : g.skinsOn.sail === sk.hex))
+                          || (kind === 'hull' && ((sk.hex ?? -1) < 0 ? g.skinsOn.hull == null : g.skinsOn.hull === sk.hex));
+                        return (
+                          <button key={sk.id}
+                            onClick={() => act(gg => (owned ? gg.equipSkin(sk.id) : gg.buySkin(sk.id)))}
+                            className={`pointer-events-auto flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
+                              equipped
+                                ? 'border-amber-400 bg-amber-800/50'
+                                : owned
+                                  ? 'border-emerald-800 bg-emerald-950/30 hover:border-emerald-500'
+                                  : 'border-stone-700 bg-stone-900/60 hover:border-amber-700'}`}>
+                            <span className="h-5 w-5 shrink-0 rounded-full border border-stone-500" style={{ background: sk.swatch }} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-semibold text-stone-200">{sk.name}</span>
+                              <span className={`text-[10px] ${equipped ? 'text-amber-300' : owned ? 'text-emerald-300' : 'text-stone-500'}`}>
+                                {equipped ? 'надет' : owned ? 'надеть' : sk.price > hud.gold ? `${sk.price} зол. (не хватает)` : `${sk.price} зол.`}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
@@ -952,7 +1104,9 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs text-stone-300">
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsUp)} / {keyLabel(settings.controls.sailsDown)}</b> — поднять/убрать паруса (0–3)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль (инерция!)</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход на вёслах</div>
+              <div><b className="text-amber-200">Alt+W / Alt+S</b> — вёсла вперёд/назад (гребные суда)</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход под парусами</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / действие</div>

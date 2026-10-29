@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern } from './buildShip';
+import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
 import { waterHeightAt, waterNormalAt, waveEnvelope } from '../water/waves';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
@@ -78,6 +78,15 @@ export class Ship {
   anchored = false;
   reverseThrust = false;
   helmActive = false;
+  // --- вёсла (гребные суда: шебека, галера) ---
+  /** вёсла вывалены на воду (команда игрока или Alt+W/S) */
+  oarsOut = false;
+  /** 0..1 — плавное вываливание/убирание (анимация) */
+  oarsDeployT = 0;
+  /** команда гребли: +1 вперёд, −1 назад, 0 нет (Alt+W/S) */
+  rowing = 0;
+  /** сек без гребли при вываленных вёслах — потом автоубирание */
+  oarsIdleT = 0;
 
   // --- состояние ---
   hullHP: number; hullMax: number;
@@ -228,6 +237,12 @@ export class Ship {
       + Math.round(this.preset.length * 7);
     this.crew3d = buildCrew(this.preset, seed);
     this.visual.group.add(this.crew3d.group);
+    // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
+    // клавишей или командой гребли Alt+W/S)
+    if (!isPlayer && this.preset.oars) {
+      this.oarsOut = true;
+      this.rowing = 1;
+    }
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP.push(this.mastMaxHP);
       this.mastFall.push(-1);
@@ -345,12 +360,14 @@ export class Ship {
       thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
     }
     if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45; // задний ход на вёслах
-    // ГРЕБНЫЕ суда (шебека, галера): вёсла дают ход даже в полный штиль;
-    // под парусами вёсла помогают меньше — экипаж занят парусами
+    // ГРЕБЛЯ (Alt+W/S): вёсла дают ход даже в полный штиль — но только
+    // ВЫВАЛЕННЫЕ (oarsDeployT); под парусами экипаж занят парусами —
+    // вёсла помогают меньше
     if (this.preset.oars && !this.anchored && !this.sinking) {
       const crewFrac = clamp(this.crew / this.preset.maxCrew, 0.2, 1);
-      const oarThrust = this.preset.maxSpeed * 0.34 * crewFrac * (1 - 0.55 * this.sailFrac);
-      thrust += oarThrust;
+      const power = this.oarsDeployT * (1 - 0.55 * this.sailFrac) * crewFrac;
+      if (this.rowing > 0) thrust += this.preset.maxSpeed * 0.40 * power;
+      else if (this.rowing < 0) thrust -= this.preset.maxSpeed * 0.28 * power;
     }
     // сила тяги вдоль forward
     this.force.x += f.x * thrust * m * 0.06;
@@ -611,7 +628,9 @@ export class Ship {
         break;
       }
       case 'grape': {
-        this.crew = Math.max(0, this.crew - Math.round(d.amount));
+        // экипаж гибнет ТОЛЬКО фигурами на палубе (combat вычитает
+        // CREW_PER_FIGURE за каждую убитую) — абстрактного списания
+        // нет: залп в борт людей не косит
         this.hullHP -= d.amount * 0.4;
         break;
       }
@@ -745,6 +764,32 @@ export class Ship {
     this.mastsBroken = this.mastFall.filter(f => f >= 0).length;
     this.sailHP = Math.max(0, this.sailHP - 30);
     if (this.sailTarget > 0) this.sailTarget = Math.max(0, this.sailTarget - 1);
+    // === КАСКАД: вместе с мачтой гибнут ВСЕ её элементы ===
+    // паруса этой мачты РВЁТСЯ: полотно изрешечено (uDamage=1 + дыры),
+    // обвисает и больше не даёт тягу; обрывки парусины летят вниз
+    let tornSails = 0;
+    for (const s of this.visual.sails.sails) {
+      if (s.mastIndex !== i) continue;
+      tornSails++;
+      s.mat.uniforms.uDamage.value = 1;
+      sailAddHole(s, 0.3 + Math.random() * 0.4, 0.25 + Math.random() * 0.5, 0.22);
+      sailAddHole(s, 0.15 + Math.random() * 0.7, 0.5 + Math.random() * 0.4, 0.18);
+      sailAddHole(s, 0.4 + Math.random() * 0.3, 0.1 + Math.random() * 0.3, 0.15);
+      s.furl = 1;
+    }
+    // снасть рушится с высоты — обрывки парусины и щепа рея
+    const mast = this.visual.masts[i];
+    const mid = this.tmpV.set(0, ((mast.userData.height as number) || 20) * 0.55, mast.position.z)
+      .applyQuaternion(this.quaternion).add(this.position);
+    if (tornSails > 0 && this.particles) {
+      for (let k = 0; k < 5; k++) {
+        this.particles.spawn(mid.x + (Math.random() - 0.5) * 6, mid.y - Math.random() * 4,
+          mid.z + (Math.random() - 0.5) * 6,
+          (Math.random() - 0.5) * 3, -0.5, (Math.random() - 0.5) * 3,
+          0.9, 0.4, 0, 0.8, 14);
+      }
+      this.particles.smoke(mid.x, mid.y, mid.z, 0, 0.4, 0, 0.8, 1.4);
+    }
   }
 
   /** Сброс ВСЕХ повреждений (полигон/возрождение): корпус, мачты,
@@ -775,6 +820,12 @@ export class Ship {
       const m = this.visual.masts[i];
       m.rotation.set(0, 0, 0);
       m.position.y = 0;
+    }
+    // паруса порванных мачт — целы (КАСКАД ломания отменяется)
+    for (const s of this.visual.sails.sails) {
+      s.mat.uniforms.uDamage.value = 0;
+      s.mat.uniforms.uHoleN.value = 0;
+      s.furl = 1;
     }
     for (const h of this.hullHoles) {
       this.visual.group.remove(h.mesh);
@@ -1146,13 +1197,20 @@ export class Ship {
     // руль за кормой следует за рулём
     if (v.rudderMesh) v.rudderMesh.rotation.y = this.rudder * 0.45;
 
-    // вёсла: гребки в противофазе бортов (сила гребков — от хода)
+    // вёсла: УБРАНЫ по умолчанию (валы вертикально у борта); вываливаются
+    // на воду при гребле (oarsDeployT → 1). Гребки в противофазе бортов,
+    // амплитуда — от хода; задний ход — гребут «наоборот» (медленнее)
     if (v.oars && v.oars.length) {
-      const rowing = clamp(this.speed() / Math.max(1, this.preset.maxSpeed * 0.4), 0.12, 1);
+      this.oarsDeployT += ((this.oarsOut ? 1 : 0) - this.oarsDeployT) * Math.min(1, dt * 1.5);
+      const rowing = this.rowing !== 0 && this.oarsDeployT > 0.25;
+      const strokeAmp = 0.16 * clamp(this.speed() / Math.max(1, this.preset.maxSpeed * 0.4), 0.12, 1);
+      const rowDir = this.rowing < 0 ? -1 : 1;
       for (const o of v.oars) {
         const base = o.userData.base as number;
+        const stow = o.userData.stow as number;
         const phase = o.userData.phase as number;
-        o.rotation.z = base + Math.sin(time * 2.3 + phase) * 0.16 * rowing;
+        const swing = rowing ? Math.sin(time * 2.3 * rowDir + phase) * strokeAmp : 0;
+        o.rotation.z = THREE.MathUtils.lerp(stow, base + swing, this.oarsDeployT);
       }
     }
 
