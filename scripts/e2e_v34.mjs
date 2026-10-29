@@ -57,16 +57,15 @@ const crewA = jparse(ev(`(() => {
     crew: sh.crew, maxCrew: sh.preset.maxCrew, sinking: false, sunk: false,
     position: sh.position, quaternion: sh.quaternion }); };
   const out = {
-    // флейт: maxCrew 20 < 40 → МАЛЫЙ → 0.8 → 20*0.8/10 = 1.6 → 2 фигуры
-    fluyt: { total: t.crew3d.total, share: t.crew3d.deckShare },
-    // шлюп игрока: maxCrew 24 → 0.8 → 1.92 → 2
-    sloop: { total: p.crew3d.total, share: p.crew3d.deckShare, crew: p.crew },
+    // флейт: maxCrew 20 → deckCrewFor: min(20, max(10, 10·(20/50)^0.7≈5)) = 10 фигур
+    fluyt: { total: t.crew3d.total, shown: t.crew3d.shown },
+    // шлюп игрока: maxCrew 24 → тоже ≥10 фигур (новый минимум по ТЗ)
+    sloop: { total: p.crew3d.total, shown: p.crew3d.shown, crew: p.crew },
   };
   // crew=0 → палуба ПУСТАЕТ
-  t.crew = 0; upd(t, 12);
+  t.crew = 0; upd(t, 14);
   out.fluytCrew0 = { shown: t.crew3d.shown, dead: t.crew3d.dead };
-  // восстановление: crew=20 → снова 2 живые фигуры... (трупы не встают —
-  // reset) + проверка промежуточного: crew=10 → 1 фигура
+  // восстановление: crew=10 → показываем ВСЕХ 10; crew=20 → минимум 10
   t.crew3d.reset(); t.crew = 10; upd(t, 4);
   out.fluytCrew10 = { shown: t.crew3d.shown };
   t.crew = 20; t.crew3d.reset(); upd(t, 4);
@@ -74,34 +73,35 @@ const crewA = jparse(ev(`(() => {
   return JSON.stringify(out);
 })()`));
 log('A:', JSON.stringify(crewA));
-check('A: флейт (20 чел, малый) → 2 фигуры на палубе (80%)', crewA.fluyt.total === 2,
-  `total=${crewA.fluyt.total} share=${crewA.fluyt.share}`);
-check('A: доля малого судна 0.8', crewA.fluyt.share === 0.8);
-check('A: шлюп игрока → 2 фигуры', crewA.sloop.total === 2, `total=${crewA.sloop.total}`);
+check('A: флейт (20 чел) → 10 фигур (минимум 10 по ТЗ)', crewA.fluyt.total === 10,
+  `total=${crewA.fluyt.total} shown=${crewA.fluyt.shown}`);
+check('A: шлюп игрока → 10 фигур (минимум 10)', crewA.sloop.total === 10, `total=${crewA.sloop.total}`);
 check('A: crew=0 → палуба ПУСТА (shown=0)', crewA.fluytCrew0.shown === 0,
   `shown=${crewA.fluytCrew0.shown} dead=${crewA.fluytCrew0.dead}`);
-check('A: crew=10 → 1 фигура (10 ед. на палубе)', crewA.fluytCrew10.shown === 1,
+check('A: crew=10 → показываем ВСЕХ (10 фигур)', crewA.fluytCrew10.shown === 10,
   `shown=${crewA.fluytCrew10.shown}`);
-check('A: crew=20 → 2 фигуры', crewA.fluytCrew20.shown === 2, `shown=${crewA.fluytCrew20.shown}`);
+check('A: crew=20 → на палубе 10 (не меньше минимума)', crewA.fluytCrew20.shown === 10, `shown=${crewA.fluytCrew20.shown}`);
 
-// крупный корабль: Victory 850 чел → 20% → 17 фигур
+// крупный корабль: Victory 850 чел → deckCrewFor = 10·(850/50)^0.7 ≈ 73 фигуры
 const crewBig = jparse(ev(`(() => {
   const g = window.__game;
   const err = g.changeShip('victory', true); // полигон — бесплатно
   const p = g.player;
-  for (let i = 0; i < 6; i++) p.crew3d.update(1/60, i/60, {
+  p.crew = 850; // полная команда линейного корабля
+  for (let i = 0; i < 80; i++) p.crew3d.update(1/60, i/60, {
     crew: p.crew, maxCrew: p.preset.maxCrew, sinking: false, sunk: false,
     position: p.position, quaternion: p.quaternion });
-  return JSON.stringify({ err, total: p.crew3d.total, share: p.crew3d.deckShare,
+  return JSON.stringify({ err, total: p.crew3d.total,
     crew: p.crew, shown: p.crew3d.shown });
 })()`));
 log('A2:', JSON.stringify(crewBig));
-check('A: Victory (850 чел, крупный) → 17 фигур (20%)', crewBig.total === 17,
-  `total=${crewBig.total} share=${crewBig.share}`);
+check('A: Victory (850 чел) → 73 фигуры (10·(850/50)^0.7)', crewBig.total === 73,
+  `total=${crewBig.total}`);
 check('A: смена на Victory бесплатна на полигоне', crewBig.err === null, `err=${crewBig.err}`);
+check('A: на палубе Victory видно живых (shown > 60)', crewBig.shown > 60, `shown=${crewBig.shown}`);
 
 // ============ B: убитые на палубе ↔ потери команды ============
-log('=== B: поражение экипажа (−10 единиц за фигуру) ===');
+log('=== B: поражение экипажа (−1 человек за фигуру) ===');
 const crewB = jparse(ev(`(() => {
   const g = window.__game;
   const t = g.pgTarget.ship;
@@ -109,28 +109,27 @@ const crewB = jparse(ev(`(() => {
   for (let i = 0; i < 4; i++) t.crew3d.update(1/60, i/60, {
     crew: t.crew, maxCrew: t.preset.maxCrew, sinking: false, sunk: false,
     position: t.position, quaternion: t.quaternion });
-  const V = window.THREE ? window.THREE.Vector3 : null;
-  const g3 = g.player.visual.group; // THREE уже в модуле — берём через анимацию
-  // широкий прострел палубы по диаметрали: a=(0,1,12) → b=(0,1,-12), r=3
   const mk = (x, y, z) => { const o = { x, y, z }; return o; };
   const killed = t.crew3d.killNearPath(mk(0, 1, 12), mk(0, 1, -12), 'grape', 2, 3,
     t.position, t.quaternion);
-  // формула combat: crew -= killed * CREW_PER_FIGURE (10)
-  const crewAfter = Math.max(0, Math.round(t.crew - killed * 10));
+  // формула combat: crew -= killed (1 фигура = 1 человек)
+  const crewAfter = Math.max(0, Math.round(t.crew - killed));
   const res = { killed, crewBefore: 20, crewAfter, shownAfter: t.crew3d.shown };
   t.crew = crewAfter;
   for (let i = 0; i < 6; i++) t.crew3d.update(1/60, i/60, {
     crew: t.crew, maxCrew: t.preset.maxCrew, sinking: false, sunk: false,
     position: t.position, quaternion: t.quaternion });
   res.shownSync = t.crew3d.shown;
+  res.deadSync = t.crew3d.dead;
   return JSON.stringify(res);
 })()`));
 log('B:', JSON.stringify(crewB));
 check('B: прострел палубы убивает фигуры (killed ≥ 1)', crewB.killed >= 1, `killed=${crewB.killed}`);
-check('B: каждая фигура = 10 единиц (crew 20→' + crewB.crewAfter + ')',
-  crewB.crewAfter === 20 - crewB.killed * 10, `killed=${crewB.killed} after=${crewB.crewAfter}`);
-check('B: палуба синхронизируется (shown = crew·0.8/10)', crewB.shownSync === Math.max(0, Math.round(crewB.crewAfter * 0.8 / 10)),
-  `shown=${crewB.shownSync}`);
+check('B: каждая фигура = 1 человек (crew 20→' + crewB.crewAfter + ')',
+  crewB.crewAfter === 20 - crewB.killed, `killed=${crewB.killed} after=${crewB.crewAfter}`);
+check('B: палуба синхронизируется (shown = живые = 10−killed)',
+  crewB.shownSync === Math.max(0, 10 - crewB.killed),
+  `shown=${crewB.shownSync} dead=${crewB.deadSync}`);
 
 // ============ C: каскад ломания мачты ============
 log('=== C: мачта ломается → её паруса рвутся ===');

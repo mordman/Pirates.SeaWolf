@@ -389,6 +389,8 @@ export interface ShipVisual {
   /** Ломаемые детали палубы: штурвал, шпиль, фонарь, носовая фигура —
    *  срываются прямыми попаданиями и при затоплении (Ship.damageProp) */
   breakables: THREE.Object3D[];
+  /** Обвязка мачт: ванты/штаги — обрываются вместе со своей мачтой */
+  rigging: Rigging;
   /** материалы дерева корпуса (для скина «цвет корабля») — без экипажа */
   tintMats: THREE.MeshStandardMaterial[];
 }
@@ -1354,33 +1356,50 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
 function clamp2(v: number, a: number, b: number) { return v < a ? a : v > b ? b : v; }
 
 // ---------- такелаж (линии) ----------
-function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3): THREE.LineSegments {
-  const pts: number[] = [];
+/** Одна снасть обвязки: ванта/штаг/бакштаг. Принадлежит своей мачте —
+ *  при её ломке обвязка ОБРЫВАЕТСЯ (Ship.snapRigging) */
+export interface RigLine {
+  mast: number;                        // индекс мачты-владельца
+  a: THREE.Vector3; b: THREE.Vector3;  // оригинальные концы (для восстановления)
+}
+export interface Rigging {
+  lines: THREE.LineSegments;
+  meta: RigLine[];
+}
+function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3): Rigging {
+  const meta: RigLine[] = [];
   const L = P.length;
-  const addLine = (a: THREE.Vector3, b: THREE.Vector3) => { pts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
-  for (const m of masts) {
+  const addLine = (mast: number, a: THREE.Vector3, b: THREE.Vector3) => {
+    meta.push({ mast, a, b });
+  };
+  for (let mi = 0; mi < masts.length; mi++) {
+    const m = masts[mi];
     const top = new THREE.Vector3(0, m.h, m.z);
     // штаги к носу и корме
-    addLine(top, bowspritTip);
-    addLine(top, new THREE.Vector3(0, 1.2, -L / 2 + 0.4));
+    addLine(mi, top.clone(), bowspritTip.clone());
+    addLine(mi, top.clone(), new THREE.Vector3(0, 1.2, -L / 2 + 0.4));
     // ванты к бортам
     for (const side of [-1, 1]) {
       for (let k = 0; k < 3; k++) {
         const zz = m.z - 1.5 + k * 1.5;
-        addLine(new THREE.Vector3(side * 2.6, 1.6, zz), new THREE.Vector3(0, m.h * (0.55 + k * 0.15), m.z));
+        addLine(mi, new THREE.Vector3(side * 2.6, 1.6, zz),
+          new THREE.Vector3(0, m.h * (0.55 + k * 0.15), m.z));
       }
     }
   }
   // бакштаги к корме от грот-мачты
   if (masts.length >= 2) {
-    const main = masts[masts.length - 1 > 1 ? masts.length - 2 : 0];
-    addLine(new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
-    addLine(new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
+    const mainIdx = masts.length - 1 > 1 ? masts.length - 2 : 0;
+    const main = masts[mainIdx];
+    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
+    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
   }
+  const pts: number[] = [];
+  for (const l of meta) pts.push(l.a.x, l.a.y, l.a.z, l.b.x, l.b.y, l.b.z);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   const mat = new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.85 });
-  return new THREE.LineSegments(g, mat);
+  return { lines: new THREE.LineSegments(g, mat), meta };
 }
 
 // ---------- полная сборка ----------
@@ -1753,7 +1772,8 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // (простые якоря-коробки заменены настоящими якорями в группе мелких деталей)
 
   // такелаж
-  group.add(buildRigging(P, mastDefs, bowspritTip));
+  const rigging = buildRigging(P, mastDefs, bowspritTip);
+  group.add(rigging.lines);
 
   // надстройки-«замки» (когг) — силуэт виден издалека
   if (P.castleH) {
@@ -1810,7 +1830,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
-    masts, lantern, wheel, detail, breakables, tintMats: [...tintSet],
+    masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
   };
 }

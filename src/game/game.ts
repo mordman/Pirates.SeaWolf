@@ -9,10 +9,11 @@ import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, type FlagKi
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt, type PortDef } from './world/world';
+import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
-import { setCrewFx } from './ship/crew';
+import { setCrewFx, deckCrewFor } from './ship/crew';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
@@ -200,6 +201,8 @@ export class Game {
 
   // ===== Полигон (мини-игра проверки повреждений) =====
   proving = false;                // активен ли режим полигона
+  /** ватага пиратов на острове логова (густо, по ТЗ) */
+  lairFolk: LandFolk | null = null;
   pgTarget: AIShip | null = null; // мишень на якоре
   pgModel = 'fluyt';              // модель мишени
   pgReturnFire = false;           // отвечает ли мишень огнём
@@ -563,6 +566,15 @@ export class Game {
       for (let k = 0; k < 6; k++) route.push(ring(a0 + k * 60, 280));
       this.aiShips.push(new AIShip(sh, route, 'patrol'));
     }
+    // ПИРАТЫ НА САМОМ ОСТРОВЕ: густая ватага «человечков» — ходоки
+    // по тропам, дворовые у костра, часовые у кромки воды; картечь
+    // по берегу выкашивает их (combat.onGroundHit → killNear)
+    this.lairFolk = buildLandFolk(folkCountFor(isl.r), {
+      cx: isl.cx, cz: isl.cz, r: isl.r, maxH: isl.maxH,
+      heightAt: (x, z) => heightAt(x, z), seed: 4242,
+    });
+    this.worldGroup.add(this.lairFolk.group);
+    this.worldGroup.add(this.lairFolk.props); // костры лагеря
   }
 
   private wireEvents() {
@@ -1524,7 +1536,12 @@ export class Game {
       crewShown: p.crew3d.shown,
       crewDead: p.crew3d.dead,
       crewTotal: p.crew3d.total,
-      deckShare: p.crew3d.deckShare,
+      deckFor: deckCrewFor(p.crew),          // сколько ДОЛЖНО быть на палубе
+      rigSnapped: p.riggingSnapped(),         // обрывов такелажа (обвязка мачт)
+      lairFolk: this.lairFolk
+        ? { total: this.lairFolk.total, shown: this.lairFolk.shown, dead: this.lairFolk.dead }
+        : null,
+      treesBroken: this.world.treesBroken,
       // вёсла игрока (гребные суда)
       oars: p.preset.oars
         ? { out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing, idle: +p.oarsIdleT.toFixed(1) }
@@ -1602,13 +1619,23 @@ export class Game {
     for (const ai of this.aiShips) this.setDetailLod(ai.ship, camPos, lodD);
     if (this.pgTarget) this.setDetailLod(this.pgTarget.ship, camPos, lodD);
 
-    // системы (земля: рельеф островов + повал деревьев от снарядов)
+    // системы (земля: рельеф островов + повал деревьев от снарядов;
+    // картечь по берегу заодно косит пиратов логова)
     this.combat.update(dt, this.time, waterHeightAt, heightAt,
-      (x, y, z, r) => this.world.breakTrees(x, y, z, r, this.particles));
+      (x, y, z, r, kind) => {
+        const trees = this.world.breakTrees(x, y, z, r, this.particles, this.gibs);
+        if (this.lairFolk) {
+          const folk = this.lairFolk.killNear(x, y, z, r * 1.25,
+            kind === 'ball' || kind === 'fire' ? 'ball' : 'grape');
+          if (folk > 0) this.pushMessage(`Берег логова: погибло пиратов ${folk}`);
+        }
+        return trees;
+      });
     this.particles.update(dt);
     this.gibs.update(dt);
     updateDebris(dt, this.time, this.wind);
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
+    this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
 
     // небо и свет (+ погода: облачность, приглушение, вспышки молний)
     playerScene.copy(this.player.position).add(this.shift);

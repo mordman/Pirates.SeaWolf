@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { Ship } from '../ship/Ship';
 import { sailAddHole, SailInfo } from '../ship/buildShip';
-import { CREW_PER_FIGURE } from '../ship/crew';
 import { spawnDebrisAt } from '../fx/debris';
 import type { Particles } from '../fx/particles';
 import { clamp } from '../core/rng';
@@ -413,7 +412,7 @@ export class CombatSystem {
   // ---------- обновление ----------
   update(dt: number, time: number, waterHeight: (x: number, z: number, t: number) => number,
     groundHeight: ((x: number, z: number) => number) | null = null,
-    onGroundHit: ((x: number, y: number, z: number, radius: number) => number) | null = null) {
+    onGroundHit: ((x: number, y: number, z: number, radius: number, kind: AmmoType) => number) | null = null) {
     // перезарядка
     for (let i = 0; i < this.reloads.length; i++) {
       if (this.reloads[i] > 0) this.reloads[i] -= dt;
@@ -452,11 +451,12 @@ export class CombatSystem {
         continue;
       }
 
-      // земля (острова): фугасный удар + повал деревьев
+      // земля (острова): фугасный удар + повал деревьев (+ береговые
+      // пираты логова — см. колбэк в game.ts)
       if (groundHeight && pr.pos.y < groundHeight(pr.pos.x, pr.pos.z)) {
         pr.active = false;
         const r = pr.type === 'ball' || pr.type === 'chain' ? 2.6 : pr.type === 'fire' ? 3.2 : 1.6;
-        const trees = onGroundHit ? onGroundHit(pr.pos.x, pr.pos.y, pr.pos.z, r) : 0;
+        const trees = onGroundHit ? onGroundHit(pr.pos.x, pr.pos.y, pr.pos.z, r, pr.type) : 0;
         // пыль/земля + щепа, если деревья сломаны
         this.particles.smoke(pr.pos.x, pr.pos.y + 0.4, pr.pos.z, 0, 0.6, 0, 1.6, 1.2);
         if (trees > 0) this.particles.debris(pr.pos.x, pr.pos.y + 1, pr.pos.z, 10, 1.1);
@@ -700,11 +700,11 @@ export class CombatSystem {
         if (pr.type === 'grape') {
           // картечь по рангоуту: вахтенные у мачты гибнут только при
           // прямом простреле (узкая трасса), не «по факту залпа»;
-          // одна фигура на палубе = CREW_PER_FIGURE единиц экипажа
+          // одна фигура на палубе = 1 человек экипажа
           this.pathB.copy(hit.lp).addScaledVector(hit.dir, t.preset.length * 1.25);
           const killed = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 1, 0.55,
             t.position, t.quaternion);
-          if (killed > 0) t.crew = Math.max(0, Math.round(t.crew - killed * CREW_PER_FIGURE));
+          if (killed > 0) t.crew = Math.max(0, Math.round(t.crew - killed));
           t.applyDamage({ kind: 'grape', amount: 0.4 * killed }); // щепки по корпусу
         }
         if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
@@ -735,10 +735,10 @@ export class CombatSystem {
         crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'ball', 2, 0.5,
           t.position, t.quaternion);
       }
-      // потери команды = УБИТЫМ фигурам × CREW_PER_FIGURE (одна
-      // фигура на палубе представляет 10 живых людей)
+      // потери команды = УБИТЫМ фигурам (одна фигура на палубе
+      // представляет 1 живого человека)
       if (pr.type === 'grape') {
-        if (crewKilled > 0) t.crew = Math.max(0, Math.round(t.crew - crewKilled * CREW_PER_FIGURE));
+        if (crewKilled > 0) t.crew = Math.max(0, Math.round(t.crew - crewKilled));
         t.applyDamage({ kind: 'grape', amount: 0.5 + crewKilled * 0.35 });
       } else {
         t.applyDamage({
@@ -747,7 +747,7 @@ export class CombatSystem {
           hitPoint: pr.pos.clone(),
         });
         if (crewKilled > 0) {
-          t.crew = Math.max(0, Math.round(t.crew - crewKilled * CREW_PER_FIGURE));
+          t.crew = Math.max(0, Math.round(t.crew - crewKilled));
         }
       }
       if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });

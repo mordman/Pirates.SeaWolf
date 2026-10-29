@@ -110,6 +110,8 @@ export class Ship {
   mastHP: number[] = [];   // HP каждой мачты
   mastFall: number[] = []; // прогресс падения: -1 стоит, 0..1 валится/лежит
   mastMaxHP = 32;
+  /** оборванных снастей обвязки (ванты/штаги сломанных мачт) */
+  private rigSnapped = 0;
   hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh }[] = [];
   leakBias = 0;            // суммарный кренящий момент пробоин (−1..1 порт/штирборт)
   noSurrender = false;     // мишень полигона не сдаётся
@@ -629,7 +631,7 @@ export class Ship {
       }
       case 'grape': {
         // экипаж гибнет ТОЛЬКО фигурами на палубе (combat вычитает
-        // CREW_PER_FIGURE за каждую убитую) — абстрактного списания
+        // 1 за каждую убитую) — абстрактного списания
         // нет: залп в борт людей не косит
         this.hullHP -= d.amount * 0.4;
         break;
@@ -790,7 +792,55 @@ export class Ship {
       }
       this.particles.smoke(mid.x, mid.y, mid.z, 0, 0.4, 0, 0.8, 1.4);
     }
+    // === ОБВЯЗКА МАЧТЫ ЛОПАЕТСЯ ВМЕСТЕ С НЕЙ: все её ванты/
+    // штаги/бакштаги схлопываются + обрывки троса летят гибами ===
+    this.snapRigging(i);
   }
+
+  /** Обрыв обвязки мачты idx: её снасти (ванты/штаги) вырождаются
+   *  в точку (линия исчезает), обрывки троса летят из середины
+   *  снасти. Возвращает число оборванных снастей */
+  private snapRigging(idx: number): number {
+    const rig = this.visual.rigging;
+    if (!rig || !rig.meta.length) return 0;
+    const posAttr = rig.lines.geometry.attributes.position as THREE.BufferAttribute;
+    const mast = this.visual.masts[idx];
+    const bx = 0, by = 0.4, bz = mast ? mast.position.z : 0;
+    let n = 0;
+    const snappedAt: THREE.Vector3[] = [];
+    for (let li = 0; li < rig.meta.length; li++) {
+      const l = rig.meta[li];
+      if (l.mast !== idx) continue;
+      // вырожденный отрезок (ноль длины) — линия не рисуется
+      posAttr.setXYZ(li * 2, bx, by, bz);
+      posAttr.setXYZ(li * 2 + 1, bx, by, bz);
+      n++;
+      if (snappedAt.length < 6) snappedAt.push(l.a.clone().lerp(l.b, 0.45));
+    }
+    if (n > 0) {
+      posAttr.needsUpdate = true;
+      this.rigSnapped = Math.min(this.rigSnapped + n, rig.meta.length);
+    }
+    // обрывки троса + пыль от лопнувших вант
+    const gibs = Ship.gibs;
+    for (const sp of snappedAt) {
+      const wp = this.tmpV.copy(sp).applyQuaternion(this.quaternion).add(this.position);
+      if (gibs) {
+        for (let k = 0; k < 2; k++) {
+          gibs.spawnPart(
+            new THREE.Vector3(wp.x, wp.y, wp.z),
+            new THREE.Vector3((Math.random() - 0.5) * 3.5, 1.2 + Math.random() * 2.2,
+              (Math.random() - 0.5) * 3.5),
+            0.05, 0.05, 0.7 + Math.random() * 0.5, 0x241c12, 1.6 + Math.random());
+        }
+      }
+      this.particles?.smoke(wp.x, wp.y, wp.z, 0, 0.3, 0, 0.5, 0.8);
+    }
+    return n;
+  }
+
+  /** Сколько снастей обвязки оборвано — телеметрия/E2E */
+  riggingSnapped(): number { return this.rigSnapped; }
 
   /** Сброс ВСЕХ повреждений (полигон/возрождение): корпус, мачты,
    *  паруса, пробоины, течь, пожар, экипаж, ломаемые детали, намокание */
@@ -814,6 +864,16 @@ export class Ship {
     this.resetWetness();
     // ломаемые детали на место
     for (const obj of this.visual.breakables) obj.visible = true;
+    // обвязка мачт — все снасти целы (вырожденные точки → концы)
+    if (this.visual.rigging?.meta.length) {
+      const posAttr = this.visual.rigging.lines.geometry.attributes.position as THREE.BufferAttribute;
+      this.visual.rigging.meta.forEach((l, li) => {
+        posAttr.setXYZ(li * 2, l.a.x, l.a.y, l.a.z);
+        posAttr.setXYZ(li * 2 + 1, l.b.x, l.b.y, l.b.z);
+      });
+      posAttr.needsUpdate = true;
+    }
+    this.rigSnapped = 0;
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP[i] = this.mastMaxHP;
       this.mastFall[i] = -1;

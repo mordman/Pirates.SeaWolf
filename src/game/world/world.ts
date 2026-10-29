@@ -257,6 +257,8 @@ export class World {
     positions: THREE.Vector3[];
     broken: boolean[];
     breakable: boolean;
+    kind: string;         // вид: palm/ficus/jungle/bamboo/bush — рецепт разлома
+    scales: number[];     // визуальная высота каждого экземпляра (множитель)
   }[] = [];
   /** счётчик поваленных деревьев (телеметрия) */
   treesBroken = 0;
@@ -392,14 +394,18 @@ export class World {
         inst, positions,
         broken: new Array(list.length).fill(false),
         breakable: kind !== 'rock',
+        kind,
+        scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
       });
     }
   }
 
-  /** Ядро/книппель валят деревья: ломает экземпляры в радиусе,
-   *  возвращает количество поваленных (0 = промах/камни) */
+  /** Ядро/книппель валят деревья: ломает экземпляры в радиусе
+   *  (дерево разлетается на ТРИ части: пень + ствол + крона —
+   *  гибы с гравитацией), возвращает количество поваленных */
   breakTrees(x: number, y: number, z: number, radius: number,
-    fx?: { debris: (x: number, y: number, z: number, n?: number, power?: number) => void }): number {
+    fx?: { debris: (x: number, y: number, z: number, n?: number, power?: number) => void },
+    gibs?: { spawnPart: (pos: THREE.Vector3, vel: THREE.Vector3, sx: number, sy: number, sz: number, hex: number, life?: number) => void }): number {
     let broke = 0;
     const r2 = radius * radius;
     for (const slot of this.vegSlots) {
@@ -419,11 +425,71 @@ export class World {
         slot.inst.instanceMatrix.needsUpdate = true;
         // щепа и листва из точки удара
         fx?.debris(p.x, p.y + 1.6, p.z, 12, 1.2);
+        // разлом на ТРИ части — куски летят от точки попадания
+        if (gibs) this.gibTreePieces(gibs, slot.kind, p, slot.scales[i], { x, y, z });
         broke++;
       }
     }
     this.treesBroken += broke;
     return broke;
+  }
+
+  /** рецепты разлома по видам: цвет ствола/кроны, ширина кроны, базовая высота */
+  private static readonly TREE_PIECES: Record<string, {
+    trunkHex: number; crownHex: number; crownW: number; baseH: number;
+  }> = {
+    palm: { trunkHex: 0x7a5a38, crownHex: 0x3f7d33, crownW: 2.4, baseH: 8.5 },
+    ficus: { trunkHex: 0x6b4e2f, crownHex: 0x2f5e2b, crownW: 3.6, baseH: 7.0 },
+    jungle: { trunkHex: 0x6e5230, crownHex: 0x477a34, crownW: 2.8, baseH: 6.8 },
+    bamboo: { trunkHex: 0x8a9a3a, crownHex: 0x5c7a3a, crownW: 1.0, baseH: 5.2 },
+    bush: { trunkHex: 0x4a7032, crownHex: 0x567b36, crownW: 1.1, baseH: 1.3 },
+    rock: { trunkHex: 0x7d7668, crownHex: 0x7d7668, crownW: 1, baseH: 1 },
+  };
+
+  /** Три куска вместо дерева: пень у корня, ствол по полёту,
+   *  крона вверх; куст целиком — три кома листвы */
+  private gibTreePieces(
+    gibs: { spawnPart: (pos: THREE.Vector3, vel: THREE.Vector3, sx: number, sy: number, sz: number, hex: number, life?: number) => void },
+    kind: string, p: THREE.Vector3, s: number,
+    hit: { x: number; y: number; z: number }): void {
+    const spec = World.TREE_PIECES[kind] ?? World.TREE_PIECES.jungle;
+    const H = Math.max(0.8, spec.baseH * s);      // визуальная высота дерева
+    // направление разлёта: от точки попадания к дереву
+    const dir = new THREE.Vector3(p.x - hit.x, 0, p.z - hit.z);
+    if (dir.lengthSq() < 0.04) dir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+    dir.normalize();
+    if (kind === 'bush') {
+      // куст без ствола — три кома листвы разного размера
+      for (let k = 0; k < 3; k++) {
+        const w = (0.5 + k * 0.16) * s;
+        gibs.spawnPart(
+          new THREE.Vector3(p.x + (Math.random() - 0.5), p.y + 0.35 + k * 0.2, p.z + (Math.random() - 0.5)),
+          new THREE.Vector3(dir.x * (2.2 + k * 0.7) + (Math.random() - 0.5) * 1.6,
+            1.5 + Math.random() * 1.4, dir.z * (2.2 + k * 0.7) + (Math.random() - 0.5) * 1.6),
+          w, w * 0.8, w, k === 1 ? spec.crownHex : spec.trunkHex, 2.4 + Math.random() * 0.8);
+      }
+      return;
+    }
+    // 1) ПЕНЬ: нижняя часть ствола оседает у корня
+    gibs.spawnPart(
+      new THREE.Vector3(p.x, p.y + H * 0.12, p.z),
+      new THREE.Vector3(dir.x * 1.5, 0.5, dir.z * 1.5),
+      Math.max(0.16, 0.24 * s), Math.max(0.5, H * 0.2), Math.max(0.16, 0.24 * s),
+      spec.trunkHex, 3.2);
+    // 2) СТВОЛ: средняя часть — по траектории снаряда
+    gibs.spawnPart(
+      new THREE.Vector3(p.x, p.y + H * 0.55, p.z),
+      new THREE.Vector3(dir.x * 4.2 + (Math.random() - 0.5) * 1.6, 2.0 + Math.random(),
+        dir.z * 4.2 + (Math.random() - 0.5) * 1.6),
+      Math.max(0.13, 0.19 * s), Math.max(1.2, H * 0.33), Math.max(0.13, 0.19 * s),
+      spec.trunkHex, 2.8);
+    // 3) КРОНА: зелёная шапка вылетает вверх
+    const cw = Math.max(0.5, spec.crownW * s);
+    gibs.spawnPart(
+      new THREE.Vector3(p.x, p.y + H * 0.92, p.z),
+      new THREE.Vector3(dir.x * 3.0 + (Math.random() - 0.5) * 2, 3.1 + Math.random() * 1.2,
+        dir.z * 3.0 + (Math.random() - 0.5) * 2),
+      cw, Math.max(0.4, cw * 0.45), cw, spec.crownHex, 2.3);
   }
 
   // ---------- порты: по одному на каждом острове, размер по острову ----------
