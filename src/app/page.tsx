@@ -621,18 +621,29 @@ export default function Home() {
                   <span className="font-serif text-sm font-bold text-amber-200">🎯 Полигон</span>
                   <span className="text-[10px] text-stone-500">{hud.target.dist} м</span>
                 </div>
-                <div className="mb-1.5 grid grid-cols-4 gap-1">
-                  {([['sloop', 'Шлюп'], ['fluyt', 'Флейт'], ['brig', 'Бриг'], ['caravel', 'Каравелла'],
-                     ['pinnace', 'Пинасс'], ['cog', 'Когг'], ['galleon', 'Галеон'], ['frigate', 'Фрегат']] as const).map(([id, label]) => (
-                    <button key={id}
-                      onClick={() => act(gg => gg.pgSetModel(id))}
-                      className={`pointer-events-auto flex-1 rounded border px-1 py-1 text-[10px] transition ${
-                        hud.target!.modelId === id
-                          ? 'border-amber-400 bg-amber-900/60 text-amber-100'
-                          : 'border-stone-700 bg-stone-900/70 text-stone-300 hover:border-stone-500'}`}>
-                      {label}
-                    </button>
-                  ))}
+                <div className="mb-1.5 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-stone-500">Мишень (все 29 судов)</div>
+                  <select
+                    value={hud.target!.modelId}
+                    onChange={e => act(gg => gg.pgSetModel(e.target.value))}
+                    className="pointer-events-auto w-full rounded border border-stone-600 bg-stone-900 px-1.5 py-1 text-[11px] text-amber-100 focus:border-amber-500 focus:outline-none">
+                    {ENCYCLOPEDIA.map(sh => (
+                      <option key={sh.id} value={sh.id}>
+                        {sh.name} · {sh.stats.guns} ор. · {sh.shipClass}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-[10px] uppercase tracking-wide text-stone-500">Ваш корабль</div>
+                  <select
+                    value={hud.shipId}
+                    onChange={e => { if (e.target.value !== hud.shipId) act(gg => gg.changeShip(e.target.value)); }}
+                    className="pointer-events-auto w-full rounded border border-stone-600 bg-stone-900 px-1.5 py-1 text-[11px] text-amber-100 focus:border-amber-500 focus:outline-none">
+                    {ENCYCLOPEDIA.map(sh => (
+                      <option key={sh.id} value={sh.id}>
+                        {sh.name} · {sh.stats.guns} ор. · {sh.shipClass}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="mb-1.5">
                   <div className="mb-0.5 flex items-center justify-between text-[10px]">

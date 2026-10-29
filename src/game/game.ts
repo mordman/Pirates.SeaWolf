@@ -11,12 +11,13 @@ import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt } from './world/world';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
+import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
 import { setCrewFx } from './ship/crew';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
-import { GameSettings, loadSettings, type FxSettings } from './core/settings';
+import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings } from './core/settings';
 
 // ============================================================
 // Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
@@ -185,7 +186,9 @@ export class Game {
     this.worldGroup.add(this.particles.points);
     this.worldGroup.add(this.particles.firePoints); // огонь — аддитивный пул
     this.gibs.addTo(this.worldGroup);
+    initDebris(this.worldGroup);
     setCrewFx(this.gibs, this.particles);
+    Ship.gibs = this.gibs;
     this.world.onDiscover = (isl) => this.pushMessage(`Открыт остров: ${isl.name}!`);
 
     this.spawnShips();
@@ -301,9 +304,13 @@ export class Game {
 
   private spawnShips() {
     const terrain = (x: number, z: number) => heightAt(x, z);
-    // прочность кораблей и боезапас игрока — из настроек игры
+    // прочность кораблей — из настроек; боезапас игрока — стартовый набор
+    // с реалистичной недостачей 1–10% (порох отсырел, расстреляли, не доехало)
     const gp = this.settings.gameplay;
-    const playerOpts = { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo } };
+    const startAmmo = gp.ammoJitter
+      ? rollStartingAmmo(gp.startingAmmo).ammo
+      : { ...gp.startingAmmo };
+    const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo };
     const aiOpts = { durabilityMul: gp.hullDurability };
     // игрок: шлюп в глубокой воде за пирсом
     this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
@@ -504,6 +511,7 @@ export class Game {
     this.worldGroup.remove(s.wake.mesh);
     s.dispose();
     this.pgTarget = null;
+    clearDebris(); // обломки старой мишени не мешают новому заходу
   }
 
   startProving(modelId = 'fluyt') {
@@ -548,6 +556,7 @@ export class Game {
     if (!this.pgTarget) return;
     const s = this.pgTarget.ship;
     s.clearDamage();
+    clearDebris();
     s.position.copy(this.pgTargetPos());
     s.position.y = 0;
     s.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
@@ -617,6 +626,7 @@ export class Game {
     np.anchored = old.anchored;
     this.player = np;
     this.combat.player = np;
+    this.combat.resizeReloads(np.visual.gunsPort.length + np.visual.gunsStarboard.length);
     this.combat.aim.active = false;
     this.combat.aim.target = null;
     this.boardingTarget = null;
@@ -1026,11 +1036,11 @@ export class Game {
     }
     this.wind.speed = this.weather.wind.speed;
     this.wind.from = this.weather.wind.from;
-    // амплитуда волн от силы ветра (0.3 штиль .. волна шторма,
-    // ограничена настройкой графики waveHeight — палубу не топит);
+    // амплитуда волн — ТОЛЬКО от силы ветра (настройки больше нет):
+    // 3 м/с ≈ 0.44 (рябь), 7.5 м/с ≈ 0.76 (свежий бриз),
+    // 15 м/с ≈ 1.3 (крепкий), 22 м/с ≈ 1.8 (шторм), потолок 2.0;
     // swell набирается/спадает с запаздыванием — как настоящее море
-    const waveCap = this.settings.graphics.waveHeight;
-    const ampTarget = clamp(0.32 + this.wind.speed * 0.052, 0.3, waveCap);
+    const ampTarget = clamp(0.22 + this.wind.speed * 0.072, 0.3, 2.0);
     this.seaAmpSmooth += (ampTarget - this.seaAmpSmooth) * Math.min(1, dt * 0.22);
     SEA.amplitude = this.seaAmpSmooth;
     return vis;
@@ -1140,7 +1150,10 @@ export class Game {
       tgtHoles: tgt ? tgt.hullHoles.length : -1,
       tgtCrew: tgt ? tgt.crew : -1,
       tgtSinking: tgt && tgt.sinking ? 1 : 0,
+      tgtSinkPhase: tgt ? tgt.sinkPhase : -1,
+      tgtSinkT: tgt ? +tgt.sinkT.toFixed(1) : -1,
       tgtSunk: tgt && tgt.sunk ? 1 : 0,
+      debrisAlive: debrisAlive(),
       tgtShown: tgt ? tgt.crew3d.shown : -1,
       tgtCrewDead: tgt ? tgt.crew3d.dead : -1,
       gibsAlive: this.gibs.alive,
@@ -1198,6 +1211,7 @@ export class Game {
       (x, y, z, r) => this.world.breakTrees(x, y, z, r, this.particles));
     this.particles.update(dt);
     this.gibs.update(dt);
+    updateDebris(dt, this.time, this.wind);
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
 
     // небо и свет (+ погода: облачность, приглушение, вспышки молний)
@@ -1323,7 +1337,10 @@ export class Game {
       this.spawnPos.x - this.world.islands[0].cx, this.spawnPos.z - this.world.islands[0].cz), 0));
     p.gold = Math.floor(p.gold * 0.5);
     p.cargo = { sugar: 0, rum: 0, timber: 0 };
-    p.ammo = { ...this.settings.gameplay.startingAmmo };
+    // новый корабль — новый боекомплект (с недостачей, если включена)
+    p.ammo = this.settings.gameplay.ammoJitter
+      ? rollStartingAmmo(this.settings.gameplay.startingAmmo).ammo
+      : { ...this.settings.gameplay.startingAmmo };
     p.sailTarget = 0;
     this.dead = false;
     this.pushMessage(`Новый корабль у гавани. Половина золота ушла на дно...`);

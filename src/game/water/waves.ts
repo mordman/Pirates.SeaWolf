@@ -50,6 +50,15 @@ export function waterHeightAt(x: number, z: number, t: number): number {
   return y;
 }
 
+/** Огибающая волнения: сумма амплитуд всех гармоник (м) при текущей
+ *  погоде. Физически — максимально возможная высота гребня над средним
+ *  уровнем; используется посадкой корпуса на волну (лимит подъёма). */
+export function waveEnvelope(): number {
+  let s = 0;
+  for (const w of WAVES) s += (w.steepness * SEA.amplitude) / K(w);
+  return s;
+}
+
 /** Приближённая нормаль воды в точке (центральные разности) */
 export function waterNormalAt(x: number, z: number, t: number, out: [number, number, number]) {
   const e = 1.2;

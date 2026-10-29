@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ShipPreset, hullProfile } from './buildShip';
+import { ShipPreset, hullProfile, gunLayout } from './buildShip';
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
 
@@ -124,7 +124,7 @@ function bakeGeom(t: { pos: number[]; col: number[] }): THREE.BufferGeometry {
   return g;
 }
 
-const CREW_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.03 });
+export const CREW_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.03 });
 
 /**
  * Собрать фигурку. feetY — уровень палубы под ногами (в локальных
@@ -302,6 +302,24 @@ function t2legs(traits: Traits, legH: number): { pos: number[]; col: number[] } 
   return t;
 }
 
+/** Расстояние между отрезками AB и CD в 3D (для капсул фигур) */
+function segSegDist3D(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3): number {
+  const u = b.clone().sub(a), v = d.clone().sub(c), w = a.clone().sub(c);
+  const uu = u.dot(u), vv = v.dot(v), uv = u.dot(v);
+  const wu = w.dot(u), wv = w.dot(v);
+  const den = uu * vv - uv * uv;
+  let s: number, t: number;
+  if (den < 1e-9) { s = 0; t = vv > 1e-9 ? clampN(wv / vv, 0, 1) : 0; }
+  else { s = clampN((uv * wv - vv * wu) / den, 0, 1); t = clampN((uv * wu - uu * wv) / den, 0, 1); }
+  // одна итерация уточнения (границы)
+  const t2 = clampN((uv * s + wv) / (vv > 1e-9 ? vv : 1), 0, 1);
+  const s2 = clampN((uv * t2 - wu) / (uu > 1e-9 ? uu : 1), 0, 1);
+  const p1 = a.clone().addScaledVector(u, s2);
+  const p2 = c.clone().addScaledVector(v, t2);
+  return p1.distanceTo(p2);
+}
+function clampN(v: number, lo: number, hi: number) { return v < lo ? lo : v > hi ? hi : v; }
+
 /** Состояние корабля для анимации экипажа */
 export interface CrewShipState {
   crew: number; maxCrew: number; sinking: boolean; sunk: boolean;
@@ -358,13 +376,13 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   // боцман — у шпиля (шпиль на -L*0.16), спиной к ветру, лицом к носу-борту
   place(buildFigure('boatswain', rollTraits(rot, 'boatswain'), nextSeed()), -0.75, -L * 0.115, 0.5);
 
-  // канониры: за орудиями обоих бортов (через одно — чтобы не толпиться);
-  // на кораблях с «замками» нос занят надстройкой — орудия сдвинуты к корме
-  const gunZ0 = -L * 0.22, gunZ1 = P.castleH ? L * 0.18 : L * 0.24;
-  const nGuns = P.gunsPerSide;
+  // канониры: за ПАЛУБНЫМИ орудиями обоих бортов (через одно — чтобы
+  // не толпиться); позиции — из ЕДИНОЙ раскладки gunLayout (tier 0)
+  const deckGuns = gunLayout(P).filter(s => s.tier === 0).map(s => s.z);
+  const nGuns = deckGuns.length;
   let gi = 0;
   for (let i = 0; i < nGuns; i += 2) {
-    const z = THREE.MathUtils.lerp(gunZ0, gunZ1, nGuns === 1 ? 0.5 : i / (nGuns - 1));
+    const z = deckGuns[i];
     const w = halfW(z);
     for (const side of [-1, 1]) {
       const f = buildFigure('gunner', rollTraits(rot, 'gunner'), nextSeed());
@@ -451,20 +469,20 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
     group, total: figures.length, shown: figures.length, dead: 0,
     setVisible(v: boolean) { group.visible = v; },
     killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
-      // кандидаты: живые видимые фигуры у пути снаряда
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const len2 = dx * dx + dz * dz;
+      // ТОЧНОЕ поражение: путь снаряда (a→b, локальные координаты корабля)
+      // против вертикальной капсулы КАЖДОЙ фигуры (ноги → голова).
+      // Ядро/пуля картечи убивают только фигуру, которую ПРОШЁЛ снаряд —
+      // залп в борт рядом с матросом его не трогает.
+      const A = new THREE.Vector3(a.x, a.y, a.z);
+      const B = new THREE.Vector3(b.x, b.y, b.z);
       const cands: { f: CrewFigure; d: number }[] = [];
       for (const f of figures) {
         if (f.dead || !f.group.visible) continue;
         const p = f.group.position;
-        let t = len2 > 1e-9 ? ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2 : 0;
-        t = Math.max(0, Math.min(1, t));
-        const d = Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t));
+        const lo = new THREE.Vector3(p.x, p.y + 0.12, p.z);
+        const hi = new THREE.Vector3(p.x, p.y + 1.62, p.z);
+        const d = segSegDist3D(A, B, lo, hi);
         if (d > radius) continue;
-        // путь должен проходить на высоте тела (не под палубой и не над головами)
-        const yPath = a.y + (b.y - a.y) * t;
-        if (yPath < p.y - 0.15 || yPath > p.y + 2.05) continue;
         cands.push({ f, d });
       }
       if (!cands.length) return 0;

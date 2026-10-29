@@ -373,6 +373,9 @@ export interface ShipVisual {
   detail?: THREE.Group;           // мелкие детали — видны только вблизи (LOD)
   oars?: THREE.Object3D[];        // вёсла гребных судов (анимация гребков)
   rudderMesh?: THREE.Mesh;        // руль на корме (поворачивается с рулём)
+  /** Ломаемые детали палубы: штурвал, шпиль, фонарь, носовая фигура —
+   *  срываются прямыми попаданиями и при затоплении (Ship.damageProp) */
+  breakables: THREE.Object3D[];
 }
 
 export interface SailRig {
@@ -588,6 +591,50 @@ export function hullProfile(t: number, P: ShipPreset) {
 }
 function smooth01(x: number) { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); }
 
+// ---------- раскладка орудий по палубам ----------
+/** Слот орудия: z — вдоль корпуса (м, локально), tier 0 = открытая
+ *  (верхнепалубная) батарея с лафетами, 1.. — закрытые орудийные деки,
+ *  чьи стволы смотрят наружу из пушечных портов. */
+export interface GunSlot { z: number; tier: number; y: number; }
+
+/** Раскладка ВСЕХ орудий борта (число всегда = gunsPerSide — отрисовка
+ *  соответствует количеству). Без gunportRows всё на палубе (шлюп/флейт);
+ *  1 ряд портов — палуба + одна закрытая батарея; 2–4 ряда — палуба +
+ *  (rows−1) деков, порт-ряды идут сверху вниз (0.62F … 0.28F). */
+export function gunLayout(P: ShipPreset): GunSlot[] {
+  const N = Math.max(0, Math.round(P.gunsPerSide));
+  if (N === 0) return [];
+  const L = P.length;
+  const rows = Math.max(0, Math.min(4, P.gunportRows ?? 0));
+  const tiers = rows === 0 ? 1 : Math.max(2, rows);
+  // распределение стволов по ярусам: поровну, остаток — верхним ярусам
+  const counts = new Array<number>(tiers).fill(0);
+  for (let i = 0; i < N; i++) counts[i % tiers]++;
+  const slots: GunSlot[] = [];
+  for (let tier = 0; tier < tiers; tier++) {
+    const n = counts[tier];
+    if (n <= 0) continue;
+    if (tier === 0) {
+      // открытая палуба: от кормы (не задевая надстройки) до полубака
+      const z0 = -L * 0.22, z1 = P.castleH ? L * 0.18 : L * 0.24;
+      for (let i = 0; i < n; i++) {
+        const z = THREE.MathUtils.lerp(z0, z1, n === 1 ? 0.5 : i / (n - 1));
+        slots.push({ z, tier: 0, y: 0 }); // y палубы считает потребитель
+      }
+    } else {
+      // закрытая батарея: высота порт-ряда (tier−1), чуть уже по длине —
+      // корпус в оконечностях сужается, порты там не ставили
+      const y = P.freeboard * (rows === 1 ? 0.5 : 0.62 - (tier - 1) * (0.34 / (rows - 1)));
+      const z0 = -L * 0.24, z1 = L * 0.18;
+      for (let i = 0; i < n; i++) {
+        const z = THREE.MathUtils.lerp(z0, z1, n === 1 ? 0.5 : i / (n - 1));
+        slots.push({ z, tier, y });
+      }
+    }
+  }
+  return slots;
+}
+
 function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
   const S = 26, R = 8;
   const L = P.length;
@@ -660,13 +707,16 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
     }
   }
   // транцевая корма: веер от центра к ПОСЛЕДОВАТЕЛЬНЫМ граничным вершинам
-  // (правые снизу вверх, затем левые сверху вниз) — без дыр между хордами
+  // (правые снизу вверх, затем левые сверху вниз) — без дыр между хордами.
+  // ВАЖНО: контур ЗАМКНУТ последним треугольником (левая-верх → правая-верх):
+  // раньше верхний клин транца не закрывался — сквозь корму «просвечивало»
   const st0 = stations[0];
   const centerIdx = pos.length / 3;
   pushPoint(0, -st0.draft * 0.55, st0.z - 0.01);
   const boundary: number[] = [];
   for (let r = R; r >= 0; r--) boundary.push(r * 2);      // правые: верх → низ
   for (let r = 0; r <= R; r++) boundary.push(r * 2 + 1);  // левые: низ → верх
+  boundary.push(boundary[0]);                             // замыкание контура
   for (let i = 0; i < boundary.length - 1; i++) {
     idx.push(centerIdx, boundary[i], boundary[i + 1]); // нормаль наружу (−Z)
   }
@@ -1012,23 +1062,20 @@ function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
   const cWoodD = new THREE.Color(0x4a3420);
   let any = false;
 
-  // пушечные порты: тёмные проёмы в ряд по борту + золочёный вельс над батареей.
-  // Ряды распределены по высоте борта равномерно (1–4 ряда: фрегат .. 4-дечный линкор)
+  // пушечные порты: РОВНО под стволами закрытых батарей (gunLayout) —
+  // число портов соответствует числу орудий деку + золочёный вельс над батареей
   const rows = P.gunportRows || 0;
   if (rows > 0) {
-    const nGuns = Math.max(4, Math.min(P.gunsPerSide + 1, 16));
-    const rowY = (r: number) => P.freeboard * (rows === 1
-      ? 0.5
-      : 0.62 - r * (0.34 / (rows - 1)));
-    for (let r = 0; r < rows; r++) {
-      const y = rowY(r);
+    const layout = gunLayout(P).filter(s => s.tier > 0);
+    const decks = [...new Set(layout.map(s => s.tier))];
+    for (const tier of decks) {
+      const y = layout.find(s => s.tier === tier)!.y;
       for (const side of [-1, 1]) {
-        for (let i = 0; i < nGuns; i++) {
-          const z = THREE.MathUtils.lerp(-L * 0.3, L * 0.3, nGuns === 1 ? 0.5 : i / (nGuns - 1));
-          const tt = (z + L / 2) / L;
+        for (const slot of layout.filter(s => s.tier === tier)) {
+          const tt = clamp2((slot.z + L / 2) / L, 0, 1);
           if (tt < 0.12 || tt > 0.86) continue;
           const hw = hullHalfWidthAt(P, tt, y);
-          bakeInto(t, new THREE.BoxGeometry(0.06, Math.min(0.5, P.freeboard * 0.09), 0.62), cPort, side * (hw + 0.02), y, z);
+          bakeInto(t, new THREE.BoxGeometry(0.06, Math.min(0.5, P.freeboard * 0.09), 0.62), cPort, side * (hw + 0.02), y, slot.z);
         }
         const S2 = 26;
         for (let s = 0; s < S2; s++) {
@@ -1150,16 +1197,16 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
       new THREE.Vector3(ax, ay + 0.75, z));                                        // фал
   }
 
-  // --- крышки пушечных портов (открытые, на верхних петлях) ---
-  const gunZ0 = -L * 0.22, gunZ1 = P.castleH ? L * 0.18 : L * 0.24;
-  for (let i = 0; i < P.gunsPerSide; i++) {
-    const z = THREE.MathUtils.lerp(gunZ0, gunZ1, P.gunsPerSide === 1 ? 0.5 : i / (P.gunsPerSide - 1));
-    const tt = (z + L / 2) / L;
+  // --- крышки пушечных портов (открытые, на верхних петлях) — только
+  //     под ПАЛУБНЫМИ орудиями (закрытые деки стреляют из своих портов) ---
+  for (const slot of gunLayout(P)) {
+    if (slot.tier !== 0) continue;
+    const tt = clamp2((slot.z + L / 2) / L, 0, 1);
     const y = hullProfile(tt, P).bulwark - 0.72;
     for (const side of [-1, 1]) {
       const hw = hullHalfWidthAt(P, tt, y);
       bakeInto(t, new THREE.BoxGeometry(0.06, 0.55, 0.6), cWoodD,
-        side * (hw + 0.14), y + 0.3, z, new THREE.Euler(0, 0, side * 0.55));
+        side * (hw + 0.14), y + 0.3, slot.z, new THREE.Euler(0, 0, side * 0.55));
     }
   }
 
@@ -1550,14 +1597,15 @@ export function buildShip(P: ShipPreset): ShipVisual {
   flag.position.set(0.05, mainMast.h - P.draft * 0.3 - 0.4, 0);
   masts[mainMastIdx].add(flag);
 
-  // пушки по бортам
+  // пушки по бортам — по раскладке gunLayout: ИТОГО ровно gunsPerSide
+  // на борт. Верхняя палуба — полные лафеты, закрытые деки — стволы,
+  // высунутые из портов (лафет внутри корпуса не виден)
   const gunsPort: THREE.Object3D[] = [];
   const gunsStarboard: THREE.Object3D[] = [];
-  const gunZ0 = -L * 0.22, gunZ1 = P.castleH ? L * 0.18 : L * 0.24;
-  for (let i = 0; i < P.gunsPerSide; i++) {
-    const z = THREE.MathUtils.lerp(gunZ0, gunZ1, P.gunsPerSide === 1 ? 0.5 : i / (P.gunsPerSide - 1));
-    const p = hullProfile((z + L / 2) / L, P);
-    const deckY = p.bulwark - 0.72;
+  for (const slot of gunLayout(P)) {
+    const tt = clamp2((slot.z + L / 2) / L, 0, 1);
+    const isDeck = slot.tier === 0;
+    const prof = hullProfile(tt, P);
     for (const side of [-1, 1]) {
       const gun = new THREE.Group();
       const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 8),
@@ -1566,9 +1614,14 @@ export function buildShip(P: ShipPreset): ShipVisual {
       barrel.position.set(side * 0.62, 0.08, 0);
       gun.add(barrel);
       const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.55), darkMat);
-      carriage.position.set(0, 0.0, 0);
       gun.add(carriage);
-      gun.position.set(side * (p.w * 0.9 - 0.15), deckY, z);
+      if (isDeck) {
+        gun.position.set(side * (prof.w * 0.9 - 0.15), prof.bulwark - 0.72, slot.z);
+      } else {
+        // закрытая батарея: дуло высунуто из порта за борт
+        const hw = hullHalfWidthAt(P, tt, slot.y);
+        gun.position.set(side * (hw - 0.85), slot.y, slot.z);
+      }
       gun.userData.side = side;
       group.add(gun);
       // локальный −X = штирборт (правый борт), локальный +X = порт (левый)
@@ -1683,10 +1736,13 @@ export function buildShip(P: ShipPreset): ShipVisual {
 
   const rig: SailRig = { sails };
 
+  // ломаемые детали палубы: срываются попаданиями / давлением воды
+  const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figure, rudderMesh];
+
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
-    masts, lantern, wheel, detail,
+    masts, lantern, wheel, detail, breakables,
     oars: oarsVis, rudderMesh,
   };
 }

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Ship } from '../ship/Ship';
 import { sailAddHole, SailInfo } from '../ship/buildShip';
+import { spawnDebrisAt } from '../fx/debris';
 import type { Particles } from '../fx/particles';
 import { clamp } from '../core/rng';
 import { GameEvents } from '../core/events';
@@ -220,6 +221,16 @@ export class CombatSystem {
 
   private gunIndex(side: -1 | 1, i: number): number {
     return side === 1 ? i : this.player.visual.gunsPort.length + i;
+  }
+
+  /** Перестроить таймеры перезарядки под другое число орудий
+   *  (смена корабля игроком: у нового корпуса своё число пушек) */
+  resizeReloads(n: number) {
+    const old = this.reloads;
+    this.reloads = new Array(Math.max(0, n)).fill(0);
+    for (let i = 0; i < Math.min(this.reloads.length, old.length); i++) {
+      this.reloads[i] = old[i];
+    }
   }
 
   private reloadDuration(): number {
@@ -685,7 +696,15 @@ export class CombatSystem {
         const dmg = pr.type === 'ball' ? 11 + Math.random() * 8
           : pr.type === 'fire' ? 6 : 1.6;
         const broke = t.damageMast(hit.mast, dmg);
-        if (pr.type === 'grape') t.applyDamage({ kind: 'grape', amount: info.dmgCrew * amount });
+        if (pr.type === 'grape') {
+          // картечь по рангоуту: вахтенные у мачты гибнут только при
+          // прямом простреле (узкая трасса), не «по факту залпа»
+          this.pathB.copy(hit.lp).addScaledVector(hit.dir, t.preset.length * 1.25);
+          const killed = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 1, 0.55,
+            t.position, t.quaternion);
+          const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
+          t.applyDamage({ kind: 'grape', amount: Math.max(0.4, killed * per * 0.8) });
+        }
         if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: hit.mast, pos: pr.pos.clone() });
       }
       // щепа летит вдоль мачты
@@ -699,32 +718,49 @@ export class CombatSystem {
       // --- попадание в КОРПУС: пробоина, у ватерлинии/ниже — течь ---
       // (порог 0.6 м: при качке «у самой воды» дыры также дают течь)
       const belowWL = hit.lp.y < 0.6;
-      // --- поражение ЭКИПАЖА вдоль пути снаряда через палубу ---
-      // картечь косят палубу (радиус широкий), ядро/зажигательное
-      // разрывает тех, кто на линии полёта
+      // --- поражение ЭКИПАЖА — ТОЛЬКО прямым прострелом палубы ---
+      // снаряд убивает лишь тех, сквозь кого реально летит: картечь —
+      // рой узких коридоров (каждая пуля свой), ядро — узкая трасса.
+      // Залп НИЖЕ палубы (в борт/трюм) людей не косит — путь не пересекает
+      // фигуры (проверка высоты в killNearPath)
       this.pathB.copy(hit.lp).addScaledVector(hit.dir, t.preset.length * 1.25);
       let crewKilled = 0;
       if (pr.type === 'grape') {
-        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 2, 2.4,
+        // радиус — ПОЛУТОЛЩИНА капсулы фигуры + запас на разлёт пуль
+        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'grape', 1, 0.65,
           t.position, t.quaternion);
       } else if (pr.type === 'ball' || pr.type === 'fire') {
-        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'ball', 2, 1.35,
+        crewKilled = t.crew3d.killNearPath(hit.lp, this.pathB, 'ball', 2, 0.5,
           t.position, t.quaternion);
       }
+      // потери команды = УБИТЫМ фигурам (1 фигура ≈ per живых людей)
+      const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
       if (pr.type === 'grape') {
-        // потери команды согласованы с убитыми фигурами
-        const per = Math.max(1, t.preset.maxCrew / Math.max(1, t.crew3d.total));
-        t.applyDamage({ kind: 'grape', amount: Math.max(0.6, crewKilled * per * 0.9) });
+        t.applyDamage({ kind: 'grape', amount: Math.max(0.5, crewKilled * per * 0.85) });
       } else {
         t.applyDamage({
           kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
           amount: info.dmgHull * amount,
           hitPoint: pr.pos.clone(),
         });
+        if (crewKilled > 0) {
+          t.crew = Math.max(0, t.crew - crewKilled * per * 0.9);
+        }
       }
       if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
       // декаль пробоины (ядро и зажигательное)
       if (pr.type === 'ball' || pr.type === 'fire') t.addHole(hit.lp, belowWL);
+      // тяжёлые попадания срывают палубные детали (штурвал/шпиль/фонарь)
+      // и выламывают доски обшивки — обломок всплывает рядом с бортом
+      if (pr.type === 'ball' || pr.type === 'fire') {
+        t.damageProp(hit.lp, info.dmgHull * amount);
+        if (Math.random() < 0.45) {
+          const dirW = this._vN.copy(hit.dir).applyQuaternion(t.quaternion);
+          spawnDebrisAt(pr.pos.x, pr.pos.y, pr.pos.z, 'plank', new THREE.Vector3(
+            dirW.x * 2.2 + (Math.random() - 0.5), 1.2 + Math.random() * 1.6,
+            dirW.z * 2.2 + (Math.random() - 0.5)), 55 + Math.random() * 30);
+        }
+      }
       // щепки и дым
       for (let i = 0; i < 6; i++) {
         P.spawn(pr.pos.x, pr.pos.y, pr.pos.z,

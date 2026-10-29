@@ -210,11 +210,10 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     <option value={2}>Богатая</option>
                   </select>
                 </Row>
-                <Row label="Высота волн" hint="предел волнения при штормовом ветре">
-                  <Slider value={g.waveHeight} min={0.6} max={1.3} step={0.05}
-                    onChange={v => update(d => { d.graphics.waveHeight = v; })}
-                    format={v => v <= 0.75 ? 'Спокойное' : v <= 1.05 ? 'Обычное' : v <= 1.2 ? 'Свежее' : 'Шторм'} />
-                </Row>
+                <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
+                  🌊 Высота волн зависит только от силы ветра (вкладка «Погода»):
+                  штиль — рябь, штормовой ветер — высокие гребни.
+                </div>
               </div>
               <div className="py-1">
                 <Row label="Тени" hint="тени кораблей и деревьев">
@@ -336,6 +335,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 <Row label="♾ Не расходовать боеприпасы" hint="чит-режим для испытаний">
                   <input type="checkbox" checked={s.gameplay.infiniteAmmo}
                     onChange={e => update(d => { d.gameplay.infiniteAmmo = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="🎲 Недостача боезапаса 1–10%" hint="реализм: при выходе в море каждого типа снарядов не хватает наугад — применяется на новом корабле/возрождении">
+                  <input type="checkbox" checked={s.gameplay.ammoJitter}
+                    onChange={e => update(d => { d.gameplay.ammoJitter = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
               </div>

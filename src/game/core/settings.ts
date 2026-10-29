@@ -34,7 +34,6 @@ export interface GraphicsSettings {
   shadowRes: number;      // 512 | 1024 | 2048
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
   foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
-  waveHeight: number;     // множитель высоты волн 0.6..1.3 (погода всё равно меняет море)
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
 }
 
@@ -64,6 +63,7 @@ export interface GameplaySettings {
   startingAmmo: { ball: number; chain: number; grape: number; fire: number }; // стартовый боезапас
   hullDurability: number;   // множитель прочности всех кораблей (0.5..3)
   infiniteAmmo: boolean;    // не расходовать боеприпасы (чит)
+  ammoJitter: boolean;      // случайная недостача боезапаса при выходе в море (1–10% на тип)
 }
 
 export interface GameSettings {
@@ -76,10 +76,10 @@ export interface GameSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, waveHeight: 1.15, detailLod: 150 },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, waveHeight: 1.15, detailLod: 210 },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, waveHeight: 1.15, detailLod: 270 },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, waveHeight: 1.15, detailLod: 340 },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, detailLod: 150 },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, detailLod: 210 },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, detailLod: 270 },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, detailLod: 340 },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -103,10 +103,12 @@ export const DEFAULT_SETTINGS: GameSettings = {
   audio: { volume: 0.55 },
   gameplay: {
     provingDistance: 90,
-    // полноценный пиратский боекомплект: залпы не кончатся в первом же бою
-    startingAmmo: { ball: 90, chain: 30, grape: 60, fire: 20 },
+    // реалистичный боевой комплект шлюпа: ~40 ядер на ствол не возили —
+    // запас считали на 2–3 жарких боя, остальное — трофеи
+    startingAmmo: { ball: 40, chain: 12, grape: 20, fire: 8 },
     hullDurability: 1,
     infiniteAmmo: false,
+    ammoJitter: true,
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
@@ -122,10 +124,13 @@ export const WEATHER_PRESETS: Record<WeatherMode, { windSpeed: number; label: st
 
 const STORAGE_KEY = 'seawolves.settings.v1';
 // Версия схемы сохранения: при изменении — что делать со старыми данными.
-// v2: новые стартовые боезапасы (было 40/12/20/8 — залпы кончались в
-// первом же бою; стало 90/30/60/20). Старые сохранённые значения
-// сбрасываются на новые дефолты, остальные разделы не трогаются.
-const SCHEMA_VER = 2;
+// v3: (1) высота волн больше НЕ настраивается — только сила ветра
+//     (настройка waveHeight удалена); (2) стартовый боезапас приведён к
+//     реалистичному 40/12/20/8 (было 90/30/60/20 — песочница);
+//     (3) новая настройка «случайная недостача боезапаса 1–10%».
+// Старые сохранённые боезапасы сбрасываются на новые дефолты,
+// остальные разделы не трогаются.
+const SCHEMA_VER = 3;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -149,7 +154,6 @@ export function loadSettings(): GameSettings {
       if (typeof g.shadowRes === 'number') s.graphics.shadowRes = [512, 1024, 2048].includes(g.shadowRes) ? g.shadowRes : 1024;
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
-      if (typeof g.waveHeight === 'number') s.graphics.waveHeight = Math.min(1.3, Math.max(0.6, g.waveHeight));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
     }
     if (isObj(data.controls)) {
@@ -183,6 +187,7 @@ export function loadSettings(): GameSettings {
       }
       if (typeof data.gameplay.hullDurability === 'number') s.gameplay.hullDurability = Math.min(3, Math.max(0.5, data.gameplay.hullDurability));
       if (typeof data.gameplay.infiniteAmmo === 'boolean') s.gameplay.infiniteAmmo = data.gameplay.infiniteAmmo;
+      if (typeof data.gameplay.ammoJitter === 'boolean') s.gameplay.ammoJitter = data.gameplay.ammoJitter;
     }
     if (isObj(data.weather)) {
       const w = data.weather;
@@ -197,7 +202,7 @@ export function loadSettings(): GameSettings {
       if (typeof f.smokeDensity === 'number') s.fx.smokeDensity = Math.min(2, Math.max(0, f.smokeDensity));
       if (typeof f.smokeTransparency === 'number') s.fx.smokeTransparency = Math.min(0.95, Math.max(0, f.smokeTransparency));
     }
-    // МИГРАЦИЯ v2: сохранение сделано до обновления боекомплекта —
+    // МИГРАЦИЯ v3: сохранение сделано до «реалистичного» боекомплекта —
     // сбрасываем только стартовый боезапас на новые дефолты
     if (data.v !== SCHEMA_VER) {
       s.gameplay.startingAmmo = { ...DEFAULT_SETTINGS.gameplay.startingAmmo };
@@ -220,6 +225,22 @@ export function saveSettings(s: GameSettings) {
 /** Применить пресет к графике (копируем поля пресета) */
 export function applyPreset(g: GraphicsSettings, preset: QualityPreset): GraphicsSettings {
   return { preset, ...QUALITY_PRESETS[preset] };
+}
+
+/** Реалистичная «недостача» боезапаса при выходе в море: каждый тип
+ *  снарядов уменьшается на случайные 1–10% (порох отсырел, часть
+ *  расстреляна, погрузили не всё). Возвращает НОВЫЙ объект. */
+export function rollStartingAmmo(a: GameplaySettings['startingAmmo']):
+  { ammo: GameplaySettings['startingAmmo']; cut: Record<string, number> } {
+  const ammo = { ...a };
+  const cut: Record<string, number> = {};
+  for (const k of ['ball', 'chain', 'grape', 'fire'] as const) {
+    const pct = 0.01 + Math.random() * 0.09; // 1..10%
+    const before = ammo[k];
+    ammo[k] = Math.max(0, Math.round(before * (1 - pct)));
+    cut[k] = +(pct * 100).toFixed(1);
+  }
+  return { ammo, cut };
 }
 
 /** Русские подписи действий для экрана управления */
