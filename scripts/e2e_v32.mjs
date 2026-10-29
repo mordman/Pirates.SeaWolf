@@ -163,24 +163,46 @@ check('F: мишень тонет (фаза 1)', f1.sinking === 1, JSON.stringif
 await sleep(20000);
 // если страница перезагрузилась — стартуем тонущую мишень заново (один раз)
 const fAlive = await evj('sinkAlive', `(() => { const g = window.__game; return JSON.stringify({ pg: !!g.pgTarget, proving: g.proving, started: g.started }); })()`);
-log('F: состояние через 15с:', JSON.stringify(fAlive));
+log('F: состояние:', JSON.stringify(fAlive));
 if (!fAlive.pg) {
   log('F: сессия сброшена — повторный запуск затопления');
   await evj('sinkRestart', `(() => { try { const g = window.__game; if (!g.started) g.start(); g.startProving('fluyt'); g.pgTarget.ship.applyDamage({ kind: 'ball', amount: 99999 }); return 1; } catch (e) { return String(e); } })()`);
   await sleep(6000);
 }
-const f2 = await evj('sinkPhase2', `(() => { const g = window.__game; if (!g.pgTarget) return JSON.stringify({ err: 'pgTarget null' }); const t = g.pgTarget.ship; const s = window.__sea; return JSON.stringify({ phase: t.sinkPhase, debris: s.debrisAlive, mastsDown: t.mastFall.filter(f => f >= 0).length, roll: +t.euler.z.toFixed(2), sinking: t.sinking ? 1 : 0 }); })()`);
+// headless-рендер даёт ~15-25 FPS → симуляция идёт в 2-3 раза медленнее:
+// поллим фазу 2 до 60с реального времени
+let f2 = null;
+for (let i = 0; i < 20; i++) {
+  await sleep(3000);
+  f2 = await evj('sinkPhase2', `(() => { const g = window.__game; if (!g.pgTarget) return JSON.stringify({ err: 'pgTarget null' }); const t = g.pgTarget.ship; const s = window.__sea; return JSON.stringify({ phase: t.sinkPhase, debris: s.debrisAlive, mastsDown: t.mastFall.filter(f => f >= 0).length, roll: +t.euler.z.toFixed(2), sinking: t.sinking ? 1 : 0, t: +t.sinkT.toFixed(1) }); })()`);
+  if (f2.err) { log('F: poll err:', String(f2.err).slice(0, 80)); f2 = null; continue; }
+  if (f2.phase >= 2) break;
+}
 log('F: фаза 2:', JSON.stringify(f2));
-if (f2.err) check('F: фаза 2 достигнута', false, String(f2.err).slice(0, 100));
+if (!f2 || f2.err) check('F: фаза 2 достигнута', false, 'poll failed');
 else {
-  check('F: фаза 2 достигнута (палуба уходит под воду)', f2.sinking === 1 && (f2.phase >= 2 || f2.mastsDown > 0), `phase=${f2.phase} masts=${f2.mastsDown}`);
+  check('F: фаза 2 достигнута (палуба уходит под воду)', f2.sinking === 1 && (f2.phase >= 2 || f2.mastsDown > 0), `phase=${f2.phase} masts=${f2.mastsDown} t=${f2.t}`);
   check('F: обломки всплыли (доски/бочки/реи)', f2.debris > 0, `alive=${f2.debris}`);
   check('F: крен на борт (заваливается)', Math.abs(f2.roll) > 0.25 || f2.phase >= 3, `roll=${f2.roll}`);
 }
-await sleep(18000);
-const f3 = await evj('sinkEnd', `(() => { const g = window.__game; if (!g.pgTarget) return JSON.stringify({ err: 'pgTarget null' }); const t = g.pgTarget.ship; return JSON.stringify({ sunk: t.sunk ? 1 : 0, visible: t.visual.group.visible ? 1 : 0, y: +t.position.y.toFixed(1), phase: t.sinkPhase }); })()`);
-if (f3.err) check('F: корабль ушёл на дно', false, String(f3.err).slice(0, 100));
-else check('F: корабль ушёл на дно (sunk)', f3.sunk === 1, JSON.stringify(f3));
+// финал: детерминированный fast-forward до sunk (не зависит от FPS
+// тестовой среды — 30 игровых секунд максимум)
+const f3 = await evj('sinkEnd', `(() => {
+  const g = window.__game; if (!g.pgTarget) return JSON.stringify({ err: 'pgTarget null' });
+  const t = g.pgTarget.ship;
+  const phases = [];
+  let time = g.time;
+  for (let i = 0; i < 1800 && !t.sunk; i++) {
+    time += 1 / 60; t.fixedStep(1 / 60, time);
+    if (i % 60 === 0) phases.push(t.sinkPhase);
+  }
+  return JSON.stringify({ sunk: t.sunk ? 1 : 0, visible: t.visual.group.visible ? 1 : 0, y: +t.position.y.toFixed(1), phase: t.sinkPhase, phases, sinkT: +t.sinkT.toFixed(1) });
+})()`);
+if (!f3 || f3.err) check('F: корабль ушёл на дно', false, String(f3 && f3.err || 'poll failed'));
+else {
+  check('F: корабль ушёл на дно (sunk)', f3.sunk === 1, JSON.stringify(f3));
+  check('F: полный цикл фаз 1→2→3', f3.phases && f3.phases.includes(1) && f3.phases.includes(2) && f3.phases.includes(3), JSON.stringify(f3.phases));
+}
 
 // ============ G: ответный огонь мишени ============
 log('=== G: ответный огонь ===');
@@ -193,20 +215,26 @@ const g0 = await evj('retaliation', `(() => {
     const c = g.combat; c.aim.active = true; c.aim.side = 1; c.aim.azimuth = 0; c.aim.elevation = 0.05;
     for (let i = 0; i < c.reloads.length; i++) c.reloads[i] = 0;
     c.ammo = 'ball'; c.fireBroadside();
+    // не ждём 6с внутреннего таймера — мишень готовит ответ сразу
+    g.pgTarget.gunTimer = 0.5;
     return JSON.stringify({ target: g.pgTarget.ship.preset.id, returnFire: g.pgTarget.returnFire });
   } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
 })()`);
 check('G: provoke выполнен', !g0.err, JSON.stringify(g0));
-// залп длится доли секунды — поллим окно каждые 0.6с до 18с;
-// запасной признак — урон игроку от ответного залпа
-const hp0 = await evj('hp0', `JSON.stringify({ hp: window.__game.player.hullHP })`);
-let aiShotSeen = false;
-for (let i = 0; i < 30; i++) {
-  await sleep(600);
-  const gs = await evj('aiShotPoll', `(() => { const g = window.__game; if (!g || !g.pgTarget) return JSON.stringify({ err: 'reset' }); let shot = false; for (const pr of g.combat.projectiles) { if (pr.active && pr.shooter === g.pgTarget.ship) { shot = true; break; } } return JSON.stringify({ shot, hp: g.player.hullHP }); })()`);
-  if (gs.shot || (typeof gs.hp === 'number' && gs.hp < hp0.hp - 0.5)) { aiShotSeen = true; break; }
-}
-check('G: мишень ответила залпом', aiShotSeen, `seen=${aiShotSeen}`);
+// детерминированно: fast-forward ИИ и снарядов до ответного залпа
+// (не зависит от FPS тестовой среды)
+const gShot = await evj('aiShot', `(() => {
+  const g = window.__game; if (!g.pgTarget) return JSON.stringify({ err: 'pgTarget null' });
+  let shot = false;
+  for (let i = 0; i < 900; i++) {
+    g.time += 1 / 60;
+    g.pgTarget.update(1 / 60, g.time, g.player, g.combat, () => {});
+    g.combat.update(1 / 60, g.time, (x, z) => g.waterHeight(x, z), null, null);
+    if (g.combat.projectiles.some(p => p.active && p.shooter === g.pgTarget.ship)) { shot = true; break; }
+  }
+  return JSON.stringify({ shot });
+})()`);
+check('G: мишень ответила залпом', gShot.shot === true, JSON.stringify(gShot));
 shot('t32_final');
 
 const errsZ = pageErrors();
