@@ -48,10 +48,15 @@ log('=== A: начальный боезапас ===');
 await freshGame('A1');
 const ammoDef = jparse(ev(`(() => { const g = window.__game; return JSON.stringify({ammo: g.player.ammo, sets: g.settings.gameplay.startingAmmo}); })()`));
 log('A: дефолт:', JSON.stringify(ammoDef));
-check('A: дефолтный боезапас игрока 90/30/60/20',
-  ammoDef.ammo && ammoDef.ammo.ball === 90 && ammoDef.ammo.chain === 30 && ammoDef.ammo.grape === 60 && ammoDef.ammo.fire === 20,
+// с Task 15 дефолты 40/12/20/8 + случайная недостача 1–10% (ammoJitter)
+check('A: дефолтный боезапас игрока ~40/12/20/8 (с джиттером ≤10%)',
+  ammoDef.ammo && ammoDef.ammo.ball >= 36 && ammoDef.ammo.ball <= 40
+    && ammoDef.ammo.chain >= 10 && ammoDef.ammo.chain <= 12
+    && ammoDef.ammo.grape >= 18 && ammoDef.ammo.grape <= 20
+    && ammoDef.ammo.fire >= 7 && ammoDef.ammo.fire <= 8,
   JSON.stringify(ammoDef.ammo));
-check('A: настройки содержат те же значения', ammoDef.sets && ammoDef.sets.ball === 90, JSON.stringify(ammoDef.sets));
+check('A: настройки содержат 40/12/20/8', ammoDef.sets && ammoDef.sets.ball === 40
+  && ammoDef.sets.chain === 12 && ammoDef.sets.grape === 20 && ammoDef.sets.fire === 8, JSON.stringify(ammoDef.sets));
 const errsA = pageErrors();
 check('A: нет ошибок страницы', errsA === '', errsA.slice(0, 200));
 
@@ -64,11 +69,11 @@ run('reload'); await sleep(8000);
 clickBtn('Поднять флаг');
 await sleep(2500);
 const mig = jparse(ev(`(() => { const g = window.__game; return JSON.stringify({sets: g.settings.gameplay.startingAmmo, windDir: g.settings.weather.windDir, raw: localStorage.getItem('seawolves.settings.v1')}); })()`));
-log('A: миграция:', JSON.stringify({ sets: mig.sets, windDir: mig.windDir, hasV: typeof mig.raw === 'string' && mig.raw.includes('"v":2') }));
-check('A: старое сохранение мигрировано на 90/30/60/20',
-  mig.sets && mig.sets.ball === 90 && mig.sets.grape === 60, JSON.stringify(mig.sets));
+log('A: миграция:', JSON.stringify({ sets: mig.sets, windDir: mig.windDir, hasV: typeof mig.raw === 'string' && mig.raw.includes('"v":3') }));
+check('A: старое сохранение мигрировано на 40/12/20/8',
+  mig.sets && mig.sets.ball === 40 && mig.sets.grape === 20, JSON.stringify(mig.sets));
 check('A: прочие настройки сохранены (windDir 123)', mig.windDir === 123, `windDir=${mig.windDir}`);
-check('A: localStorage перезаписан с v:2', typeof mig.raw === 'string' && mig.raw.includes('"v":2'));
+check('A: localStorage перезаписан с v:3', typeof mig.raw === 'string' && mig.raw.includes('"v":3'));
 const errsA2 = pageErrors();
 check('A2: нет ошибок страницы', errsA2 === '', errsA2.slice(0, 200));
 
