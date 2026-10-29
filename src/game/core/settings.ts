@@ -103,7 +103,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   audio: { volume: 0.55 },
   gameplay: {
     provingDistance: 90,
-    startingAmmo: { ball: 40, chain: 12, grape: 20, fire: 8 },
+    // полноценный пиратский боекомплект: залпы не кончатся в первом же бою
+    startingAmmo: { ball: 90, chain: 30, grape: 60, fire: 20 },
     hullDurability: 1,
     infiniteAmmo: false,
   },
@@ -120,6 +121,11 @@ export const WEATHER_PRESETS: Record<WeatherMode, { windSpeed: number; label: st
 };
 
 const STORAGE_KEY = 'seawolves.settings.v1';
+// Версия схемы сохранения: при изменении — что делать со старыми данными.
+// v2: новые стартовые боезапасы (было 40/12/20/8 — залпы кончались в
+// первом же бою; стало 90/30/60/20). Старые сохранённые значения
+// сбрасываются на новые дефолты, остальные разделы не трогаются.
+const SCHEMA_VER = 2;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -191,6 +197,12 @@ export function loadSettings(): GameSettings {
       if (typeof f.smokeDensity === 'number') s.fx.smokeDensity = Math.min(2, Math.max(0, f.smokeDensity));
       if (typeof f.smokeTransparency === 'number') s.fx.smokeTransparency = Math.min(0.95, Math.max(0, f.smokeTransparency));
     }
+    // МИГРАЦИЯ v2: сохранение сделано до обновления боекомплекта —
+    // сбрасываем только стартовый боезапас на новые дефолты
+    if (data.v !== SCHEMA_VER) {
+      s.gameplay.startingAmmo = { ...DEFAULT_SETTINGS.gameplay.startingAmmo };
+      saveSettings(s); // сразу перезаписываем с новой версией схемы
+    }
     return s;
   } catch {
     return structuredClone(DEFAULT_SETTINGS);
@@ -199,7 +211,7 @@ export function loadSettings(): GameSettings {
 
 export function saveSettings(s: GameSettings) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, v: SCHEMA_VER }));
   } catch {
     /* приватный режим — просто не сохраняем */
   }

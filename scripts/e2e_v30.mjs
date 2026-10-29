@@ -71,7 +71,7 @@ check('A: нет ошибок страницы', errsA === '', errsA.slice(0, 20
 log('=== B: боезапас/прочность ===');
 run('open http://localhost:3000/');
 await sleep(1500);
-ev(`localStorage.setItem('seawolves.settings.v1', JSON.stringify({gameplay:{startingAmmo:{ball:7,chain:3,grape:5,fire:2}, hullDurability:2, infiniteAmmo:false}}))`);
+ev(`localStorage.setItem('seawolves.settings.v1', JSON.stringify({v: 2, gameplay:{startingAmmo:{ball:7,chain:3,grape:5,fire:2}, hullDurability:2, infiniteAmmo:false}}))`);
 run('reload'); await sleep(8000);
 clickBtn('Поднять флаг');
 await sleep(2500);

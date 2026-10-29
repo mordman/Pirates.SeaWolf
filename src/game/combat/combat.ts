@@ -366,7 +366,8 @@ export class CombatSystem {
     to.normalize();
     const flight = dist / 165;
     const aim = target.position.clone().addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
-    const n = 3; // бортовой залп из 3 ядер
+    // размер залпа — от числа орудий борта (шлюп 5 → 3 ядра, бриг 14 → 5)
+    const n = Math.max(2, Math.min(5, Math.round(shooter.preset.gunsPerSide * 0.55)));
     for (let i = 0; i < n; i++) {
       const pr = this.projectiles.find(q => !q.active);
       if (!pr) break;

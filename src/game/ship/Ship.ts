@@ -59,6 +59,8 @@ export class Ship {
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
   private _e2 = new THREE.Euler();   // разбор кватерниона для посадки на волну
+  private _st = [-0.46, -0.23, 0, 0.23, 0.46]; // доли полудлины станций корпуса
+  private _hs = new Float64Array(5);  // высоты воды на станциях
 
   // --- управление ---
   sailTarget = 0;          // 0..3
@@ -99,7 +101,7 @@ export class Ship {
   grounded = false;
   gold = 0;
   cargo: Record<string, number> = {};
-  ammo: Record<string, number> = { ball: 40, chain: 12, grape: 20, fire: 8 };
+  ammo: Record<string, number> = { ball: 90, chain: 30, grape: 60, fire: 20 };
   planks = 12;
   pumpAction = false;
 
@@ -375,11 +377,11 @@ export class Ship {
     this.angular.copy(ab.applyQuaternion(this.quaternion));
 
     // --- ограничение крена/дифферента (мягкие стопы) ---
-    // дифферент свободнее прежнего: 0.21 рад (12°) — нос всходит
-    // на крутой фронт волны, а не прорезает его;
+    // дифферент 0.30 рад (17°) — нос всходит на передний склон
+    // штормового гребня, а не прорезает его;
     // крен 0.36 рад (20°) — подветренный борт остаётся над водой
     const roll = e.z, pitch = e.x;
-    const rollLim = 0.36, pitchLim = 0.21;
+    const rollLim = 0.36, pitchLim = 0.30;
     if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
     if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
     // затопление кренит корабль в сторону пробоин
@@ -412,36 +414,66 @@ export class Ship {
       this.quaternion.w + this.dq.w * qs
     ).normalize();
 
-    // === КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ ===
-    // Пружины зондов дают равновесие на СРЕДНЕМ уровне воды — корпус
-    // «сидел» ВНУТРИ гребня. Здесь корпус прямо следует ПОВЕРХНОСТИ:
-    // вертикаль — к уровню 4 точек (нос/корма/оба борта), дифферент —
-    // к плоскости волны вдоль корпуса. Крен ОСТАЁТСЯ динамическим
-    // (ветер, течь, поворот) — зондов-пружин на крен достаточно.
-    // Скорости λy 3.2/с и λp 2.4/с: успевают за зыбью (период 4–8 с),
-    // короткую рябь усредняют; поправка ограничена 8 м/с и 0.5 рад/с.
+    // === КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ (плывёт ПОВЕРХНОСТЬЮ, без парения) ===
+    // Итог трёх итераций:
+    //  1) среднее 4 точек — гребень проходил СКВОЗЬ корпус (жалоба);
+    //  2) жёсткая огибающая (max по станциям) — корабль «повис над водой»,
+    //     киль ни разу не доходил до нормальной осадки (VLM: «парит»);
+    //  3) текущий баланс:
+    //   - ВЕРТИКАЛЬ — средний уровень, ВЗВЕШЕННЫЙ по ширине корпуса
+    //     (широкий мидель важнее узких оконечностей — как настоящая плавучесть);
+    //   - МЯГКАЯ огибающая: если гребень под какой-то станцией зарывает киль
+    //     глубже (0.80+0.35)·осадки — корпус мягко поднимается, но суммарный
+    //     подъём ограничен 0.45·осадки → парение исключено, а зарывание
+    //     носа в передний склон гребня остаётся в пределах «реза воды»;
+    //   - ДИФФЕРЕНТ — МНК-наклон поверхности (вес по ширине): нос задирается
+    //     заранее, на переднем склоне приближающегося гребня.
+    // Крен остаётся живым (ветер/течь/поворот) — пружины бортов.
     if (!this.sinking && !this.sunk && !this.grounded) {
-      const Lh = this.preset.length * 0.38, Bh = this.preset.beam * 0.36;
-      const hB = waterHeightAt(this.position.x + f.x * Lh, this.position.z + f.z * Lh, time);
-      const hS = waterHeightAt(this.position.x - f.x * Lh, this.position.z - f.z * Lh, time);
-      const hR = waterHeightAt(this.position.x + right.x * Bh, this.position.z + right.z * Bh, time);
-      const hP = waterHeightAt(this.position.x - right.x * Bh, this.position.z - right.z * Bh, time);
-      const surfY = (hB + hS + hR + hP) * 0.25;
-      // равновесие пружин: осадка зондов 0.28·D → центр на 0.10·D над водой;
+      const L = this.preset.length, D = this.preset.draft;
+      const FR = this._st;
+      const sinP = Math.sin(e.x);
+      const halfB = Math.max(0.5, this.preset.beam * 0.5);
+      // проход 1: высоты воды и веса станций (ширина корпуса в точке)
+      let wSum = 0, whSum = 0, whzSum = 0, wz2Sum = 0;
+      for (let i = 0; i < FR.length; i++) {
+        const zz = FR[i] * L;
+        const h = waterHeightAt(this.position.x + f.x * zz, this.position.z + f.z * zz, time);
+        // вес 0.25..1: оконечности узкие — их гребни корпус не поднимают всем весом
+        const w = Math.max(0.25, this.halfWidthAt(zz) / halfB);
+        this._hs[i] = h;
+        wSum += w;
+        whSum += w * h;
+        whzSum += w * h * zz;
+        wz2Sum += w * zz * zz;
+      }
+      // спокойная посадка: центр на 0.10·D над средневзвешенным уровнем;
       // затопленный трюм садит корпус ниже (до 30 см)
       const sink = clamp(this.water / Math.max(1, this.holdCap), 0, 1) * 0.30;
-      const targetY = surfY + this.preset.draft * 0.10 - sink;
-      const kY = 1 - Math.exp(-dt * 4.2);
-      const corrY = clamp((targetY - this.position.y) * kY, -11 * dt, 11 * dt);
+      const meanY = whSum / wSum + D * 0.10 - sink;
+      // проход 2: мягкая огибающая против зарывания оконечностей.
+      // Заглубление киля станции при среднем уровне: dig = h + z·sinP + 0.9D − meanY;
+      // нормальная осадка даёт dig ≈ 0.8D — лишнее свыше 0.35D выталкиваем,
+      // но подъём capped 0.45D (выше — парение, см. VLM-проверку v31)
+      let lift = 0;
+      for (let i = 0; i < FR.length; i++) {
+        const zz = FR[i] * L;
+        const dig = this._hs[i] + zz * sinP + 0.9 * D - meanY;
+        const l = dig - 1.15 * D;
+        if (l > lift) lift = l;
+      }
+      const targetY = meanY + clamp(lift, 0, 0.45 * D);
+      const kY = 1 - Math.exp(-dt * 5.5);
+      const corrY = clamp((targetY - this.position.y) * kY, -14 * dt, 14 * dt);
       this.position.y += corrY;
       // согласованное затухание вертикальной скорости — пружины
       // не раскачивают корпус вокруг кинематической посадки
       this.velocity.y *= Math.exp(-dt * 3.0);
-      // дифферент: нос/корма по склону волны (вода выше у носа → нос вверх)
-      const wPitch = -Math.atan2(hB - hS, 2 * Lh);
+      // дифферент: МНК-наклон поверхности вдоль ДП (вода выше у носа → нос вверх)
+      const wPitch = -Math.atan2(whzSum, wz2Sum);
       const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
-      const kP = 1 - Math.exp(-dt * 3.2);
-      e2.x += clamp((wPitch - e2.x) * kP, -0.65 * dt, 0.65 * dt);
+      const kP = 1 - Math.exp(-dt * 5.0);
+      e2.x += clamp((wPitch - e2.x) * kP, -1.2 * dt, 1.2 * dt);
       this.quaternion.setFromEuler(e2);
     }
 
@@ -681,7 +713,7 @@ export class Ship {
   }
 
   // ---------- визуал ----------
-  updateVisual(time: number, dt: number, particles: Particles) {
+  updateVisual(time: number, dt: number, particles: Particles, negShift?: THREE.Vector3) {
     const v = this.visual;
     v.group.position.copy(this.position);
     v.group.quaternion.copy(this.quaternion);
@@ -767,13 +799,14 @@ export class Ship {
       }
     }
 
-    // пенный воротник по ватерлинии
+    // пенный воротник по ватерлинии: высоту волн добавляет ВЕРШИННЫЙ
+    // шейдер (тот же Gerstner, что у океана) — кольцо лежит на гребнях;
+    // на CPU остаётся только горизонтальная привязка к кораблю
     if (!this.sunk) {
-      const wy = waterHeightAt(this.position.x, this.position.z, time);
-      this.foam.mesh.position.set(this.position.x, wy + 0.28, this.position.z);
+      this.foam.mesh.position.set(this.position.x, 0.30, this.position.z);
       this.foam.mesh.rotation.y = this.heading;
       const spdFrac = clamp(this.speed() / this.preset.maxSpeed, 0, 1);
-      this.foam.update(time, spdFrac, this.euler.z);
+      this.foam.update(time, spdFrac, this.euler.z, negShift);
     } else {
       this.foam.mesh.visible = false;
     }

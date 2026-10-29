@@ -1046,6 +1046,11 @@ export class Game {
     return this.settings.weather;
   }
 
+  /** Отладочный хук: высота водной поверхности в мировой точке (E2E) */
+  waterHeight(x: number, z: number) {
+    return waterHeightAt(x, z, this.time);
+  }
+
   // ---------- кадр ----------
   private frame = () => {
     this.rafId = requestAnimationFrame(this.frame);
@@ -1086,11 +1091,12 @@ export class Game {
       furlMax = Math.max(furlMax, sv.furl);
     }
     // минимальный надводный борт: высота палубы у планширя минус вода
-    // по носу/корме/миделю И ПО КРАЯМ ПАЛУБЫ (крен топит борт) —
+    // по ВСЕЙ длине корпуса, включая оконечности (±0.46 полудлины —
+    // форштевень/корму) И ПО КРАЯМ ПАЛУБЫ (крен топит борт) —
     // учитываем крен/дифферент кватернионом
     let freeboard = Infinity;
     const deckLocal = this.player.preset.freeboard * 0.82 - 1.0;
-    for (const lz of [-this.player.preset.length * 0.38, 0, this.player.preset.length * 0.38]) {
+    for (const lz of [-this.player.preset.length * 0.46, 0, this.player.preset.length * 0.46]) {
       for (const lx of [0, -this.player.halfWidthAt(lz), this.player.halfWidthAt(lz)]) {
         this._v3.set(lx, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
         freeboard = Math.min(freeboard, this._v3.y - waterHeightAt(this._v3.x, this._v3.z, this.time));
@@ -1175,9 +1181,9 @@ export class Game {
     this.negShift.copy(this.shift).negate();
 
     // визуал кораблей
-    this.player.updateVisual(this.time, dt, this.particles);
-    for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles);
-    if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles);
+    this.player.updateVisual(this.time, dt, this.particles, this.negShift);
+    for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles, this.negShift);
+    if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles, this.negShift);
 
     // мелкие детали кораблей — только когда камера рядом (LOD)
     const camPos = this.rig.camera.position;

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gerstnerGLSL, SEA } from './waves';
 
 // ============================================================
 // Кильватерный след + пена по ватерлинии (без «линии разреза»):
@@ -140,7 +141,11 @@ export class WakeTrail {
   }
 }
 
-/** Пенный воротник вокруг корпуса: контур ватерлинии из набора точек */
+/** Пенный воротник вокруг корпуса: контур ватерлинии из набора точек.
+ *  Кольцо ЛЕЖИТ НА ВОЛНАХ: в вершинном шейдере — тот же Gerstner, что
+ *  и у океана (высота в мировой точке), поэтому на гребне воротник
+ *  поднимается вместе с водой, а в ложбине опускается — без «белой
+ *  полосы», повисшей в воздухе у борта (жалоба VLM-проверки). */
 export class WaterlineFoam {
   mesh: THREE.Mesh;
   private mat: THREE.ShaderMaterial;
@@ -180,15 +185,28 @@ export class WaterlineFoam {
         uTime: { value: 0 },
         uSpeed: { value: 0 },      // 0..1 доля скорости
         uRoll: { value: 0 },
+        uAmp: { value: SEA.amplitude },   // погода (высота волн)
+        uShift: { value: new THREE.Vector3() }, // floating origin: сцена -> мир
       },
       vertexShader: /* glsl */`
         attribute float aInner;
         varying float vInner;
         varying vec2 vXY;
+        ${gerstnerGLSL()}
+        // uTime и uAmp объявлены внутри gerstnerGLSL()
+        uniform vec3 uShift;
         void main() {
           vInner = aInner;
           vXY = position.xz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          // мировая точка кольца: сцена + uShift (как у океана)
+          vec3 sceneP = (modelMatrix * vec4(position, 1.0)).xyz;
+          vec2 worldXZ = sceneP.xz + uShift.xz;
+          vec3 disp; vec3 nrm;
+          gerstner(worldXZ, uAmp, uAmp, disp, nrm);
+          // кольцо следует высоте волны (без горизонтального сдвига —
+          // контур привязан к корпусу)
+          vec3 p = sceneP + vec3(0.0, disp.y, 0.0);
+          gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
         }
       `,
       fragmentShader: /* glsl */`
@@ -237,9 +255,11 @@ export class WaterlineFoam {
     this.mesh.renderOrder = 3;
   }
 
-  update(time: number, speedFrac: number, roll: number) {
+  update(time: number, speedFrac: number, roll: number, shift?: THREE.Vector3) {
     this.mat.uniforms.uTime.value = time;
     this.mat.uniforms.uSpeed.value = speedFrac;
     this.mat.uniforms.uRoll.value = roll;
+    this.mat.uniforms.uAmp.value = SEA.amplitude;
+    if (shift) (this.mat.uniforms.uShift.value as THREE.Vector3).copy(shift);
   }
 }

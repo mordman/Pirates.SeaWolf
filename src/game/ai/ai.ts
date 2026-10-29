@@ -138,8 +138,8 @@ export class AIShip {
       // бортовой залп, когда игрок на траверзе
       this.gunTimer -= dt;
       const dotSide = Math.abs(side.dot(s.forward));
-      if (this.gunTimer < 0 && dist < 320 && dotSide > 0.75) {
-        this.gunTimer = 11 + Math.random() * 5;
+      if (this.gunTimer < 0 && dist < 320 && dotSide > 0.7) {
+        this.gunTimer = 9 + Math.random() * 5;
         combat.aiBallVolley(s, player);
       }
     } else {
@@ -173,15 +173,26 @@ export class AIShip {
     return hl > hr ? -1 : 1;
   }
 
-  /** Игрок выстрелил рядом/попал — реакция */
+  /** Игрок выстрелил рядом/попал — реакция: вооружённый корабль ОТСТРЕЛИВАЕТСЯ,
+   *  безоружный спасается бегством; военный конвоир рядом вступает в бой */
   onPlayerAggression(nearShips: AIShip[]) {
     if (this.state === 'anchored') return; // мишень полигона не убегает
-    if (this.state === 'route' && !this.ship.surrendered) {
-      this.state = 'flee';
+    if (this.state === 'surrender' || this.state === 'derelict') return;
+    const s = this.ship;
+    if (!s.surrendered) {
+      const armed = s.preset.gunsPerSide > 0 && s.crew > s.preset.maxCrew * 0.25;
+      if (armed) {
+        // есть пушки и экипаж — даём отпор (залп по готовности, но быстро)
+        const wasFlee = this.state === 'flee';
+        this.state = 'combat';
+        if (wasFlee || this.gunTimer > 4) this.gunTimer = 1.5 + Math.random() * 2;
+      } else if (this.state === 'route' || this.state === 'flee') {
+        this.state = 'flee';
+      }
     }
     // военный конвоир реагирует на нападение поблизости
     for (const ai of nearShips) {
-      if (ai.state === 'patrol' && ai.ship.position.distanceTo(this.ship.position) < 500) {
+      if (ai.state === 'patrol' && ai.ship.position.distanceTo(s.position) < 500) {
         ai.state = 'combat';
       }
     }
