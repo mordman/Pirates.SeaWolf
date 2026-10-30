@@ -620,6 +620,66 @@ export class Game {
     });
   }
 
+  // ===== Карта окружения для PBR-металла =====
+  // Панорама 64×32 из цветов неба (sky/horizon/fog) + пятно солнца
+  // по sunDir → PMREM → scene.environment: орудия, фурнитура и золото
+  // отражают небо, а не выглядят чёрными «картонками». Дереву (metalness
+  // 0.05) отражения почти не видны — только лёгкий подсвет.
+  private pmrem: THREE.PMREMGenerator | null = null;
+  private envTex: THREE.DataTexture | null = null;
+  private envRT: THREE.WebGLRenderTarget | null = null;
+  private envNextUpd = 2;
+  private updateEnvMap(dayF: number, env: { sky: THREE.Color; horizon: THREE.Color; fog: THREE.Color; sun: THREE.Color }) {
+    if (this.envNextUpd > 0) { this.envNextUpd -= 1; return; }
+    this.envNextUpd = 150; // ~2.5 с при 60 к/с
+    const W = 64, H = 32;
+    if (!this.envTex) {
+      this.envTex = new THREE.DataTexture(new Uint8Array(W * H * 4), W, H,
+        THREE.RGBAFormat, THREE.UnsignedByteType);
+      this.envTex.mapping = THREE.EquirectangularReflectionMapping;
+      this.envTex.minFilter = THREE.LinearFilter;
+      this.envTex.magFilter = THREE.LinearFilter;
+      this.envTex.generateMipmaps = false;
+      this.pmrem = new THREE.PMREMGenerator(this.renderer);
+    }
+    const d = this.envTex.image.data as Uint8Array;
+    const sd = this.sky.sunDir;
+    const sunI = Math.max(0.15, dayF);
+    const water = env.fog.clone().multiplyScalar(0.4);
+    const c = new THREE.Color();
+    for (let y = 0; y < H; y++) {
+      const v = (y + 0.5) / H;                 // v=0 низ (вода), v=1 зенит
+      const dy = Math.sin((v - 0.5) * Math.PI);
+      const rh = Math.sqrt(Math.max(0, 1 - dy * dy));
+      for (let x = 0; x < W; x++) {
+        const u = (x + 0.5) / W;
+        const phi = (u - 0.5) * Math.PI * 2;
+        const dx = Math.cos(phi) * rh, dz = Math.sin(phi) * rh;
+        // небо над горизонтом, тёмная вода под ним
+        if (dy >= 0) c.copy(env.horizon).lerp(env.sky, Math.pow(Math.min(1, dy * 1.6), 0.6));
+        else c.copy(env.horizon).lerp(water, Math.min(1, -dy * 2.2));
+        // солнце: яркое ядро + мягкий ореол
+        const s = Math.max(0, dx * sd.x + dy * sd.y + dz * sd.z);
+        const core = Math.pow(s, 380) * 255 * sunI;
+        const halo = Math.pow(s, 14) * 60 * sunI;
+        const k = Math.min(1, core + halo);
+        if (k > 0) c.lerp(env.sun, k);
+        const o = (y * W + x) * 4;
+        d[o] = Math.min(255, Math.round(c.r * 255));
+        d[o + 1] = Math.min(255, Math.round(c.g * 255));
+        d[o + 2] = Math.min(255, Math.round(c.b * 255));
+        d[o + 3] = 255;
+      }
+    }
+    this.envTex.needsUpdate = true;
+    this.envRT?.dispose();
+    this.envRT = this.pmrem!.fromEquirectangular(this.envTex);
+    this.scene.environment = this.envRT.texture;
+    // сдержанно: стилистика — не «хромированный» флот
+    (this.scene as THREE.Scene & { environmentIntensity: number }).environmentIntensity = 0.75;
+  }
+
+
   // ===== Полигон: чистое море + корабль-мишень на якоре =====
   /** Мишень на траверзе ПРАВОГО борта игрока (курс игрока — восток, right = +Z) */
   private pgTargetPos(): THREE.Vector3 {
@@ -1117,9 +1177,14 @@ export class Game {
       }
     }
     if (hasOars) {
+      // Alt+W/S — гребля вперёд/назад; ПРОСТОЕ S при убранных парусах —
+      // тоже задний ход (как у парусных судов, «спиной»): вёсла
+      // вываливаются и гребут назад — не нужно угадывать про Alt
+      const plainBack = !altHeld && inp.isDown(c.sailsDown)
+        && p.sailTarget === 0 && !p.anchored;
       p.rowing = altHeld
         ? (inp.isDown(c.sailsUp) ? 1 : 0) - (inp.isDown(c.sailsDown) ? 1 : 0)
-        : 0;
+        : (plainBack ? -1 : 0);
       if (p.rowing !== 0) {
         if (!p.oarsOut) { p.oarsOut = true; this.pushMessage('Вёсла на воду!'); }
         p.oarsIdleT = 0;
@@ -1133,7 +1198,7 @@ export class Game {
       p.rowing = 0;
     }
     // задний ход: обычные суда — «спиной к ветру» (S при убранных
-    // парусах); гребные — грести назад (Alt+S)
+    // парусах); гребные — S (или Alt+S) гребут назад вёслами
     p.reverseThrust = !hasOars && !altHeld && inp.isDown(c.sailsDown) && p.sailTarget === 0 && !p.anchored;
     if (p.reverseThrust) this.lastSOffset += dt; else this.lastSOffset = 0;
 
@@ -1677,7 +1742,7 @@ export class Game {
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
     this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
 
-    // небо и свет (+ погода: облачность, приглушение, вспышки молний)
+  // небо и свет (+ погода: облачность, приглушение, вспышки молний)
     playerScene.copy(this.player.position).add(this.shift);
     const wv = this.weatherVis;
     this.sky.flash = this.weather.flash;
@@ -1688,6 +1753,9 @@ export class Game {
     // молния вспыхивает и в блеске воды
     env.sun.multiplyScalar(1 + this.weather.flash * 5);
     this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, fogD);
+    // карта окружения для PBR-металла (орудия/фурнитура): панорама
+    // неба из тех же цветов, что и вода — обновляем нечасто
+    this.updateEnvMap(dayF, env);
     (this.scene.fog as THREE.FogExp2).color.copy(env.fog);
     (this.scene.fog as THREE.FogExp2).density = fogD;
     // дым относит реальным ветром
@@ -1835,6 +1903,9 @@ export class Game {
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('resize', this.onResize);
     this.input.dispose();
+    this.envRT?.dispose();
+    this.envTex?.dispose();
+    this.pmrem?.dispose();
     this.renderer.dispose();
     this.bus.clear();
   }

@@ -49,6 +49,9 @@ interface Projectile {
   spin: number;          // вращение книппеля вокруг оси полёта, рад
   /** мачты, уже разорванные этим книппелем, по кораблям (сквозной полёт) */
   pierced: Map<Ship, number[]>;
+  /** корпус, который ЭТО ядро пробило насквозь — снаряд внутри,
+   *  ждём выхода (без повторных попаданий), затем полёт продолжается */
+  hullPierce: Ship | null;
 }
 
 export interface AimPublicState {
@@ -112,7 +115,7 @@ export class CombatSystem {
     this.grapeMesh.frustumCulled = false;
     this.grapeMesh.count = 0;
     for (let i = 0; i < 128; i++) {
-      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0, spin: 0, pierced: new Map() });
+      this.projectiles.push({ active: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), type: 'ball', shooter: player, age: 0, trailT: 0, spin: 0, pierced: new Map(), hullPierce: null });
     }
     // пул мешей книппелей (строятся лениво в addTo, чтобы шарить геометрию)
     for (let i = 0; i < 24; i++) {
@@ -312,6 +315,7 @@ export class CombatSystem {
       pr.trailT = 0;
       pr.spin = Math.random() * Math.PI * 2;
       pr.pierced = new Map();
+      pr.hullPierce = null;
       // картечь — ШИРОКИЙ веер пуль (горизонтальный), остальное — точно
       const spreadH = this.ammo === 'grape' ? 0.075 : 0.008;
       const spreadV = this.ammo === 'grape' ? 0.05 : 0.006;
@@ -359,6 +363,7 @@ export class CombatSystem {
       pr.age = 0;
       pr.trailT = 0;
       pr.pierced = new Map();
+      pr.hullPierce = null;
       const dir = dirTo.clone();
       dir.x += (Math.random() - 0.5) * 0.12;
       dir.z += (Math.random() - 0.5) * 0.12;
@@ -391,6 +396,7 @@ export class CombatSystem {
       pr.age = 0;
       pr.trailT = 0;
       pr.pierced = new Map();
+      pr.hullPierce = null;
       const dir = aim.clone();
       dir.x += (Math.random() - 0.5) * 0.05;
       dir.y += 0.04 + (Math.random() - 0.5) * 0.03;
@@ -472,12 +478,27 @@ export class CombatSystem {
       // корпус), корпус — сегментом от prev до pos (быстрое ядро
       // не «проскакивает"); КНИППЕЛЬ пробивает рангоут насквозь:
       // круг его разлёта ШИРЕ корпуса (3.2 м > полуширины) — летя
-      // вдоль борта, сносит ВСЕ мачты коридором
+      // вдоль борта, сносит ВСЕ мачты коридором;
+      // ЯДРО ПРОБИВАЕТ изрешечённый корпус НАСКВОЗЬ (см. canPunch)
       let hit: HitInfo | null = null;
       let piercedMast = false;
+      let punchedThrough = false;
       const targets: Ship[] = pr.shooter === this.player ? this.others : [this.player];
       for (const t of targets) {
-        if (t.sunk) continue;
+        if (t.sunk) {
+          // пробиваемый корпус утонул/исчез — снимаем флаг
+          if (pr.hullPierce === t) pr.hullPierce = null;
+          continue;
+        }
+        // снаряд ВНУТРИ пробитого корпуса: повторных попаданий нет,
+        // ждём выхода — там выходная пробоина и продолжение полёта
+        if (pr.hullPierce === t) {
+          if (!this.insideHull(pr, t)) {
+            this.exitHull(pr, t, info);
+            pr.hullPierce = null;
+          }
+          continue;
+        }
         // паруса: картечь дырявит полотно россвелью пробоин, книппель
         // рвёт широкими прорехами, ядро пробивает круглую дыру
         this.sailPass(pr, t);
@@ -491,11 +512,18 @@ export class CombatSystem {
             for (const mi of this.chainMasts) masts.push(mi);
             pr.pierced.set(t, masts);
             piercedMast = true;
+          } else if (hit.mast < 0 && pr.type === 'ball' && this.canPunch(pr, t)) {
+            // изрешечённый борт не держит ядро: ПРОБИТИЕ НАСКВОЗЬ —
+            // входная пробоина/урон уже нанесены, ядро теряет часть
+            // энергии и выходит с другой стороны (exitHull)
+            pr.hullPierce = t;
+            pr.vel.multiplyScalar(0.5);
+            punchedThrough = true;
           }
           break;
         }
       }
-      if (hit && !piercedMast) { pr.active = false; continue; }
+      if (hit && !piercedMast && !punchedThrough) { pr.active = false; continue; }
       if (!hit && pr.age > 12) { pr.active = false; continue; }
 
       // визуал
@@ -678,6 +706,53 @@ export class CombatSystem {
       return { mast: -1, lp: c.clone(), dir: this.hitDir.clone() };
     }
     return null;
+  }
+
+  /** Ядро ПРОБИВАЕТ корпус НАСКВОЗЬ, когда борт уже изрешечён
+   *  (прочность < 45%): разрушенная обшивка не держит удар — ядро
+   *  проходит насквозь и вылетает с другой стороны. Свежий борт
+   *  ядро принимает в себя (застревает). Картечь/книппель/
+   *  зажигательное не пробивают никогда. */
+  private canPunch(pr: Projectile, t: Ship): boolean {
+    if (pr.hullPierce) return false;
+    return t.hullHP / t.hullMax < 0.45;
+  }
+
+  /** Снаряд ещё внутри корпуса t? (тот же бокс, что в hitTest) */
+  private insideHull(pr: Projectile, t: Ship): boolean {
+    this.invQ.copy(t.quaternion).invert();
+    this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
+    return Math.abs(this.lcur.z) < t.preset.length * 0.52
+      && Math.abs(this.lcur.x) < t.preset.beam * 0.62
+      && this.lcur.y > -t.preset.draft * 0.8
+      && this.lcur.y < t.preset.freeboard + t.preset.length * 0.35;
+  }
+
+  /** Снаряд ВЫЛЕТЕЛ из пробитого корпуса: выходная пробоина с другой
+   *  стороны, щепы и доска летят из отверстия по ходу ядра, лёгкий
+   *  доп. урон — ядро продолжает полёт (до воды/земли/таймаута) */
+  private exitHull(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType]) {
+    this.invQ.copy(t.quaternion).invert();
+    this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
+    const lp = this.lcur.clone();
+    t.addHole(lp, lp.y < 0.6);
+    t.applyDamage({ kind: 'ball', amount: info.dmgHull * 0.35, hitPoint: pr.pos.clone() });
+    const P = this.particles;
+    for (let i = 0; i < 7; i++) {
+      P.spawn(pr.pos.x, pr.pos.y, pr.pos.z,
+        pr.vel.x * 0.03 + (Math.random() - 0.5) * 5, 1.5 + Math.random() * 3.5,
+        pr.vel.z * 0.03 + (Math.random() - 0.5) * 5,
+        0.8, 0.3, 0, 0.6, 10);
+    }
+    P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.7, 0, 0.95, 1.2);
+    const vl = pr.vel.length();
+    if (vl > 1) {
+      const dx = pr.vel.x / vl, dz = pr.vel.z / vl;
+      spawnDebrisAt(pr.pos.x, pr.pos.y, pr.pos.z, 'plank', new THREE.Vector3(
+        dx * 3.2 + (Math.random() - 0.5), 1.6 + Math.random() * 1.8,
+        dz * 3.2 + (Math.random() - 0.5)), 60 + Math.random() * 25);
+    }
+    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
   }
 
   private applyHit(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType], hit: HitInfo) {

@@ -142,7 +142,9 @@ check('C: ошибок страницы нет', !/error/i.test(errsC), errsC.sl
 console.log('=== D. Мир ===');
 await freshPage();
 ev(`(() => { const g = window.__game; g.player.sailTarget = 3; return 'sail'; })()`);
-await sleep(9000);
+// 22 с: PBR-шейдеры на SwiftShader компилируются медленно — первые
+// секунды после загрузки RAF стоит, паруса не успевают поставиться
+await sleep(22000);
 const sD = sea() || {};
 const others = num('window.__game.combat.others.length');
 check('D: корабль идёт под парусами (speed > 1 уз)', (sD.speed || 0) > 1, 'speed=' + (sD.speed || 0).toFixed(1));

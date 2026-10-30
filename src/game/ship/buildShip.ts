@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pbr';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -689,6 +690,7 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
   const L = P.length;
   const pos: number[] = [];
   const col: number[] = [];
+  const uvs: number[] = [];
   const cHull = new THREE.Color(P.colors.hull);
   const cBelow = new THREE.Color(0x33402a); // подводная часть — обрастание
   const cBoot = new THREE.Color(0xd8d2c2); // пояс ватерлинии
@@ -714,6 +716,9 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
 
   const pushPoint = (x: number, y: number, z: number) => {
     pos.push(x, y, z);
+    // UV для PBR: u — вдоль корабля (планки по длине), v — по высоте;
+    // тайл = ширина корпуса — как у палубы, масштаб рельефа совпадает
+    uvs.push(z / P.beam, y / P.beam);
     // раскраска по высоте: подводная часть -> ватерлинионный пояс ->
     // (полосы пресета) -> вельс -> основной цвет борта
     let stripeC: THREE.Color | null = null;
@@ -781,6 +786,7 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
 
@@ -902,11 +908,13 @@ function makeDeckTexture(baseColor: number, seed: number): THREE.Texture {
 /** Планширь: планка, закрывающая верхнюю кромку фальшборта */
 function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
   const S = 26, L = P.length;
-  const pos: number[] = [], col: number[] = [], idx: number[] = [];
+  const pos: number[] = [], col: number[] = [], idx: number[] = [], uvs: number[] = [];
   const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.25);
   const cRail2 = new THREE.Color(P.colors.trim);
   const push = (px: number, py: number, z: number, c: THREE.Color) => {
     pos.push(px, py, z); col.push(c.r, c.g, c.b);
+    // UV как у корпуса: планки по длине (u вдоль корабля)
+    uvs.push(z / P.beam, py / P.beam);
   };
   for (let s = 0; s <= S; s++) {
     const t = s / S;
@@ -929,13 +937,18 @@ function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
 }
 
+/** Мишень для слияния реквизита в один меш (uv — диагональная
+ *  коробочная развёртка: рельеф мелким деталям без растяжений) */
+interface BakedTarget { pos: number[]; col: number[]; uv: number[] }
+
 /** Запечь геометрию в общие массивы (для слияния реквизита в один меш) */
-function bakeInto(target: { pos: number[]; col: number[] }, geo: THREE.BufferGeometry,
+function bakeInto(target: BakedTarget, geo: THREE.BufferGeometry,
   color: THREE.Color, x: number, y: number, z: number, euler?: THREE.Euler) {
   const g = geo.index ? geo.toNonIndexed() : geo;
   const p = g.attributes.position as THREE.BufferAttribute;
@@ -945,6 +958,8 @@ function bakeInto(target: { pos: number[]; col: number[] }, geo: THREE.BufferGeo
     if (euler) v.applyEuler(euler);
     target.pos.push(v.x + x, v.y + y, v.z + z);
     target.col.push(color.r, color.g, color.b);
+    // тайл ~1.5 м — нормали металла/дерева без пикселизации
+    target.uv.push((v.x + x + v.z + z) * 0.33, (v.y + y + v.z + z) * 0.33);
   }
 }
 
@@ -952,7 +967,7 @@ function bakeInto(target: { pos: number[]; col: number[] }, geo: THREE.BufferGeo
  *  ядра, сундук, ведро — всё сливается в ОДИН меш с vertex colors */
 function buildDeckProps(P: ShipPreset): THREE.BufferGeometry {
   const L = P.length;
-  const t: { pos: number[]; col: number[] } = { pos: [], col: [] };
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
   const deckYAt = (tt: number) => hullProfile(tt, P).bulwark - 1.0;
   const cWood = new THREE.Color(0x7a5c38);
   const cWoodD = new THREE.Color(0x4a3420);
@@ -1056,10 +1071,11 @@ function hullHalfWidthAt(P: ShipPreset, t: number, y: number): number {
 }
 
 /** Выпечь массивы в геометрию с vertex colors */
-function bakedGeo(t: { pos: number[]; col: number[] }): THREE.BufferGeometry {
+function bakedGeo(t: BakedTarget): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(t.pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(t.col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(t.uv, 2));
   g.computeVertexNormals();
   return g;
 }
@@ -1067,7 +1083,7 @@ function bakedGeo(t: { pos: number[]; col: number[] }): THREE.BufferGeometry {
 /** Надстройки-«замки» когга: массивые кормовый и носовой — ганзейский силуэт */
 function buildCastles(P: ShipPreset): THREE.BufferGeometry {
   const L = P.length;
-  const t = { pos: [] as number[], col: [] as number[] };
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
   const cWall = new THREE.Color(P.colors.trim).multiplyScalar(1.15);
   const cWoodD = new THREE.Color(0x4a3420);
   const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.35);
@@ -1104,7 +1120,7 @@ function buildCastles(P: ShipPreset): THREE.BufferGeometry {
  *  переборка пинасса, гальюн галеона */
 function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
   const L = P.length;
-  const t = { pos: [] as number[], col: [] as number[] };
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
   const cPort = new THREE.Color(0x17100d);
   const cGold = new THREE.Color(P.colors.trim).lerp(new THREE.Color(0xd8b45a), 0.55);
   const cGlass = new THREE.Color(0x1d2a33);
@@ -1191,7 +1207,6 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
   const deckYAt = (tt: number) => hullProfile(tt, P).bulwark - 1.0;
   const cWood = new THREE.Color(0x7a5c38);
   const cWoodD = new THREE.Color(0x4a3420);
-  const cIron = new THREE.Color(0x1e2024);
   const cRope = new THREE.Color(0xa08656);
 
   // --- ванты с выбленками (верёвочная лестница) — линиями ---
@@ -1216,7 +1231,11 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
     }
   }
 
-  const t = { pos: [] as number[], col: [] as number[] };
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
+  // металлическая выпечка (якоря): отдельный меш с PBR-металлом —
+  // отражает небо, кованая фактура картой нормалей
+  const tm: BakedTarget = { pos: [], col: [], uv: [] };
+  const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
   // --- шлюпка вверх дном у борта ---
   const boatG = new THREE.CapsuleGeometry(0.45, L * 0.14, 3, 8);
@@ -1230,18 +1249,18 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
     const z = L / 2 - L * 0.1;
     const prof = hullProfile(0.85, P);
     const ax = side * (prof.w + 0.3), ay = P.freeboard * 0.55;
-    bakeInto(t, new THREE.BoxGeometry(0.1, 1.35, 0.1), cIron, ax, ay, z);          // веретено
+    bakeInto(tm, new THREE.BoxGeometry(0.1, 1.35, 0.1), cAnchor, ax, ay, z);          // веретено
     bakeInto(t, new THREE.BoxGeometry(0.9, 0.11, 0.11), cWoodD, ax, ay + 0.6, z);  // шток
     const armG = new THREE.TorusGeometry(0.4, 0.05, 5, 10, Math.PI);
     armG.rotateZ(Math.PI); // нижняя полуокружность — рога
-    bakeInto(t, armG, cIron, ax, ay - 0.6, z);
+    bakeInto(tm, armG, cAnchor, ax, ay - 0.6, z);
     for (const s2 of [-1, 1]) { // лапы
       const fl = new THREE.ConeGeometry(0.15, 0.36, 4);
       fl.rotateZ(s2 * Math.PI / 2);
-      bakeInto(t, fl, cIron, ax + s2 * 0.42, ay - 0.55, z);
+      bakeInto(tm, fl, cAnchor, ax + s2 * 0.42, ay - 0.55, z);
     }
     const ring = new THREE.TorusGeometry(0.14, 0.03, 5, 10);
-    bakeInto(t, ring, cIron, ax, ay + 0.75, z);                                    // рым
+    bakeInto(tm, ring, cAnchor, ax, ay + 0.75, z);                                    // рым
     addLine(new THREE.Vector3(side * prof.w * 0.7, prof.bulwark, z - 1.2),
       new THREE.Vector3(ax, ay + 0.75, z));                                        // фал
   }
@@ -1296,8 +1315,22 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
   const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.9 }));
   group.add(lines);
   const mesh = new THREE.Mesh(bakedGeo(t),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.2, side: THREE.DoubleSide }));
+    new THREE.MeshStandardMaterial({
+      vertexColors: true, metalness: 0.2, side: THREE.DoubleSide,
+      normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+      normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
+    }));
   group.add(mesh);
+  // якоря — кованое железо: PBR-металл с картой окружения неба
+  if (tm.pos.length) {
+    const mm = new THREE.Mesh(bakedGeo(tm),
+      new THREE.MeshStandardMaterial({
+        vertexColors: true, metalness: 0.88,
+        normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+        normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
+      }));
+    group.add(mm);
+  }
   return group;
 }
 
@@ -1315,7 +1348,11 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
   const n = P.oars || 0;
   if (!n) return { group, oars };
   const L = P.length;
-  const shaftMat = new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.85 });
+  const shaftMat = new THREE.MeshStandardMaterial({
+    color: 0x8a6a42,
+    normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+    normalScale: new THREE.Vector2(0.45, 0.45), roughness: 1,
+  });
   const portMat = new THREE.MeshStandardMaterial({ color: 0x14100d, roughness: 0.9 });
   const oarLen = clamp2(L * 0.17, 4.5, 11);
   const z0 = -L * 0.26, z1 = L * 0.30;
@@ -1414,26 +1451,48 @@ export function buildShip(P: ShipPreset): ShipVisual {
   const { geometry: hullGeo, outline } = buildHull(P);
   // DoubleSide: даже если камера (или волна) заглянет под корпус/за корму —
   // стенки видны, «прозрачной кормы» нет (изнутри односторонние грани куллятся)
-  const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.05, side: THREE.DoubleSide });
+  // PBR: пояс обшивки + волокна — нормали, крашеное дерево — шероховатость
+  const hullMat = new THREE.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.05, side: THREE.DoubleSide,
+    normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
+    normalScale: new THREE.Vector2(0.6, 0.6), roughness: 1,
+  });
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
   group.add(hull);
 
-  // палуба: текстура досок с конопачением (DoubleSide — страховка от куллинга)
+  // палуба: текстура досок с конопачением (DoubleSide — страховка от куллинга);
+  // нормали канавок/стыков/гвоздей СОВПАДАЮТ с нарисованными досками
   const deckMat = new THREE.MeshStandardMaterial({
     map: makeDeckTexture(P.colors.deck, P.colors.deck + P.length),
-    roughness: 0.93, side: THREE.DoubleSide,
+    normalMap: woodNormalTex('deck'), roughnessMap: woodRoughTex('deck'),
+    normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
+    side: THREE.DoubleSide,
   });
   const deck = new THREE.Mesh(buildDeck(P), deckMat);
   group.add(deck);
 
   // планширь по верхней кромке фальшборта
   const capRail = new THREE.Mesh(buildCapRail(P),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.05 }));
+    new THREE.MeshStandardMaterial({
+      vertexColors: true, metalness: 0.05,
+      normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
+      normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
+    }));
   group.add(capRail);
 
-  const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e5433, roughness: 0.8 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: P.colors.trim, roughness: 0.75 });
+  // рангоут — оструганные брёвна: вертикальные волокна;
+  // тёмная окраска (darkMat) — крашеное дерево: рельеф обшивки мягче
+  const woodMat = new THREE.MeshStandardMaterial({
+    color: 0x6e5433,
+    normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+    normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
+  });
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: P.colors.trim,
+    normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
+    normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
+  });
 
   // бушприт
   const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.16, L * 0.32, 6), woodMat);
@@ -1686,8 +1745,15 @@ export function buildShip(P: ShipPreset): ShipVisual {
     const prof = hullProfile(tt, P);
     for (const side of [-1, 1]) {
       const gun = new THREE.Group();
-      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 8),
-        new THREE.MeshStandardMaterial({ color: 0x1f1f22, roughness: 0.5, metalness: 0.75 }));
+      // ствол: СВЕТЛЫЙ gunmetal — тёмное железо в metalness-пайплайне
+      // отражает ~12% неба и выглядит «картонкой»; светлее + глянец +
+      // усиленные отражения неба = видимый солнечный блик по стволу
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0x4a4e57, metalness: 0.9, envMapIntensity: 1.6,
+          normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+          normalScale: new THREE.Vector2(0.55, 0.55), roughness: 0.72,
+        }));
       barrel.rotation.z = Math.PI / 2;
       barrel.position.set(side * 0.62, 0.08, 0);
       gun.add(barrel);
@@ -1752,7 +1818,11 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // палубный реквизит: гратинг-люк, бочки, канаты, кнехты, колокол, ядра,
   // сундук, ведро — одним мешом
   const props = new THREE.Mesh(buildDeckProps(P),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }));
+    new THREE.MeshStandardMaterial({
+      vertexColors: true, side: THREE.DoubleSide,
+      normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+      normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
+    }));
   props.castShadow = true;
   group.add(props);
 
@@ -1762,13 +1832,22 @@ export function buildShip(P: ShipPreset): ShipVisual {
   capstan.position.set(0, deckYAt(0.36) + 0.35, -L * 0.16);
   group.add(capstan);
   const sternLantern = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8),
-    new THREE.MeshStandardMaterial({ color: 0xffd88a, emissive: 0xffaa33, emissiveIntensity: 1.6 }));
+    new THREE.MeshStandardMaterial({
+      color: 0xffd88a, emissive: 0xffaa33, emissiveIntensity: 1.6,
+      metalness: 0.9,
+      normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+      normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
+    }));
   sternLantern.position.set(0, P.freeboard * 1.15, -L / 2 - 0.15);
   group.add(sternLantern);
   let lantern: THREE.PointLight | undefined;
   // фигура на носу
   const figure = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.8, 6),
-    new THREE.MeshStandardMaterial({ color: 0xc9a24a, roughness: 0.4, metalness: 0.6 }));
+    new THREE.MeshStandardMaterial({
+      color: 0xc9a24a, metalness: 0.6,
+      normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+      normalScale: new THREE.Vector2(0.45, 0.45), roughness: 1,
+    }));
   figure.position.set(0, P.freeboard * 1.12, L / 2 - 0.2);
   figure.rotation.x = -0.5;
   group.add(figure);
@@ -1781,7 +1860,11 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // надстройки-«замки» (когг) — силуэт виден издалека
   if (P.castleH) {
     const castles = new THREE.Mesh(buildCastles(P),
-      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }));
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+        normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
+      }));
     castles.castShadow = true;
     group.add(castles);
   }
@@ -1789,7 +1872,11 @@ export function buildShip(P: ShipPreset): ShipVisual {
   const ornGeo = buildHullOrnaments(P);
   if (ornGeo) {
     group.add(new THREE.Mesh(ornGeo,
-      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.15 })));
+      new THREE.MeshStandardMaterial({
+        vertexColors: true, metalness: 0.15,
+        normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+        normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
+      })));
   }
   // мелкие детали — только вблизи (LOD, переключает game.ts)
   const detail = buildShipDetail(P, mastDefs);

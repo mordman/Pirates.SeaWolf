@@ -481,7 +481,7 @@ export default function Home() {
               <span><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — боеприпасы</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера (изометрия и др.)</span>
               <span><b className="text-amber-200">Колесо</b> — зум</span>
-              <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">O</b> — вывалить</span>
+              <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">S</b> — назад · <b className="text-amber-200">O</b> — вывалить</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
@@ -1106,7 +1106,7 @@ export default function Home() {
               <div><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль (инерция!)</div>
               <div><b className="text-amber-200">Alt+W / Alt+S</b> — вёсла вперёд/назад (гребные суда)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход под парусами</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / действие</div>

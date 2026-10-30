@@ -407,7 +407,11 @@ export class Ship {
     const vLocal = this.velocity.clone();
     const fwdSpd = vLocal.dot(f);
     const latSpd = vLocal.dot(right);
-    const fwdDrag = -Math.sign(fwdSpd) * (18 * fwdSpd + 55 * fwdSpd * Math.abs(fwdSpd)) * m * 0.001;
+    // КВАДРАТИЧНОЕ сопротивление: полином (18v + 55v|v|) сам нечётен по v,
+    // умножение на −sign(v) ИНВЕРТИРОВАЛО его при заднем ходе — попятное
+    // движение разгонялось сопротивлением до 20+ уз и NaN (задний ход
+    // вёслами/парусами). Теперь сопротивление всегда ПРОТИВ скорости.
+    const fwdDrag = -(18 * fwdSpd + 55 * fwdSpd * Math.abs(fwdSpd)) * m * 0.001;
     const latDrag = -latSpd * (3.2) * m * 0.1;
     this.force.x += f.x * fwdDrag + right.x * latDrag;
     this.force.z += f.z * fwdDrag + right.z * latDrag;
