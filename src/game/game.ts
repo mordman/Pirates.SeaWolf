@@ -328,6 +328,11 @@ export class Game {
       this.player.ammo = { ...nextAmmo };
       this.pushMessage(`Боезапас: ядра ${nextAmmo.ball} · книппели ${nextAmmo.chain} · картечь ${nextAmmo.grape} · зажигательные ${nextAmmo.fire}`);
     }
+    // кошелёк: смена настройки стартового золота применяется сразу
+    if (prev.gameplay.startMoney !== s.gameplay.startMoney) {
+      this.player.gold = s.gameplay.startMoney;
+      this.pushMessage(`Кошелёк капитана: ${s.gameplay.startMoney} зол.`);
+    }
     // прочность: перемасштабировать корпуса/парусы/мачты ВСЕХ кораблей
     if (prev.gameplay.hullDurability !== s.gameplay.hullDurability) {
       const k = s.gameplay.hullDurability / prev.gameplay.hullDurability;
@@ -396,7 +401,7 @@ export class Game {
     this.player.position.copy(this.spawnPos);
     this.player.position.y = 0;
     this.player.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
-    this.player.gold = 350;
+    this.player.gold = this.settings.gameplay.startMoney;
     this.player.cargo = { sugar: 0, rum: 0, timber: 0 };
     this.worldGroup.add(this.player.visual.group);
     this.worldGroup.add(this.player.foam.mesh);
@@ -1394,6 +1399,33 @@ export class Game {
     return waterHeightAt(x, z, this.time);
   }
 
+  /** Разрыв снаряда у гавани: рыбацкие шлюпки в радиусе идут ко дну —
+   *  щепа гибами, брызги, выброшенные на песок разносит вдребезги.
+   *  Возвращает число поражённых шлюпок */
+  sinkBoatsAt(x: number, z: number, r: number): number {
+    const hit = this.world.hitBoats(x, z, r);
+    for (const b of hit) {
+      const y = b.mesh.position.y + 0.28;
+      for (let k = 0; k < 8; k++) {
+        this.gibs.spawnPart(
+          new THREE.Vector3(b.x + (Math.random() - 0.5) * 1.4, y,
+            b.z + (Math.random() - 0.5) * 2.6),
+          new THREE.Vector3((Math.random() - 0.5) * 4.6, 1.5 + Math.random() * 2.8,
+            (Math.random() - 0.5) * 4.6),
+          0.06, 0.06, 0.45 + Math.random() * 0.75,
+          Math.random() < 0.5 ? 0x8a6a42 : 0x5c4128, 1.7 + Math.random() * 1.3);
+      }
+      this.particles.debris(b.x, y + 0.35, b.z, 9, 1.0);
+      if (b.floating) this.particles.splash(b.x, 0.1, b.z, 1.15);
+    }
+    if (hit.length > 0) {
+      this.pushMessage(hit.length === 1
+        ? 'Рыбацкая шлюпка пошла ко дну'
+        : `Рыбацкие шлюпки пошли ко дну: ${hit.length}`);
+    }
+    return hit.length;
+  }
+
   // ---------- пожары: перекидывание огня на соседей + дождь ----------
   /** Шаг системы пожаров (вызывается из кадра с dt кадра; детерминирован
    *  для E2E — можно дергать напрямую). Открытое пламя (I > 0.35) летит
@@ -1620,7 +1652,8 @@ export class Game {
     if (this.pgTarget) this.setDetailLod(this.pgTarget.ship, camPos, lodD);
 
     // системы (земля: рельеф островов + повал деревьев от снарядов;
-    // картечь по берегу заодно косит пиратов логова)
+    // картечь по берегу заодно косит пиратов логова; вода: разрывы
+    // у гаваней топят рыбацкие шлюпки)
     this.combat.update(dt, this.time, waterHeightAt, heightAt,
       (x, y, z, r, kind) => {
         const trees = this.world.breakTrees(x, y, z, r, this.particles, this.gibs);
@@ -1629,7 +1662,14 @@ export class Game {
             kind === 'ball' || kind === 'fire' ? 'ball' : 'grape');
           if (folk > 0) this.pushMessage(`Берег логова: погибло пиратов ${folk}`);
         }
+        this.sinkBoatsAt(x, z, r + 1.5); // выброшенные на песок шлюпки
         return trees;
+      },
+      (x, _y, z, kind) => {
+        // радиус поражения шлюпок — от типа снаряда
+        const r = kind === 'ball' || kind === 'chain' ? 3.6
+          : kind === 'fire' ? 4.2 : 2.4;
+        this.sinkBoatsAt(x, z, r);
       });
     this.particles.update(dt);
     this.gibs.update(dt);

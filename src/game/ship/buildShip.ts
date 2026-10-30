@@ -1305,8 +1305,10 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
  *  вёсла с лопастями. ВАЖНО: вал строится ВНАРУЖУ от своего борта
  *  (dir = side) — раньше оба борта строились в +X и левые вёсла
  *  торчали СКВОЗЬ корпус на правый край.
- *  УБРАНОЕ положение (stow): вал поднят вертикально у борта —
-  *  вываливаются на воду только при гребле (Ship.oarsDeployT) */
+ *  УБРАНОЕ положение (stow): вал лежит ВДОЛЬ борта валом к корме
+ *  (как на стоящей галере) — НЕ вертикально вверх («торчащие
+ *  вверх палки» из фидбека). Разворот задан кватернионом:
+ *  Ship.updateVisual slerp'ит stow → развёрнутое (валом к воде) */
 function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] } {
   const group = new THREE.Group();
   const oars: THREE.Object3D[] = [];
@@ -1339,14 +1341,15 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
       blade.position.x = dir * oarLen * 0.92;
       oar.add(blade);
       oar.position.set(side * (hw + 0.04), y, z);
-      // СТАРТ: убрано (вал вертикально у борта); на воду вывалит
-      // Ship.updateVisual при oarsDeployT → 1
-      const stow = side * 1.52;
-      oar.rotation.z = stow;
+      // УБРАНО: вал вдоль борта к корме (yaw ~80°), чуть приподнят.
+      // Раньше rotation.z = side*1.52 ставил вёсла ВЕРТИКАЛЬНО вверх
+      const stowQ = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(0, side * 1.40, side * 0.12));
+      oar.quaternion.copy(stowQ);
       oar.userData.phase = t * Math.PI * 2 + (side > 0 ? Math.PI : 0);
       oar.userData.side = side;
-      oar.userData.base = side * -0.34;
-      oar.userData.stow = stow;
+      oar.userData.base = side * -0.34; // развёрнуто: вал наружу, к воде
+      oar.userData.stowQ = stowQ;
       group.add(oar);
       oars.push(oar);
     }

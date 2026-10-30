@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RNG, fbm2, clamp, smoothstep } from '../core/rng';
+import { buildFishingVillage, type FishingVillage, type WorldBoat } from './fishing';
 
 // ============================================================
 // Мир: детерминированные острова по сиду, густая растительность
@@ -226,6 +227,7 @@ interface Circler { island: IslandDef; a: number; r: number; speed: number; h: n
 
 export class World {
   group = new THREE.Group();
+  fishing: FishingVillage[] = []; // рыбацкий декор каждой гавани
   islands: IslandDef[] = ISLANDS;
   /** все гавани архипелага — по одной на каждом острове */
   ports: PortDef[] = [];
@@ -524,6 +526,9 @@ export class World {
         population, dockEnd, dir, priceMul,
       });
       this.buildPortStructs(this.ports[idx], rng);
+      // рыбацкий декор: шлюпки у пирса, краболовки, вешала, поплавки
+      this.fishing.push(buildFishingVillage(this.ports[idx], rng, heightAt));
+      this.group.add(this.fishing[idx].group);
     });
   }
 
@@ -929,6 +934,19 @@ export class World {
     windTimeUniform.value = time;
     this.gullMat.uniforms.uTime.value = time;
 
+    // рыбацкие деревни: лодки качаются на волнах / тонут, поплавки,
+    // рыбаки покачиваются. Далёкие гавани (за туманом) — скрываем:
+    // не тратим ни апдейт, ни draw calls
+    for (const fv of this.fishing) {
+      const anchor = fv.boats[0];
+      const d = anchor
+        ? Math.hypot(anchor.x - playerPos.x, anchor.z - playerPos.z)
+        : 0;
+      const vis = d < 4000;
+      if (fv.group.visible !== vis) fv.group.visible = vis;
+      if (vis) fv.update(time, dt, waterHeight);
+    }
+
     // чайки
     for (let i = 0; i < this.gulls.length; i++) {
       const g = this.gulls[i];
@@ -1054,4 +1072,26 @@ export class World {
   }
 
   onDiscover?: (isl: IslandDef) => void;
+
+  /** Разрыв снаряда в точке (x,z): топит рыбацкие шлюпки всех гаваней
+   *  в радиусе r. Возвращает поражённые лодки (для щепы/сообщений). */
+  hitBoats(x: number, z: number, r: number): WorldBoat[] {
+    const out: WorldBoat[] = [];
+    for (const fv of this.fishing) out.push(...fv.hitBoats(x, z, r));
+    return out;
+  }
+
+  /** Сколько шлюпок на плаву (телеметрия/E2E) */
+  boatsFloating(): number {
+    let n = 0;
+    for (const fv of this.fishing) for (const b of fv.boats) if (!b.sinking) n++;
+    return n;
+  }
+
+  /** Всего шлюпок в архипелаге (телеметрия/E2E) */
+  boatsTotal(): number {
+    let n = 0;
+    for (const fv of this.fishing) n += fv.boats.length;
+    return n;
+  }
 }

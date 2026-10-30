@@ -65,6 +65,7 @@ export interface GameplaySettings {
   hullDurability: number;   // множитель прочности всех кораблей (0.5..3)
   infiniteAmmo: boolean;    // не расходовать боеприпасы (чит)
   ammoJitter: boolean;      // случайная недостача боезапаса при выходе в море (1–10% на тип)
+  startMoney: number;       // стартовое золото игрока (0..100000, применяется сразу)
 }
 
 export interface GameSettings {
@@ -111,6 +112,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     hullDurability: 1,
     infiniteAmmo: false,
     ammoJitter: true,
+    startMoney: 350,
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
@@ -190,6 +192,7 @@ export function loadSettings(): GameSettings {
       if (typeof data.gameplay.hullDurability === 'number') s.gameplay.hullDurability = Math.min(3, Math.max(0.5, data.gameplay.hullDurability));
       if (typeof data.gameplay.infiniteAmmo === 'boolean') s.gameplay.infiniteAmmo = data.gameplay.infiniteAmmo;
       if (typeof data.gameplay.ammoJitter === 'boolean') s.gameplay.ammoJitter = data.gameplay.ammoJitter;
+      if (typeof data.gameplay.startMoney === 'number') s.gameplay.startMoney = Math.min(100000, Math.max(0, Math.round(data.gameplay.startMoney)));
     }
     if (isObj(data.weather)) {
       const w = data.weather;

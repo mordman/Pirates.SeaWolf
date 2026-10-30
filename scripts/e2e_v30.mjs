@@ -113,7 +113,8 @@ await sleep(500);
 shot('v30_settings_gameplay');
 const uiAmmo = jparse(ev(`(() => { const els = [...document.querySelectorAll('input[type=number]')]; return JSON.stringify(els.map(e => Number(e.value))); })()`));
 log('B: инпуты боезапаса:', JSON.stringify(uiAmmo));
-check('B: 4 поля боезапаса в настройках', Array.isArray(uiAmmo) && uiAmmo.length === 4, JSON.stringify(uiAmmo));
+check('B: 5 числовых полей в настройках (4 боезапаса + золото)',
+  Array.isArray(uiAmmo) && uiAmmo.length === 5, JSON.stringify(uiAmmo));
 const uiDur = jparse(ev(`(() => { return document.body.textContent.includes('Прочность кораблей') ? 'yes' : 'no'; })()`));
 check('B: слайдер прочности в настройках', uiDur === 'yes', uiDur);
 const errsB = pageErrors();

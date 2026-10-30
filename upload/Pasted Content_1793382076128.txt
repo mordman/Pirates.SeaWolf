@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🏴‍☠️ Пиратский корабль — Three.js</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:Georgia,'Times New Roman',serif}
+  #ui{position:fixed;top:14px;left:16px;color:#f3e2c0;z-index:10;pointer-events:none;text-shadow:0 2px 6px #000}
+  #ui h1{margin:0;font-size:22px;letter-spacing:1px}
+  #ui p{margin:4px 0 0;font-size:12px;opacity:.85}
+  #btns{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+  #btns button{background:rgba(20,12,6,.75);color:#f0d9a8;border:1px solid #8a6a3a;border-radius:8px;
+    padding:9px 16px;font-size:14px;cursor:pointer;font-family:inherit;backdrop-filter:blur(4px)}
+  #btns button:hover{background:rgba(70,45,18,.85)}
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>🏴‍☠️ «Чёрная Жемчужина»</h1>
+  <p>ЛКМ — вращение · колесо — зум · ПКМ — панорама<br>Все текстуры процедурные (Canvas) — полностью бесплатные</p>
+</div>
+<div id="btns">
+  <button id="btnTime">🌅 Время: Закат</button>
+  <button id="btnWave">🌊 Волны: Средние</button>
+  <button id="btnCam">🎥 Авто-камера: ВЫКЛ</button>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ================= БАЗА ================= */
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+const MAXA = renderer.capabilities.getMaxAnisotropy();
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xb06a45, 70, 430);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 5000);
+camera.position.set(27, 13, 33);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 7, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 12;
+controls.maxDistance = 140;
+controls.maxPolarAngle = 1.52;
+controls.autoRotateSpeed = 0.7;
+
+/* ================= ПРОЦЕДУРНЫЕ ТЕКСТУРЫ (бесплатные, Canvas) ================= */
+function woodTexture(base, seam, plankH){
+  const S=512, c=document.createElement('canvas'); c.width=c.height=S;
+  const x=c.getContext('2d');
+  x.fillStyle=base; x.fillRect(0,0,S,S);
+  const rows=Math.round(S/plankH);
+  for(let i=0;i<rows;i++){
+    const y0=i*plankH;
+    x.fillStyle = Math.random()<0.5 ? `rgba(0,0,0,${Math.random()*0.10})` : `rgba(255,225,190,${Math.random()*0.07})`;
+    x.fillRect(0,y0,S,plankH);
+    for(let g=0; g<9; g++){                       // волокна
+      x.strokeStyle=`rgba(30,15,5,${0.04+Math.random()*0.10})`;
+      x.lineWidth=0.6+Math.random()*1.4;
+      const yy=y0+3+Math.random()*(plankH-6), amp=0.8+Math.random()*2.2, f=0.015+Math.random()*0.03, ph=Math.random()*7;
+      x.beginPath(); x.moveTo(-4,yy);
+      for(let px=0;px<=S+4;px+=12) x.lineTo(px, yy+Math.sin(px*f+ph)*amp);
+      x.stroke();
+    }
+    x.globalAlpha=0.85; x.fillStyle=seam; x.fillRect(0,y0,S,2.5); x.globalAlpha=1;   // шов
+    x.fillStyle='rgba(255,240,210,0.07)'; x.fillRect(0,y0+3,S,1.2);
+    const jx=40+Math.random()*(S-80);
+    x.globalAlpha=0.8; x.fillStyle=seam; x.fillRect(jx,y0,2.5,plankH); x.globalAlpha=1;
+    x.fillStyle='rgba(20,12,6,0.6)';                                 // гвозди
+    for(let n=0;n<5;n++){
+      const nx=20+n*(S-40)/4+(Math.random()-0.5)*6;
+      x.beginPath(); x.arc(nx,y0+plankH-6,1.7,0,7); x.fill();
+      x.beginPath(); x.arc(nx,y0+6,1.7,0,7); x.fill();
+    }
+  }
+  const img=x.getImageData(0,0,S,S), d=img.data;                     // шум
+  for(let i=0;i<d.length;i+=4){ const n=(Math.random()-0.5)*22; d[i]+=n; d[i+1]+=n; d[i+2]+=n; }
+  x.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=MAXA;
+  return t;
+}
+
+function sailTexture(){
+  const S=512, c=document.createElement('canvas'); c.width=c.height=S;
+  const x=c.getContext('2d');
+  x.fillStyle='#e6dabb'; x.fillRect(0,0,S,S);
+  for(let i=0;i<S;i+=4){                                             // плетение
+    x.strokeStyle='rgba(120,100,70,0.05)'; x.beginPath(); x.moveTo(i,0); x.lineTo(i,S); x.stroke();
+    x.beginPath(); x.moveTo(0,i); x.lineTo(S,i); x.stroke();
+  }
+  for(let y=85;y<S;y+=85){                                           // швы полотнищ
+    x.strokeStyle='rgba(90,70,45,0.35)'; x.lineWidth=2;
+    x.beginPath(); x.moveTo(0,y); x.lineTo(S,y); x.stroke();
+    x.strokeStyle='rgba(90,70,45,0.25)'; x.lineWidth=1; x.setLineDash([4,5]);
+    x.beginPath(); x.moveTo(0,y+5); x.lineTo(S,y+5); x.stroke(); x.setLineDash([]);
+  }
+  for(let i=0;i<14;i++){                                             // пятна
+    const px=Math.random()*S, py=Math.random()*S, r=30+Math.random()*60;
+    const gr=x.createRadialGradient(px,py,0,px,py,r);
+    gr.addColorStop(0,'rgba(110,85,50,0.10)'); gr.addColorStop(1,'rgba(110,85,50,0)');
+    x.fillStyle=gr; x.fillRect(px-r,py-r,2*r,2*r);
+  }
+  for(let i=0;i<3;i++){                                              // заплаты
+    const px=Math.random()*(S-70), py=Math.random()*(S-70);
+    x.fillStyle='rgba(198,182,146,0.55)'; x.fillRect(px,py,52,44);
+    x.strokeStyle='rgba(80,60,35,0.5)'; x.setLineDash([3,4]); x.strokeRect(px+3,py+3,46,38); x.setLineDash([]);
+  }
+  const img=x.getImageData(0,0,S,S), d=img.data;
+  for(let i=0;i<d.length;i+=4){ const n=(Math.random()-0.5)*16; d[i]+=n; d[i+1]+=n; d[i+2]+=n; }
+  x.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=MAXA;
+  return t;
+}
+
+function flagTexture(bg){
+  const c=document.createElement('canvas'); c.width=512; c.height=320;
+  const x=c.getContext('2d');
+  x.fillStyle=bg; x.fillRect(0,0,512,320);
+  for(let i=0;i<40;i++){ x.fillStyle=`rgba(255,255,255,${Math.random()*0.03})`; x.fillRect(Math.random()*512,0,2+Math.random()*6,320); }
+  const cx=256, cy=140;
+  x.strokeStyle='#eae5d8'; x.lineCap='round'; x.lineWidth=24;        // кости
+  x.beginPath(); x.moveTo(cx-108,cy+98); x.lineTo(cx+108,cy+146); x.stroke();
+  x.beginPath(); x.moveTo(cx-108,cy+146); x.lineTo(cx+108,cy+98); x.stroke();
+  x.fillStyle='#eae5d8';
+  for(const [bx,by] of [[-108,98],[108,146],[-108,146],[108,98]])
+    for(const [dx,dy] of [[-9,-7],[9,-7],[-8,8],[8,8]]){ x.beginPath(); x.arc(cx+bx+dx,cy+by+dy,12,0,7); x.fill(); }
+  x.beginPath(); x.ellipse(cx,cy-16,64,60,0,0,7); x.fill();          // череп
+  x.beginPath(); x.ellipse(cx-46,cy+14,20,26,0,0,7); x.fill();
+  x.beginPath(); x.ellipse(cx+46,cy+14,20,26,0,0,7); x.fill();
+  x.fillRect(cx-32,cy+18,64,44);
+  x.fillStyle=bg;
+  x.beginPath(); x.ellipse(cx-25,cy-20,16,20,0.2,0,7); x.fill();      // глаза
+  x.beginPath(); x.ellipse(cx+25,cy-20,16,20,-0.2,0,7); x.fill();
+  x.beginPath(); x.moveTo(cx,cy+4); x.lineTo(cx-8,cy+22); x.lineTo(cx+8,cy+22); x.closePath(); x.fill();
+  x.strokeStyle=bg; x.lineWidth=5;                                   // зубы
+  x.beginPath(); x.moveTo(cx-32,cy+40); x.lineTo(cx+32,cy+40); x.stroke();
+  for(let i=-2;i<=2;i++){ x.beginPath(); x.moveTo(cx+i*13,cy+40); x.lineTo(cx+i*13,cy+62); x.stroke(); }
+  x.lineWidth=3; x.strokeStyle='rgba(0,0,0,0.35)';                   // трещина
+  x.beginPath(); x.moveTo(cx+18,cy-72); x.lineTo(cx+8,cy-48); x.lineTo(cx+20,cy-38); x.stroke();
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=MAXA; return t;
+}
+
+function nameTexture(){
+  const c=document.createElement('canvas'); c.width=512; c.height=96;
+  const x=c.getContext('2d');
+  x.fillStyle='#160d06'; x.fillRect(0,0,512,96);
+  x.strokeStyle='#b8912f'; x.lineWidth=6; x.strokeRect(8,8,496,80);
+  x.fillStyle='#e3b93f'; x.font='bold 44px Georgia'; x.textAlign='center'; x.textBaseline='middle';
+  x.fillText('ЧЁРНАЯ ЖЕМЧУЖИНА', 256, 52);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+
+function foamTexture(){
+  const c=document.createElement('canvas'); c.width=256; c.height=512;
+  const x=c.getContext('2d'); x.clearRect(0,0,256,512);
+  for(let y=0;y<512;y++){ const a=0.5*Math.pow(y/512,1.4); x.fillStyle=`rgba(255,255,255,${a*0.45})`; x.fillRect(0,y,256,1); }
+  for(let i=0;i<300;i++){
+    const yy=Math.random()*512, a=0.5*Math.pow(yy/512,1.2)*Math.random();
+    x.fillStyle=`rgba(255,255,255,${a*0.4})`;
+    x.beginPath(); x.ellipse(Math.random()*256, yy, 3+Math.random()*14*(yy/512), 2+Math.random()*5, 0,0,7); x.fill();
+  }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+
+function hatchTexture(){
+  const S=128, c=document.createElement('canvas'); c.width=c.height=S;
+  const x=c.getContext('2d');
+  x.fillStyle='#3a2612'; x.fillRect(0,0,S,S);
+  x.strokeStyle='#1c1108'; x.lineWidth=8;
+  for(let i=8;i<S;i+=24){ x.beginPath(); x.moveTo(i,0); x.lineTo(i,S); x.stroke(); x.beginPath(); x.moveTo(0,i); x.lineTo(S,i); x.stroke(); }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+
+const hullTex   = woodTexture('#7a5630','#2c1a0b',44);  hullTex.repeat.set(0.38,0.21);
+const deckTex   = woodTexture('#9a7444','#4a3218',40);  deckTex.rotation=Math.PI/2; deckTex.repeat.set(0.26,0.26);
+const darkWoodT = woodTexture('#4d3419','#201205',52);  darkWoodT.repeat.set(0.5,0.5);
+const sailTex   = sailTexture();                        sailTex.repeat.set(1.4,1);
+const hatchTex  = hatchTexture();
+
+/* ================= МАТЕРИАЛЫ ================= */
+const hullMat    = new THREE.MeshStandardMaterial({map:hullTex, vertexColors:true, roughness:0.88, metalness:0.04});
+const deckMat    = new THREE.MeshStandardMaterial({map:deckTex, roughness:0.9, side:THREE.DoubleSide});
+const darkWoodMat= new THREE.MeshStandardMaterial({map:darkWoodT, color:0x8a6a4a, roughness:0.85});
+const tarWoodMat = new THREE.MeshStandardMaterial({color:0x2e1d10, roughness:0.95});
+const sailMat    = new THREE.MeshStandardMaterial({map:sailTex, color:0xf2ead2, roughness:0.96, side:THREE.DoubleSide});
+const goldMat    = new THREE.MeshStandardMaterial({color:0xd4af37, metalness:0.85, roughness:0.3});
+const ironMat    = new THREE.MeshStandardMaterial({color:0x24262b, metalness:0.7, roughness:0.45});
+const ropeMat    = new THREE.LineBasicMaterial({color:0x17100a, transparent:true, opacity:0.9});
+const winGlass   = new THREE.MeshStandardMaterial({color:0x553311, emissive:0xffa83a, emissiveIntensity:1, transparent:true, opacity:0.85, roughness:0.3});
+const hatchMat   = new THREE.MeshStandardMaterial({map:hatchTex, roughness:0.95});
+const portMat    = new THREE.MeshStandardMaterial({color:0x070503, roughness:1});
+const glowMats   = [winGlass];
+const lanternLights = [];
+
+/* ================= ГЕОМЕТРИЧЕСКИЕ ФУНКЦИИ КОРПУСА ================= */
+const clamp=(v,a,b)=>Math.min(Math.max(v,a),b);
+function sZ(z){ // сужение по длине
+  let s=1;
+  if(z>3){ const t=Math.min((z-3)/10.2,1); s*=1-0.86*Math.pow(t,1.6); }
+  if(z>11.8) s*=1-0.6*Math.min((z-11.8)/1.5,1);
+  if(z<-9.5){ const t=Math.min((-9.5-z)/3.5,1); s*=1-0.25*t*t; }
+  return s;
+}
+function taper(z,y){ return sZ(z)*(0.42+0.58*clamp((y+3.4)/2.6,0,1)); }
+function hwAt(z,y){ return 3.5*taper(z,y); }
+function deckY(z){
+  return 2.15
+    + 1.55*Math.pow(clamp((-z-2)/11,0,1),1.7)
+    + 1.00*Math.pow(clamp((z-3)/10,0,1),1.7);
+}
+
+const ship = new THREE.Group();
+scene.add(ship);
+
+/* ---------- КОРПУС ---------- */
+{
+  const s=new THREE.Shape();
+  s.moveTo(-13,-2.2);
+  s.bezierCurveTo(-8,-3.0,-3,-3.45, 4,-3.25);
+  s.bezierCurveTo(8.8,-2.2,10.8,-1.5, 12.4,-0.5);
+  s.lineTo(13.25,1.3);
+  s.lineTo(12.9,4.7);
+  s.bezierCurveTo(8,3.2,4.5,3.0, 0,3.0);
+  s.bezierCurveTo(-5,3.05,-9.5,3.7, -12.9,4.35);
+  s.closePath();
+  let g=new THREE.ExtrudeGeometry(s,{depth:7,bevelEnabled:true,bevelThickness:0.25,bevelSize:0.25,bevelSegments:2,steps:1,curveSegments:18});
+  g.rotateY(-Math.PI/2); g.translate(3.5,0,0);
+  const p=g.attributes.position;
+  const col=new Float32Array(p.count*3);
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i), y=p.getY(i), z=p.getZ(i);
+    p.setX(i, x*taper(z,y));
+    const dy=deckY(z);
+    let r=1,g2=1,b=1;
+    if(y<-0.8){ r=0.14;g2=0.11;b=0.09; }
+    else if(y<-0.45){ r=0.05;g2=0.045;b=0.04; }
+    else if(y>dy+0.5&&y<dy+0.72){ r=0.95;g2=0.72;b=0.30; }
+    else if(y>dy-0.55&&y<dy+0.5){ r=0.34;g2=0.23;b=0.14; }
+    col[i*3]=r; col[i*3+1]=g2; col[i*3+2]=b;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col,3));
+  g=mergeVertices(g);
+  g.computeVertexNormals();
+  const hull=new THREE.Mesh(g,hullMat);
+  hull.castShadow=hull.receiveShadow=true;
+  ship.add(hull);
+
+  const rud=new THREE.Mesh(new THREE.BoxGeometry(0.3,2.6,1.0),tarWoodMat);
+  rud.position.set(0,-1.3,-13.3); ship.add(rud);
+}
+
+/* ---------- ПАЛУБЫ ---------- */
+function deckGeom(z0,z1,inset,yOff,steps=42){
+  const s=new THREE.Shape();
+  const hw=z=>Math.max(3.5*sZ(z)-inset,0.05);
+  s.moveTo(hw(z0),z0);
+  for(let k=1;k<=steps;k++){ const z=z0+(z1-z0)*k/steps; s.lineTo(hw(z),z); }
+  for(let k=steps;k>=0;k--){ const z=z0+(z1-z0)*k/steps; s.lineTo(-hw(z),z); }
+  s.closePath();
+  const g=new THREE.ShapeGeometry(s);
+  const p=g.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i), z=p.getY(i);
+    p.setXYZ(i, x*0.99, deckY(z)+yOff-0.03, z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+function addDeck(z0,z1,inset,yOff){
+  const m=new THREE.Mesh(deckGeom(z0,z1,inset,yOff),deckMat);
+  m.receiveShadow=true; ship.add(m); return m;
+}
+addDeck(-12.6,12.4,0.12,0);       // главная палуба
+addDeck(-12.2,-4.6,0.25,2.2);     // ют
+addDeck(6.3,11.1,0.25,1.05);      // бак
+
+/* ---------- СТЕНЫ КАЮТ ---------- */
+function wallStrip(z0,z1,xFn,ybFn,ytFn,steps,mat){
+  const g=new THREE.BufferGeometry();
+  const pos=[],uv=[],idx=[];
+  for(let k=0;k<=steps;k++){
+    const z=z0+(z1-z0)*k/steps, x=xFn(z), yb=ybFn(z), yt=ytFn(z), u=(z-z0)*0.5;
+    pos.push(x,yb,z, x,yt,z);
+    uv.push(0,yb*0.4, u,yt*0.4);
+  }
+  for(let k=0;k<steps;k++){ const a=k*2; idx.push(a,a+2,a+1, a+1,a+2,a+3); }
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx); g.computeVertexNormals();
+  const m=new THREE.Mesh(g,mat); m.castShadow=m.receiveShadow=true; return m;
+}
+{
+  const xF=z=>3.5*sZ(z)-0.30;
+  const wR=wallStrip(-12.2,-4.6,xF,z=>deckY(z)-0.05,z=>deckY(z)+2.2,16,darkWoodMat);
+  const wL=wR.clone(); wL.scale.x=-1;
+  ship.add(wR,wL);
+  // кормовая стена
+  const back=new THREE.Mesh(new THREE.PlaneGeometry(5.2,2.3),darkWoodMat);
+  back.position.set(0,deckY(-12.3)+1.15,-12.32); back.rotation.y=Math.PI; ship.add(back);
+  // передняя стена юта
+  const front=new THREE.Mesh(new THREE.PlaneGeometry(6.4,2.3),darkWoodMat);
+  front.position.set(0,deckY(-4.6)+1.15,-4.6); front.rotation.y=0; ship.add(front);
+  const door=new THREE.Mesh(new THREE.PlaneGeometry(0.9,1.6),tarWoodMat);
+  door.position.set(0,deckY(-4.6)+0.85,-4.57); ship.add(door);
+  // окна кормы
+  for(const wx of [-1.8,-0.6,0.6,1.8]){
+    const fr=new THREE.Mesh(new THREE.BoxGeometry(0.86,1.16,0.06),goldMat);
+    fr.position.set(wx,deckY(-12.3)+1.35,-12.36); ship.add(fr);
+    const gl=new THREE.Mesh(new THREE.PlaneGeometry(0.68,0.96),winGlass);
+    gl.position.set(wx,deckY(-12.3)+1.35,-12.40); gl.rotation.y=Math.PI; ship.add(gl);
+  }
+  // бортовые окна
+  for(const z of [-6.5,-8.6,-10.7]) for(const side of [-1,1]){
+    const fr=new THREE.Mesh(new THREE.BoxGeometry(0.06,1.05,0.85),goldMat);
+    fr.position.set(side*(xF(z)+0.02),deckY(z)+1.35,z); ship.add(fr);
+    const gl=new THREE.Mesh(new THREE.PlaneGeometry(0.7,0.9),winGlass);
+    gl.position.set(side*(xF(z)+0.06),deckY(z)+1.35,z); gl.rotation.y=side*Math.PI/2; ship.add(gl);
+  }
+  // табличка с названием
+  const plaque=new THREE.Mesh(new THREE.PlaneGeometry(3.2,0.6),new THREE.MeshStandardMaterial({map:nameTexture(),roughness:0.6}));
+  plaque.position.set(0,3.35,-12.95); plaque.rotation.y=Math.PI; ship.add(plaque);
+}
+
+/* ---------- БАЛКОН КОРМЫ ---------- */
+{
+  const y=deckY(-12.3)+0.75;
+  const floor=new THREE.Mesh(new THREE.BoxGeometry(5.6,0.14,1.3),darkWoodMat);
+  floor.position.set(0,y,-12.95); floor.castShadow=true; ship.add(floor);
+  for(const bx of [-1.9,1.9]){
+    const br=new THREE.Mesh(new THREE.BoxGeometry(0.2,1.1,0.25),goldMat);
+    br.position.set(bx,y-0.55,-13.1); br.rotation.x=0.5; ship.add(br);
+  }
+  const rail=[];
+  for(let rx=-2.7; rx<=2.71; rx+=0.9){
+    ship.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.05,0.75,6),goldMat),
+      {position:new THREE.Vector3(rx,y+0.37,-13.5)}));
+    rail.push(new THREE.Vector3(rx,y+0.75,-13.5));
+  }
+  const railTube=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rail),20,0.06,6),goldMat);
+  ship.add(railTube);
+  for(const side of [-1,1]){
+    const sr=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+      new THREE.Vector3(side*2.75,y+0.75,-12.4), new THREE.Vector3(side*2.75,y+0.75,-13.5)]),6,0.06,6),goldMat);
+    ship.add(sr);
+  }
+}
+
+/* ---------- ПОРУЧНИ / РЕЛИНГИ ---------- */
+function stick(ax,ay,az,bx,by,bz,r,mat){
+  const a=new THREE.Vector3(ax,ay,az), b=new THREE.Vector3(bx,by,bz);
+  const d=b.clone().sub(a), len=d.length();
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(r*0.85,r,len,8),mat);
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.clone().normalize());
+  m.castShadow=true; return m;
+}
+function railing(z0,z1,yOff,side,inset){
+  const pts=[];
+  for(let z=z0;z<=z1+0.001;z+=(z1-z0)/10){
+    const x=side*(3.5*sZ(z)-inset), y=deckY(z)+yOff;
+    ship.add(stick(x,y,z,x,y+0.85,z,0.045,darkWoodMat));
+    pts.push(new THREE.Vector3(x,y+0.88,z));
+  }
+  ship.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),24,0.065,6),tarWoodMat));
+}
+railing(-12.2,-4.8,2.2,1,0.18); railing(-12.2,-4.8,2.2,-1,0.18);
+railing(6.4,11.0,1.05,1,0.18);  railing(6.4,11.0,1.05,-1,0.18);
+// планширь главного фальшборта
+for(const side of [-1,1]){
+  const pts=[];
+  for(let z=-12.3;z<=12.2;z+=1.2) pts.push(new THREE.Vector3(side*(3.5*sZ(z)-0.06),deckY(z)+0.70,z));
+  const t=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),60,0.085,6),tarWoodMat);
+  t.castShadow=true; ship.add(t);
+}
+
+/* ---------- ЛЕСТНИЦЫ ---------- */
+function ladder(x,z0,z1,y0,y1){
+  const g=new THREE.Group();
+  const len=Math.hypot(z1-z0,y1-y0), ang=Math.atan2(y1-y0,z1-z0);
+  for(const dx of [-0.42,0.42]){
+    const rail=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.08,len),tarWoodMat);
+    rail.position.set(dx,0,0); g.add(rail);
+  }
+  for(let i=1;i<7;i++){
+    const st=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.05,0.16),darkWoodMat);
+    st.position.set(0,0.06,-len/2+i*len/7); g.add(st);
+  }
+  g.rotation.x=-(Math.PI/2-ang);
+  g.position.set(x,(y0+y1)/2,(z0+z1)/2);
+  ship.add(g);
+}
+ladder(1.0,-4.2,-5.9,deckY(-4.2),deckY(-5.9)+2.2);
+ladder(-1.0,-4.2,-5.9,deckY(-4.2),deckY(-5.9)+2.2);
+ladder(0.9,5.7,6.7,deckY(5.7),deckY(6.7)+1.05);
+ladder(-0.9,5.7,6.7,deckY(5.7),deckY(6.7)+1.05);
+
+/* ---------- ЛЮКИ ---------- */
+for(const z of [-2.9,2.0]){
+  const h=new THREE.Mesh(new THREE.BoxGeometry(1.6,0.14,1.6),hatchMat);
+  h.position.set(0,deckY(z)+0.08,z); h.castShadow=h.receiveShadow=true; ship.add(h);
+  const rim=new THREE.Mesh(new THREE.BoxGeometry(1.78,0.1,1.78),tarWoodMat);
+  rim.position.set(0,deckY(z)+0.02,z); ship.add(rim);
+}
+
+/* ---------- МАЧТЫ, РЕИ, ПАРУСА ---------- */
+const sailSway=[], yardsInfo=[];
+function pole(x,y0,y1,r1,r2,z){
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(r2,r1,y1-y0,10),tarWoodMat);
+  m.position.set(x,(y0+y1)/2,z); m.castShadow=true; return m;
+}
+function yardMesh(len,r){
+  const c=new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-len/2,-len*0.022,0), new THREE.Vector3(-len/4,0,0),
+    new THREE.Vector3(0,len*0.012,0), new THREE.Vector3(len/4,0,0), new THREE.Vector3(len/2,-len*0.022,0)]);
+  const m=new THREE.Mesh(new THREE.TubeGeometry(c,14,r,7),tarWoodMat);
+  m.castShadow=true; return m;
+}
+function squareSail(w,h,belly){
+  const g=new THREE.PlaneGeometry(w,h,16,10);
+  const p=g.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i), y=p.getY(i);
+    const u=x/(w/2), v=y/(h/2);
+    p.setZ(i, -belly*(1-u*u)*(0.7+0.45*(1-v*v)));
+  }
+  g.translate(0,-h/2,0); g.computeVertexNormals(); return g;
+}
+function addSquareRig(mz, yardY, len, sailH, belly, phase){
+  const g=new THREE.Group();
+  g.position.set(0,yardY,mz);
+  const y=yardMesh(len,0.09); g.add(y);
+  const s=new THREE.Mesh(squareSail(len-0.35,sailH,belly),sailMat);
+  s.castShadow=s.receiveShadow=true; g.add(s);
+  ship.add(g);
+  sailSway.push({o:g,ph:phase});
+  yardsInfo.push({len,y:yardY,z:mz});
+}
+// грот-мачта
+ship.add(pole(0,deckY(-1.5),14.0,0.30,0.22,-1.5));
+ship.add(pole(0,14.0,19.4,0.17,0.11,-1.5));
+const nest=new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.48,0.55,10),darkWoodMat);
+nest.position.set(0,13.95,-1.5); nest.castShadow=true; ship.add(nest);
+ship.add(new THREE.Mesh(new THREE.TorusGeometry(0.6,0.05,6,14),tarWoodMat)).position.set(0,14.2,-1.5);
+addSquareRig(-1.5, 9.2, 10.0, 4.7, 1.15, 0.0);
+addSquareRig(-1.5, 13.6, 7.4, 3.5, 0.95, 1.3);
+addSquareRig(-1.5, 16.9, 5.2, 2.6, 0.8, 2.4);
+// фок-мачта
+ship.add(pole(0,deckY(5),12.4,0.27,0.20,5));
+ship.add(pole(0,12.4,16.9,0.15,0.10,5));
+addSquareRig(5, 8.2, 8.6, 3.9, 1.05, 0.7);
+addSquareRig(5, 12.2, 6.4, 3.1, 0.9, 1.9);
+addSquareRig(5, 15.2, 4.4, 2.2, 0.75, 3.0);
+// бизань-мачта (с наклоном)
+{
+  const mg=new THREE.Group(); mg.position.set(0,deckY(-8.5),-8.5); mg.rotation.x=-0.07;
+  mg.add(pole(0,0,10.9,0.24,0.15,0));
+  ship.add(mg);
+}
+// гафельный парус (spanker)
+function quadSail(c00,c10,c11,c01,su,sv,belly){
+  const g=new THREE.PlaneGeometry(1,1,su,sv);
+  const p=g.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const u=(p.getX(i)+0.5), v=(p.getY(i)+0.5);
+    const a=c00.clone().multiplyScalar((1-u)*(1-v)), b=c10.clone().multiplyScalar(u*(1-v));
+    const c=c11.clone().multiplyScalar(u*v), d=c01.clone().multiplyScalar((1-u)*v);
+    const posV=a.add(b).add(c).add(d);
+    posV.x += belly*Math.sin(Math.PI*u)*Math.sin(Math.PI*v);
+    p.setXYZ(i,posV.x,posV.y,posV.z);
+  }
+  g.computeVertexNormals(); return g;
+}
+ship.add(stick(0.12,6.0,-8.7, 0.12,6.35,-13.3, 0.10, tarWoodMat));           // гик
+ship.add(stick(0.12,7.0,-8.7, 0.12,10.6,-12.9, 0.08, tarWoodMat));           // гафель
+{
+  const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+  const s=new THREE.Mesh(quadSail(V(0.15,6.1,-8.9),V(0.15,7.3,-8.9),V(0.15,10.5,-12.8),V(0.15,6.45,-13.0),8,7,0.4),sailMat);
+  s.castShadow=true; ship.add(s);
+  sailSway.push({o:s,ph:2.2});
+}
+// бушприт
+ship.add(stick(0,3.3,12.3, 0,5.9,19.8, 0.22, tarWoodMat));
+ship.add(stick(0,4.6,16.0, 0,4.2,16.2, 0.08, tarWoodMat)); // свая
+// треугольный кливер
+function triSail(A,B,C,seg,belly){
+  const g=new THREE.BufferGeometry();
+  const pos=[],uv=[],idx=[], off=[];
+  let acc=0;
+  for(let i=0;i<=seg;i++){ off[i]=acc; acc+=seg-i+1; }
+  for(let i=0;i<=seg;i++) for(let j=0;j<=seg-i;j++){
+    const u=i/seg, v=j/seg, w=1-u-v;
+    const x=A.x*w+B.x*u+C.x*v + belly*Math.sin(Math.PI*u)*Math.sin(Math.PI*v);
+    const y=A.y*w+B.y*u+C.y*v;
+    const z=A.z*w+B.z*u+C.z*v;
+    pos.push(x,y,z); uv.push(u,v);
+  }
+  for(let i=0;i<seg;i++) for(let j=0;j<seg-i;j++){
+    const a=off[i]+j, b=off[i+1]+j, c=off[i]+j+1;
+    idx.push(a,b,c);
+    if(j<seg-i-1){ const d=off[i+1]+j+1; idx.push(b,d,c); }
+  }
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx); g.computeVertexNormals(); return g;
+}
+{
+  const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+  const jib=new THREE.Mesh(triSail(V(0,15.4,6.8),V(0,5.75,18.3),V(0,6.6,9.2),9,0.5),sailMat);
+  jib.castShadow=true; ship.add(jib); sailSway.push({o:jib,ph:1.1});
+  // прямой парус под бушпритом (сприт)
+  const y=stick(-2.1,4.25,15.6, 2.1,4.25,15.6, 0.07, tarWoodMat); ship.add(y);
+  const sp=new THREE.Mesh(squareSail(3.6,2.0,0.5),sailMat);
+  sp.position.set(0,4.2,15.6); sp.rotation.y=Math.PI/2; sp.castShadow=true; ship.add(sp);
+  sailSway.push({o:sp,ph:2.8});
+  yardsInfo.push({len:4.2,y:4.25,z:15.6});
+}
+// навершия мачт
+for(const [mz,ty] of [[-1.5,19.4],[5,16.9]]){
+  const truck=new THREE.Mesh(new THREE.SphereGeometry(0.14,8,6),goldMat);
+  truck.position.set(0,ty+0.1,mz); ship.add(truck);
+}
+
+/* ---------- ТАКЕЛАЖ ---------- */
+{
+  const pts=[];
+  const L=(ax,ay,az,bx,by,bz)=>pts.push(ax,ay,az,bx,by,bz);
+  const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+  const masts=[{z:-1.5,top:19.3},{z:5.0,top:16.8},{z:-8.5,top:12.9}];
+  for(const m of masts){
+    for(const side of [-1,1]){
+      const tops=[],decks=[];
+      for(let k=0;k<5;k++){
+        const dz=k-2;
+        const zD=clamp(m.z+dz*1.6,-12.2,11.4);
+        const a=V(side*0.12,m.top-0.9,m.z+dz*0.28);
+        const b=V(side*(hwAt(zD,deckY(zD)+0.3)+0.18),deckY(zD)+0.5,zD);
+        tops.push(a); decks.push(b);
+        L(a.x,a.y,a.z,b.x,b.y,b.z);
+      }
+      for(let r=1;r<=7;r++){ const f=r/8;
+        for(let k=0;k<4;k++){
+          const p1=tops[k].clone().lerp(decks[k],f), p2=tops[k+1].clone().lerp(decks[k+1],f);
+          L(p1.x,p1.y,p1.z,p2.x,p2.y,p2.z);
+        }
+      }
+      const zb=clamp(m.z-5,-12.2,10.5);
+      L(side*0.1,m.top-0.4,m.z, side*(hwAt(zb,deckY(zb)+0.3)+0.15), deckY(zb)+0.6, zb);
+    }
+  }
+  L(0,19.1,-1.5, 0,5.85,19.3);                       // грот-штаг
+  L(0,16.6,5.0, 0,5.75,19.1);                        // фор-штаг
+  L(0,12.8,-8.5, 0,17.5,-1.6); L(0,12.8,-8.5, 0,8.0,-1.6);
+  L(0.1,19.0,-1.5, 2.9,6.2,-12.0); L(-0.1,19.0,-1.5, -2.9,6.2,-12.0);   // бакштаги
+  L(0,13.0,-8.5, 1.6,deckY(-12.1)+0.7,-12.1); L(0,13.0,-8.5, -1.6,deckY(-12.1)+0.7,-12.1);
+  L(0,5.85,19.3, 0,3.9,13.4); L(0,5.85,19.3, 2.2,3.2,12.6); L(0,5.85,19.3, -2.2,3.2,12.6);
+  for(const y of yardsInfo){
+    L(y.len/2,y.y-0.05,y.z, 0,y.y+1.3,y.z);
+    L(-y.len/2,y.y-0.05,y.z, 0,y.y+1.3,y.z);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  ship.add(new THREE.LineSegments(g,ropeMat));
+}
+
+/* ---------- ПУШКИ И ПОРТЫ ---------- */
+const CG={
+  barrel:(()=>{const g=new THREE.CylinderGeometry(0.13,0.17,1.25,10); g.rotateZ(-Math.PI/2); return g;})(),
+  muzzle:(()=>{const g=new THREE.TorusGeometry(0.145,0.035,6,12); g.rotateY(Math.PI/2); return g;})(),
+  carriage:new THREE.BoxGeometry(0.85,0.42,0.55),
+  wheel:(()=>{const g=new THREE.CylinderGeometry(0.14,0.14,0.09,10); g.rotateX(Math.PI/2); return g;})(),
+  portFrame:new THREE.BoxGeometry(0.06,0.86,1.14),
+  portHole:new THREE.PlaneGeometry(0.96,0.68)
+};
+const carriageMat=new THREE.MeshStandardMaterial({color:0x4a2c1a,roughness:0.9});
+function cannon(){
+  const g=new THREE.Group();
+  const b=new THREE.Mesh(CG.barrel,ironMat); b.position.set(0.35,0,0); b.castShadow=true;
+  const m=new THREE.Mesh(CG.muzzle,ironMat); m.position.set(0.98,0,0);
+  const c=new THREE.Mesh(CG.carriage,carriageMat); c.position.set(0.05,-0.22,0); c.castShadow=true;
+  g.add(b,m,c);
+  for(const [wx,wz] of [[0.38,0.26],[0.38,-0.26],[-0.22,0.26],[-0.22,-0.26]]){
+    const w=new THREE.Mesh(CG.wheel,tarWoodMat); w.position.set(wx,-0.33,wz); g.add(w);
+  }
+  return g;
+}
+for(const z of [-3.6,-1.2,1.2,3.6,5.6]) for(const side of [-1,1]){
+  const py=deckY(z)+0.4, hx=hwAt(z,py);
+  const fr=new THREE.Mesh(CG.portFrame,goldMat); fr.position.set(side*(hx+0.02),py,z); ship.add(fr);
+  const ph=new THREE.Mesh(CG.portHole,portMat); ph.position.set(side*(hx+0.06),py,z); ph.rotation.y=side*Math.PI/2; ship.add(ph);
+  const c=cannon(); c.position.set(side*(hx-0.6),py+0.02,z); c.rotation.y=side>0?0:Math.PI; ship.add(c);
+}
+// погонные орудия на баке
+for(const side of [-1,1]){
+  const c=cannon(); const fz=10.6;
+  c.position.set(side*0.85,deckY(fz)+1.05+0.42,fz); c.rotation.y=-Math.PI/2; ship.add(c);
+}
+
+/* ---------- ЯКОРЯ, НОСОВОЕ УКРАШЕНИЕ ---------- */
+function anchor(x,y,z,side){
+  const g=new THREE.Group();
+  g.add(stick(0,-1.1,0, 0,1.1,0, 0.09, ironMat));
+  const stock=stick(0,0.85,-0.8, 0,0.85,0.8, 0.08, tarWoodMat); g.add(stock);
+  const arm=new THREE.Mesh(new THREE.TorusGeometry(0.55,0.07,8,14,Math.PI),ironMat);
+  arm.position.y=-1.1; arm.rotation.z=Math.PI; g.add(arm);
+  for(const s of [-1,1]){
+    const fl=new THREE.Mesh(new THREE.ConeGeometry(0.22,0.5,4),ironMat);
+    fl.position.set(0,-1.35,s*0.55); fl.rotation.x=s*0.7; g.add(fl);
+  }
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(0.12,0.03,6,12),ironMat);
+  ring.position.y=1.15; g.add(ring);
+  g.position.set(x,y,z); g.rotation.z=side*0.18; g.rotation.y=side*0.3;
+  ship.add(g);
+}
+anchor(2.35,1.9,10.0,1); anchor(-2.35,1.9,10.0,-1);
+{ // гальюнная фигура — золотой дракон
+  const g=new THREE.Group();
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.34,10,8),goldMat);
+  head.scale.set(0.9,0.9,1.3); g.add(head);
+  const snout=new THREE.Mesh(new THREE.ConeGeometry(0.18,0.8,8),goldMat);
+  snout.rotation.x=Math.PI/2+0.3; snout.position.set(0,-0.1,0.55); g.add(snout);
+  for(const s of [-1,1]){
+    const horn=new THREE.Mesh(new THREE.ConeGeometry(0.07,0.45,6),goldMat);
+    horn.position.set(s*0.18,0.3,-0.15); horn.rotation.z=-s*0.5; horn.rotation.x=-0.5; g.add(horn);
+  }
+  const body=new THREE.Mesh(new THREE.ConeGeometry(0.3,1.5,8),goldMat);
+  body.rotation.x=Math.PI-0.4; body.position.set(0,-0.1,-0.8); g.add(body);
+  g.position.set(0,4.0,13.1); g.rotation.x=-0.35;
+  g.traverse(o=>{if(o.isMesh)o.castShadow=true;});
+  ship.add(g);
+  // клюзы
+  for(const s of [-1,1]){
+    const h=new THREE.Mesh(new THREE.CircleGeometry(0.22,12),portMat);
+    h.position.set(s*1.0,3.3,12.55); h.rotation.y=s*0.45; h.rotation.x=-0.3; ship.add(h);
+  }
+}
+
+/* ---------- ФЛАГИ ---------- */
+const flags=[];
+function wavyFlag(tex,w,h,segX,segY,amp,speed,phase){
+  const g=new THREE.PlaneGeometry(w,h,segX,segY);
+  g.translate(w/2, -h*0.42, 0);
+  const mesh=new THREE.Mesh(g,new THREE.MeshStandardMaterial({map:tex,side:THREE.DoubleSide,roughness:0.95}));
+  mesh.castShadow=true;
+  const base=Float32Array.from(g.attributes.position.array);
+  flags.push({mesh,base,w,amp,speed,phase});
+  return mesh;
+}
+{ // Весёлый Роджер на грот-мачте
+  ship.add(stick(0,19.3,-1.5, 0,21.3,-1.5, 0.05, tarWoodMat));
+  const f=wavyFlag(flagTexture('#0b0b0b'),3.6,2.25,24,10,0.22,6.5,0);
+  f.position.set(0.06,21.15,-1.5); f.rotation.y=Math.PI/2; ship.add(f);
+  // кормовой флаг
+  ship.add(stick(0,7.0,-13.0, 0,10.6,-13.9, 0.06, tarWoodMat));
+  const f2=wavyFlag(flagTexture('#7a1010'),2.6,1.6,18,8,0.16,7,2);
+  f2.position.set(0.05,10.45,-13.8); f2.rotation.y=Math.PI/2; ship.add(f2);
+  // вымпелы
+  for(const [mz,ty] of [[-1.5,19.4],[5,16.9],[-8.3,12.7]]){
+    const g=new THREE.PlaneGeometry(2.0,0.5,12,2);
+    const p=g.attributes.position;
+    for(let i=0;i<p.count;i++){
+      const x=p.getX(i)+1.0, u=x/2.0;
+      p.setXYZ(i,x,p.getY(i)*(1-0.85*u),0);
+    }
+    g.computeVertexNormals();
+    const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x8a1515,side:THREE.DoubleSide,roughness:0.9}));
+    m.rotation.y=Math.PI/2; m.position.set(0.05,ty+0.3,mz); ship.add(m);
+    flags.push({mesh:m,base:Float32Array.from(p.array),w:2.0,amp:0.1,speed:9,phase:mz});
+  }
+}
+
+/* ---------- МЕЛОЧИ НА ПАЛУБЕ ---------- */
+function barrel(x,y,z,tilt=0){
+  const g=new THREE.Group();
+  const b=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.38,0.95,12),darkWoodMat); b.castShadow=true; g.add(b);
+  for(const hy of [-0.3,0,0.3]){
+    const hoop=new THREE.Mesh(new THREE.TorusGeometry(0.415,0.03,6,14),ironMat);
+    hoop.rotation.x=Math.PI/2; hoop.position.y=hy; g.add(hoop);
+  }
+  g.position.set(x,y+0.48,z); g.rotation.z=tilt; ship.add(g);
+}
+barrel(-2.0,deckY(-3.0),-3.0); barrel(-2.45,deckY(-2.2),-2.1,0.9); barrel(2.05,deckY(-0.2),-0.35);
+{ // ящики
+  const c1=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.8,0.8),darkWoodMat);
+  c1.position.set(-2.15,deckY(-4.0)+0.4,-4.0); c1.rotation.y=0.3; c1.castShadow=true; ship.add(c1);
+  const c2=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.55,0.6),darkWoodMat);
+  c2.position.set(-2.0,deckY(-4.0)+1.05,-3.9); c2.rotation.y=-0.2; c2.castShadow=true; ship.add(c2);
+}
+{ // сундук с золотом
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.55,0.65),darkWoodMat); body.castShadow=true; g.add(body);
+  const lid=new THREE.Mesh(new THREE.BoxGeometry(1.04,0.12,0.69),darkWoodMat);
+  lid.position.set(0,0.42,-0.45); lid.rotation.x=-1.0; g.add(lid);
+  for(const s of [-0.3,0.3]){
+    const band=new THREE.Mesh(new THREE.BoxGeometry(0.08,0.58,0.68),goldMat); band.position.x=s; g.add(band);
+  }
+  const goldM=new THREE.MeshStandardMaterial({color:0xffcf40,metalness:1,roughness:0.25,emissive:0x553300,emissiveIntensity:0.3});
+  for(let i=0;i<10;i++){
+    const co=new THREE.Mesh(new THREE.SphereGeometry(0.075,7,6),goldM);
+    co.position.set((Math.random()-0.5)*0.8,0.3+Math.random()*0.08,(Math.random()-0.5)*0.45); g.add(co);
+  }
+  g.position.set(1.55,deckY(0.2)+0.28,0.2); g.rotation.y=-0.4; ship.add(g);
+}
+{ // канатные бухты
+  for(const [i,r] of [0,1,2].map(i=>[i,0.34-i*0.05])){
+    const t=new THREE.Mesh(new THREE.TorusGeometry(r,0.05,6,16),tarWoodMat);
+    t.rotation.x=Math.PI/2; t.position.set(1.9,deckY(2.9)+0.06+i*0.1,2.9); ship.add(t);
+  }
+}
+{ // пирамида ядер
+  const bm=new THREE.MeshStandardMaterial({color:0x1a1c20,metalness:0.6,roughness:0.5});
+  let k=0;
+  for(const [n,yo] of [[4,0.12],[3,0.33],[2,0.54],[1,0.75]]){
+    for(let i=0;i<n;i++){
+      const b=new THREE.Mesh(new THREE.SphereGeometry(0.12,8,6),bm);
+      b.position.set(2.1+(i-(n-1)/2)*0.25, deckY(-3.4)+yo, -3.2+(k*0.02)); ship.add(b);
+    }
+    k++;
+  }
+}
+{ // шпиль
+  const y=deckY(3.9);
+  const c=new THREE.Mesh(new THREE.CylinderGeometry(0.42,0.55,1.05,10),darkWoodMat);
+  c.position.set(0,y+0.52,3.9); c.castShadow=true; ship.add(c);
+  ship.add(Object.assign(new THREE.Mesh(new THREE.ConeGeometry(0.44,0.3,10),goldMat),{position:new THREE.Vector3(0,y+1.2,3.9)}));
+  for(let i=0;i<4;i++){
+    const bar=stick(-0.85,y+0.9,3.9, 0.85,y+0.9,3.9, 0.05, tarWoodMat);
+    bar.rotation.y=i*Math.PI/4; ship.add(bar);
+  }
+}
+{ // лодка вверх дном
+  const g=new THREE.Mesh(new THREE.CapsuleGeometry(0.42,2.4,4,10),darkWoodMat);
+  g.rotation.x=Math.PI/2; g.scale.set(1,1,0.55);
+  g.position.set(-1.8,deckY(1.6)+0.22,1.6); g.castShadow=true; ship.add(g);
+}
+{ // колокол на баке
+  const y=deckY(10.4)+1.05;
+  ship.add(stick(-0.3,y,10.4,-0.3,y+0.95,10.4,0.05,tarWoodMat));
+  ship.add(stick(0.3,y,10.4,0.3,y+0.95,10.4,0.05,tarWoodMat));
+  ship.add(stick(-0.35,y+0.95,10.4,0.35,y+0.95,10.4,0.05,tarWoodMat));
+  const bell=new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.2,0.28,10),goldMat);
+  bell.position.set(0,y+0.72,10.4); ship.add(bell);
+}
+{ // штурвал и нактоуз
+  const wy=deckY(-10.6)+2.2, wg=new THREE.Group();
+  const rim=new THREE.Mesh(new THREE.TorusGeometry(0.65,0.055,8,28),goldMat); wg.add(rim);
+  wg.add(new THREE.Mesh(new THREE.TorusGeometry(0.2,0.045,8,16),goldMat));
+  for(let i=0;i<8;i++){
+    const a=i*Math.PI/4;
+    const sp=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,1.65,6),tarWoodMat);
+    sp.rotation.z=a; wg.add(sp);
+    const hd=new THREE.Mesh(new THREE.SphereGeometry(0.055,7,6),goldMat);
+    hd.position.set(Math.cos(a)*0.86,Math.sin(a)*0.86,0); wg.add(hd);
+  }
+  wg.position.set(0,wy+1.15,-10.6); ship.add(wg);
+  ship.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(0.5,0.95,0.45),darkWoodMat),
+    {position:new THREE.Vector3(0,wy+0.47,-10.6)}));
+  const comp=new THREE.Mesh(new THREE.CircleGeometry(0.14,14),new THREE.MeshStandardMaterial({color:0xddc98a,emissive:0x443311,emissiveIntensity:0.4}));
+  comp.position.set(0,wy+0.85,-10.34); comp.rotation.x=-0.4; ship.add(comp);
+  var wheelObj=wg;
+}
+/* ---------- ФОНАРИ ---------- */
+function lantern(x,y,z,sc){
+  const g=new THREE.Group();
+  g.add(stick(0,0,0,0,0.8,0,0.04,goldMat));
+  const glass=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.2,0.42,6),winGlass);
+  glass.position.y=1.05; g.add(glass);
+  const cap=new THREE.Mesh(new THREE.ConeGeometry(0.24,0.2,6),goldMat); cap.position.y=1.36; g.add(cap);
+  const fin=new THREE.Mesh(new THREE.SphereGeometry(0.05,7,6),goldMat); fin.position.y=1.5; g.add(fin);
+  g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.06,6),goldMat),{position:new THREE.Vector3(0,0.83,0)}));
+  const l=new THREE.PointLight(0xffaa44,8,16,1.7); l.position.y=1.05; g.add(l); lanternLights.push(l);
+  g.position.set(x,y,z); g.scale.setScalar(sc); ship.add(g);
+}
+lantern(2.0,deckY(-12)+2.2,-12.4,1.3);
+lantern(-2.0,deckY(-12)+2.2,-12.4,1.3);
+lantern(1.7,deckY(7.5)+1.05,7.5,0.9);
+
+/* ================= ОКРУЖЕНИЕ ================= */
+// НЕБО (шейдер с облаками и солнцем)
+const skyU={
+  uTime:{value:0},
+  uZenith:{value:new THREE.Color('#1c2f5c')},
+  uHorizon:{value:new THREE.Color('#ff8c42')},
+  uSunCol:{value:new THREE.Color('#ffd9a0')},
+  uGround:{value:new THREE.Color('#3a2233')},
+  uSunDir:{value:new THREE.Vector3()}
+};
+const sky=new THREE.Mesh(new THREE.SphereGeometry(2000,32,20),new THREE.ShaderMaterial({
+  side:THREE.BackSide, depthWrite:false, fog:false, uniforms:skyU,
+  vertexShader:`varying vec3 vDir; void main(){ vDir=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+    varying vec3 vDir;
+    uniform float uTime; uniform vec3 uZenith,uHorizon,uSunCol,uGround,uSunDir;
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
+      return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y); }
+    float fbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<5;i++){ v+=a*noise(p); p*=2.03; a*=0.5; } return v; }
+    void main(){
+      vec3 d=normalize(vDir); float h=d.y; vec3 col;
+      if(h>0.0){
+        col=mix(uHorizon,uZenith,pow(h,0.55));
+        vec2 uv=d.xz/(h+0.15)*1.4+vec2(uTime*0.01,uTime*0.004);
+        float f=fbm(uv*1.3);
+        float cl=smoothstep(0.48,0.85,f)*smoothstep(0.0,0.18,h);
+        vec3 cCloud=mix(vec3(1.0,0.82,0.66),vec3(1.0,0.97,0.94),clamp(h*3.0,0.0,1.0));
+        col=mix(col,cCloud,cl*0.75);
+        float s=max(dot(d,uSunDir),0.0);
+        col+=uSunCol*(pow(s,1400.0)*12.0+pow(s,14.0)*0.30+pow(s,3.0)*0.08);
+      } else col=mix(uHorizon,uGround,smoothstep(0.0,-0.2,h));
+      gl_FragColor=vec4(col,1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`
+}));
+sky.frustumCulled=false; sky.renderOrder=-1; scene.add(sky);
+
+// ОКЕАН (шейдер с волнами, бликами и пеной)
+const oceanU={
+  uTime:{value:0}, uWave:{value:1.0},
+  uSunDir:{value:new THREE.Vector3()},
+  uDeep:{value:new THREE.Color('#0a2a3a')},
+  uShallow:{value:new THREE.Color('#1d5a66')},
+  uSkyCol:{value:new THREE.Color('#b06a45')},
+  uSunCol:{value:new THREE.Color('#ffd9a0')},
+  uFogCol:{value:new THREE.Color('#b06a45')},
+  uFogNear:{value:70}, uFogFar:{value:430}
+};
+const ocean=new THREE.Mesh(new THREE.PlaneGeometry(1500,1500,180,180).rotateX(-Math.PI/2),new THREE.ShaderMaterial({
+  uniforms:oceanU,
+  vertexShader:`
+    uniform float uTime,uWave;
+    varying vec3 vWorld; varying vec3 vNrm; varying float vH;
+    float hgt(vec2 p){
+      float h=0.0;
+      h+=sin(dot(p,vec2(0.16,0.09))+uTime*1.10)*0.50;
+      h+=sin(dot(p,vec2(-0.11,0.19))+uTime*0.85)*0.40;
+      h+=sin(dot(p,vec2(0.07,-0.13))+uTime*0.65)*0.60;
+      h+=sin(dot(p,vec2(0.23,0.27))+uTime*1.70)*0.18;
+      h+=sin(dot(p,vec2(-0.31,0.19))+uTime*2.20)*0.10;
+      return h*uWave;
+    }
+    void main(){
+      vec3 pos=position; float e=0.4;
+      float hC=hgt(pos.xz), hX=hgt(pos.xz+vec2(e,0.0)), hZ=hgt(pos.xz+vec2(0.0,e));
+      pos.y+=hC;
+      vec3 n=normalize(cross(vec3(0.0,hZ-hC,e),vec3(e,hX-hC,0.0)));
+      vNrm=n; vH=hC;
+      vec4 wp=modelMatrix*vec4(pos,1.0);
+      vWorld=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp;
+    }`,
+  fragmentShader:`
+    varying vec3 vWorld; varying vec3 vNrm; varying float vH;
+    uniform vec3 uSunDir,uDeep,uShallow,uSkyCol,uSunCol,uFogCol;
+    uniform float uFogNear,uFogFar,uTime;
+    void main(){
+      vec3 N=normalize(vNrm);
+      vec3 V=normalize(cameraPosition-vWorld);
+      float fres=pow(1.0-max(dot(N,V),0.0),3.0);
+      vec3 col=mix(uDeep,uShallow,0.35);
+      col=mix(col,uSkyCol,clamp(fres*0.9,0.0,0.85));
+      vec3 H=normalize(uSunDir+V);
+      float spec=pow(max(dot(N,H),0.0),220.0)*2.4+pow(max(dot(N,H),0.0),14.0)*0.18;
+      col+=uSunCol*spec;
+      float foam=smoothstep(0.95,1.55,vH+0.12*sin(vWorld.x*2.3+uTime*1.7)*sin(vWorld.z*2.1-uTime*1.3));
+      col=mix(col,vec3(0.92,0.96,0.98),foam*0.65);
+      float dist=length(cameraPosition-vWorld);
+      col=mix(col,uFogCol,smoothstep(uFogNear,uFogFar,dist));
+      gl_FragColor=vec4(col,1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`
+}));
+scene.add(ocean);
+
+// СВЕТ
+const hemi=new THREE.HemisphereLight(0x6a7fae,0x3a2c22,0.5); scene.add(hemi);
+const dirLight=new THREE.DirectionalLight(0xffb46a,2.6);
+dirLight.castShadow=true;
+dirLight.shadow.mapSize.set(2048,2048);
+dirLight.shadow.camera.left=-28; dirLight.shadow.camera.right=28;
+dirLight.shadow.camera.top=30; dirLight.shadow.camera.bottom=-14;
+dirLight.shadow.camera.near=20; dirLight.shadow.camera.far=320;
+dirLight.shadow.bias=-0.0006; dirLight.shadow.normalBias=0.05;
+dirLight.target.position.set(0,6,0);
+scene.add(dirLight, dirLight.target);
+
+// ЗВЁЗДЫ
+const starsGeo=new THREE.BufferGeometry();
+{ const N=900,arr=[];
+  for(let i=0;i<N;i++){
+    const th=Math.random()*Math.PI*2, ph=Math.acos(Math.random()*0.95), r=1700;
+    arr.push(r*Math.sin(ph)*Math.cos(th), r*Math.cos(ph), r*Math.sin(ph)*Math.sin(th));
+  }
+  starsGeo.setAttribute('position',new THREE.Float32BufferAttribute(arr,3));
+}
+const stars=new THREE.Points(starsGeo,new THREE.PointsMaterial({color:0xffffff,size:2.2,sizeAttenuation:false,transparent:true,opacity:0.15,depthWrite:false,fog:false}));
+scene.add(stars);
+
+// КИЛЬВАТЕР И БРЫЗГИ
+const wakeTex=foamTexture();
+const wake=new THREE.Mesh(new THREE.PlaneGeometry(9,42),new THREE.MeshBasicMaterial({map:wakeTex,transparent:true,depthWrite:false,opacity:0.8,fog:true}));
+wake.rotation.x=-Math.PI/2; wake.position.set(0,0.07,-34); scene.add(wake);
+{
+  const c=document.createElement('canvas'); c.width=c.height=128;
+  const x=c.getContext('2d');
+  const gr=x.createRadialGradient(64,64,4,64,64,60);
+  gr.addColorStop(0,'rgba(255,255,255,0.5)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=gr; x.fillRect(0,0,128,128);
+  for(let i=0;i<60;i++){ x.fillStyle=`rgba(255,255,255,${Math.random()*0.25})`;
+    x.beginPath(); x.arc(64+(Math.random()-0.5)*70,64+(Math.random()-0.5)*90,2+Math.random()*5,0,7); x.fill(); }
+  const t=new THREE.CanvasTexture(c);
+  const sp=new THREE.Mesh(new THREE.PlaneGeometry(8,9),new THREE.MeshBasicMaterial({map:t,transparent:true,depthWrite:false,fog:true}));
+  sp.rotation.x=-Math.PI/2; sp.position.set(0,0.08,17); scene.add(sp);
+}
+
+// ЧАЙКИ
+const birds=[];
+{
+  const gL=new THREE.PlaneGeometry(0.85,0.22); gL.translate(-0.42,0,0);
+  const gR=new THREE.PlaneGeometry(0.85,0.22); gR.translate(0.42,0,0);
+  const bm=new THREE.MeshStandardMaterial({color:0xf5f5f0,side:THREE.DoubleSide,roughness:0.9});
+  for(let i=0;i<7;i++){
+    const g=new THREE.Group();
+    const wL=new THREE.Mesh(gL,bm), wR=new THREE.Mesh(gR,bm);
+    const body=new THREE.Mesh(new THREE.SphereGeometry(0.09,6,5),bm); body.scale.set(1,0.8,2.2);
+    g.add(wL,wR,body); scene.add(g);
+    birds.push({g,wL,wR,phase:Math.random()*7,r:26+Math.random()*16,y:11+Math.random()*7,
+      sp:0.12+Math.random()*0.1,ang:Math.random()*Math.PI*2});
+  }
+}
+
+// ОСТРОВА
+function island(x,z,s){
+  const g=new THREE.Group();
+  const sand=new THREE.Mesh(new THREE.SphereGeometry(6,14,8,0,Math.PI*2,0,Math.PI/2),
+    new THREE.MeshStandardMaterial({color:0xc2a366,roughness:1}));
+  sand.scale.y=0.4; sand.receiveShadow=true; g.add(sand);
+  for(let i=0;i<2;i++){
+    const r=new THREE.Mesh(new THREE.DodecahedronGeometry(0.9+Math.random()),
+      new THREE.MeshStandardMaterial({color:0x5a5a58,roughness:1}));
+    r.position.set((Math.random()-0.5)*7,0.3,(Math.random()-0.5)*7); r.castShadow=true; g.add(r);
+  }
+  const leafMat=new THREE.MeshStandardMaterial({color:0x2e7d32,side:THREE.DoubleSide,roughness:0.9});
+  for(let p=0;p<3;p++){
+    const px=(Math.random()-0.5)*4, pz=(Math.random()-0.5)*4, h=2.8+Math.random()*1.6;
+    g.add(stick(px,0.2,pz, px+0.5,h,pz+0.3, 0.12, new THREE.MeshStandardMaterial({color:0x6d4c2a,roughness:1})));
+    const crown=new THREE.Group(); crown.position.set(px+0.5,h,pz+0.3);
+    for(let i=0;i<6;i++){
+      const lg=new THREE.PlaneGeometry(2.0,0.5); lg.translate(1.0,0,0);
+      const leaf=new THREE.Mesh(lg,leafMat);
+      leaf.rotation.y=i*Math.PI/3; leaf.rotation.z=-0.55; crown.add(leaf);
+    }
+    g.add(crown);
+  }
+  g.position.set(x,-0.4,z); g.scale.setScalar(s); scene.add(g);
+}
+island(85,-110,1.5); island(-115,60,1.1);
+
+/* ================= ПРЕСЕТЫ ВРЕМЕНИ СУТОК ================= */
+const sunDir=new THREE.Vector3();
+const presets={
+  sunset:{zenith:'#1c2f5c',horizon:'#ff8c42',sunCol:'#ffd9a0',ground:'#3a2233',deep:'#0a2a3a',shallow:'#1d5a66',
+    fog:'#b06a45',sun:[-0.55,0.16,0.82],dirCol:'#ffb46a',dirI:2.6,hemiSky:'#6a7fae',hemiGnd:'#3a2c22',hemiI:0.5,
+    stars:0.15,lantern:8,win:0.9,exp:1.05},
+  day:{zenith:'#1e5799',horizon:'#bcd9ee',sunCol:'#fff6e0',ground:'#5a7a8a',deep:'#0a3a5a',shallow:'#2a8aaa',
+    fog:'#a8c8dc',sun:[-0.4,0.72,0.55],dirCol:'#fff2d9',dirI:3.0,hemiSky:'#bfd9ff',hemiGnd:'#3a4a3a',hemiI:0.8,
+    stars:0,lantern:0,win:0.1,exp:1.0},
+  night:{zenith:'#04060e',horizon:'#1a2340',sunCol:'#9fb4d8',ground:'#05070d',deep:'#020409',shallow:'#0a1424',
+    fog:'#0d1526',sun:[0.6,0.35,-0.4],dirCol:'#7a93c8',dirI:0.7,hemiSky:'#1a2540',hemiGnd:'#05070c',hemiI:0.25,
+    stars:0.95,lantern:20,win:1.6,exp:1.15}
+};
+const presetKeys=['sunset','day','night'];
+const presetNames=['Закат','День','Ночь'];
+let presetIdx=0, lanternBase=8;
+function applyPreset(p){
+  skyU.uZenith.value.set(p.zenith); skyU.uHorizon.value.set(p.horizon);
+  skyU.uSunCol.value.set(p.sunCol); skyU.uGround.value.set(p.ground);
+  sunDir.set(...p.sun).normalize();
+  skyU.uSunDir.value.copy(sunDir); oceanU.uSunDir.value.copy(sunDir);
+  dirLight.position.copy(sunDir).multiplyScalar(140);
+  dirLight.color.set(p.dirCol); dirLight.intensity=p.dirI;
+  hemi.color.set(p.hemiSky); hemi.groundColor.set(p.hemiGnd); hemi.intensity=p.hemiI;
+  scene.fog.color.set(p.fog);
+  oceanU.uDeep.value.set(p.deep); oceanU.uShallow.value.set(p.shallow);
+  oceanU.uSkyCol.value.set(p.horizon); oceanU.uSunCol.value.set(p.sunCol); oceanU.uFogCol.value.set(p.fog);
+  stars.material.opacity=p.stars;
+  lanternBase=p.lantern;
+  winGlass.emissiveIntensity=p.win;
+  renderer.toneMappingExposure=p.exp;
+}
+applyPreset(presets.sunset);
+
+/* ================= UI ================= */
+const btnTime=document.getElementById('btnTime');
+btnTime.onclick=()=>{
+  presetIdx=(presetIdx+1)%3;
+  applyPreset(presets[presetKeys[presetIdx]]);
+  btnTime.textContent='🌅 Время: '+presetNames[presetIdx];
+};
+const waves=[[0.45,0.6,'Штиль'],[1.0,1.0,'Средние'],[1.9,1.7,'Шторм']];
+let waveIdx=1, waveTarget=1.0, waveSpeed=1.0, waveCur=1.0;
+const btnWave=document.getElementById('btnWave');
+btnWave.onclick=()=>{
+  waveIdx=(waveIdx+1)%3;
+  waveTarget=waves[waveIdx][0]; waveSpeed=waves[waveIdx][1];
+  btnWave.textContent='🌊 Волны: '+waves[waveIdx][2];
+};
+const btnCam=document.getElementById('btnCam');
+btnCam.onclick=()=>{
+  controls.autoRotate=!controls.autoRotate;
+  btnCam.textContent='🎥 Авто-камера: '+(controls.autoRotate?'ВКЛ':'ВЫКЛ');
+};
+
+/* ================= АНИМАЦИЯ ================= */
+const clock=new THREE.Clock();
+let tSim=0;
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05);
+  waveCur += (waveTarget-waveCur)*Math.min(dt*2,1);
+  oceanU.uWave.value=waveCur;
+  tSim += dt*waveSpeed;
+  oceanU.uTime.value=tSim; skyU.uTime.value=tSim;
+
+  // качка корабля
+  ship.position.y=Math.sin(tSim*0.8)*0.18*waveCur;
+  ship.rotation.z=Math.sin(tSim*0.55+0.6)*0.030*waveCur;
+  ship.rotation.x=Math.sin(tSim*0.42+2.1)*0.022*waveCur;
+  ship.rotation.y=Math.sin(tSim*0.18)*0.01;
+
+  // паруса
+  for(const s of sailSway){
+    s.o.rotation.z=Math.sin(tSim*0.7+s.ph)*0.02;
+    s.o.rotation.x=Math.sin(tSim*0.5+s.ph*1.7)*0.025;
+  }
+  // флаги
+  for(const f of flags){
+    const p=f.mesh.geometry.attributes.position;
+    for(let i=0;i<p.count;i++){
+      const x=f.base[i*3], y=f.base[i*3+1];
+      const u=Math.max(x,0)/f.w;
+      const z=Math.sin(x*2.6-tSim*f.speed+f.phase)*f.amp*u
+             +Math.sin(x*5.7-tSim*f.speed*1.6+f.phase)*f.amp*0.3*u;
+      p.setXYZ(i,x,y*(1-0.08*u*(1+Math.sin(x*2.6-tSim*f.speed+f.phase))),z);
+    }
+    p.needsUpdate=true;
+    f.mesh.geometry.computeVertexNormals();
+  }
+  // штурвал
+  wheelObj.rotation.z=Math.sin(tSim*0.5)*0.18+tSim*0.02;
+  // фонари (мерцание)
+  lanternLights.forEach((l,i)=>{ l.intensity=lanternBase*(0.88+0.12*Math.sin(tSim*9+i*2.3)); });
+  // кильватер
+  wakeTex.offset.y=(tSim*0.04)%1;
+  // чайки
+  for(const b of birds){
+    b.ang+=dt*b.sp;
+    b.g.position.set(12+Math.cos(b.ang)*b.r, b.y+Math.sin(tSim*0.5+b.phase)*0.8, -25+Math.sin(b.ang)*b.r);
+    b.g.rotation.y=-b.ang;
+    const fl=Math.sin(tSim*7+b.phase)*0.6;
+    b.wL.rotation.z=fl; b.wR.rotation.z=-fl;
+  }
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

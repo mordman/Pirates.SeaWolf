@@ -412,7 +412,8 @@ export class CombatSystem {
   // ---------- обновление ----------
   update(dt: number, time: number, waterHeight: (x: number, z: number, t: number) => number,
     groundHeight: ((x: number, z: number) => number) | null = null,
-    onGroundHit: ((x: number, y: number, z: number, radius: number, kind: AmmoType) => number) | null = null) {
+    onGroundHit: ((x: number, y: number, z: number, radius: number, kind: AmmoType) => number) | null = null,
+    onWaterHit: ((x: number, y: number, z: number, kind: AmmoType) => void) | null = null) {
     // перезарядка
     for (let i = 0; i < this.reloads.length; i++) {
       if (this.reloads[i] > 0) this.reloads[i] -= dt;
@@ -448,6 +449,8 @@ export class CombatSystem {
         pr.active = false;
         this.particles.splash(pr.pos.x, wy, pr.pos.z, pr.type === 'ball' ? 1.0 : 0.5);
         this.emit(GameEvents.PROJECTILE_SPLASH, { pos: pr.pos.clone() });
+        // разрыв у воды: рядом могут тонуть рыбацкие шлюпки гаваней
+        if (onWaterHit) onWaterHit(pr.pos.x, wy, pr.pos.z, pr.type);
         continue;
       }
 

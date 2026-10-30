@@ -66,6 +66,24 @@ function AmmoInput({ value, onChange }: { value: number; onChange: (v: number) =
   );
 }
 
+/** Ввод количества золота (0..100000) с кнопками ±50/±500 */
+function MoneyInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const set = (v: number) => onChange(Math.min(100000, Math.max(0, Math.round(v) || 0)));
+  return (
+    <div className="flex items-center gap-1">
+      <button onClick={() => set(value - 50)}
+        className="h-6 w-6 rounded border border-stone-600 bg-stone-900 text-xs font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">−</button>
+      <input type="number" min={0} max={100000} value={value}
+        onChange={e => set(Number(e.target.value))}
+        className="w-24 rounded border border-stone-600 bg-stone-900 px-1.5 py-1 text-center text-[11px] font-semibold text-amber-200 focus:border-amber-500 focus:outline-none" />
+      <button onClick={() => set(value + 50)}
+        className="h-6 w-6 rounded border border-stone-600 bg-stone-900 text-xs font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">+</button>
+      <button onClick={() => set(value + 500)}
+        className="h-6 w-7 rounded border border-stone-600 bg-stone-900 text-[10px] font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">+500</button>
+    </div>
+  );
+}
+
 const inputCls = 'rounded border border-stone-600 bg-stone-900 px-2 py-1 text-[11px] text-stone-200 focus:border-amber-500 focus:outline-none';
 
 export default function SettingsPanel({ initial, onApply, onClose }:
@@ -312,6 +330,17 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 <div className="mt-1 text-[10px] text-stone-500">
                   Полигон доступен из главного меню — корабли стоят параллельно,
                   мишень на якоре с правого борта.
+                </div>
+              </div>
+              <div className="py-2">
+                <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Кошелёк капитана</div>
+                <Row label="💰 Стартовое золото" hint="применяется сразу: кошелёк игрока становится равен этому числу">
+                  <MoneyInput value={s.gameplay.startMoney}
+                    onChange={v => update(d => { d.gameplay.startMoney = v; })} />
+                </Row>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  Золото в море добывай трофеями и торговлей — а здесь можно
+                  выдать себе любой стартовый капитал (до 100 000 зол.).
                 </div>
               </div>
               <div className="py-2">

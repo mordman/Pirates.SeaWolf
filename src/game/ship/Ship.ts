@@ -61,6 +61,8 @@ export class Ship {
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
+  private _oarQ = new THREE.Quaternion(); // развёрнутое положение весла
+  private _zAxis = new THREE.Vector3(0, 0, 1);
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
   private _e2 = new THREE.Euler();   // разбор кватерниона для посадки на волну
@@ -109,6 +111,8 @@ export class Ship {
   mastAnim = -1;           // (легаси) для совместимости
   mastHP: number[] = [];   // HP каждой мачты
   mastFall: number[] = []; // прогресс падения: -1 стоит, 0..1 валится/лежит
+  /** всплеск уже сыгран для падающей мачты (индекс = мачте) */
+  private mastSplashed: boolean[] = [];
   mastMaxHP = 32;
   /** оборванных снастей обвязки (ванты/штаги сломанных мачт) */
   private rigSnapped = 0;
@@ -248,6 +252,7 @@ export class Ship {
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP.push(this.mastMaxHP);
       this.mastFall.push(-1);
+      this.mastSplashed.push(false);
     }
   }
 
@@ -877,6 +882,7 @@ export class Ship {
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP[i] = this.mastMaxHP;
       this.mastFall[i] = -1;
+      this.mastSplashed[i] = false;
       const m = this.visual.masts[i];
       m.rotation.set(0, 0, 0);
       m.position.y = 0;
@@ -1257,9 +1263,11 @@ export class Ship {
     // руль за кормой следует за рулём
     if (v.rudderMesh) v.rudderMesh.rotation.y = this.rudder * 0.45;
 
-    // вёсла: УБРАНЫ по умолчанию (валы вертикально у борта); вываливаются
-    // на воду при гребле (oarsDeployT → 1). Гребки в противофазе бортов,
-    // амплитуда — от хода; задний ход — гребут «наоборот» (медленнее)
+    // вёсла: УБРАНЫ по умолчанию — вал ВДОЛЬ борта к корме
+    // (кватернион stowQ из buildShip, «палки вверх» больше нет);
+    // вываливаются на воду при гребле (oarsDeployT → 1, slerp).
+    // Гребки в противофазе бортов, амплитуда — от хода; задний ход
+    // — гребут «наоборот» (медленнее)
     if (v.oars && v.oars.length) {
       this.oarsDeployT += ((this.oarsOut ? 1 : 0) - this.oarsDeployT) * Math.min(1, dt * 1.5);
       const rowing = this.rowing !== 0 && this.oarsDeployT > 0.25;
@@ -1267,24 +1275,38 @@ export class Ship {
       const rowDir = this.rowing < 0 ? -1 : 1;
       for (const o of v.oars) {
         const base = o.userData.base as number;
-        const stow = o.userData.stow as number;
+        const stowQ = o.userData.stowQ as THREE.Quaternion;
         const phase = o.userData.phase as number;
         const swing = rowing ? Math.sin(time * 2.3 * rowDir + phase) * strokeAmp : 0;
-        o.rotation.z = THREE.MathUtils.lerp(stow, base + swing, this.oarsDeployT);
+        // развёрнутое положение: вал наружу с наклоном к воде + гребок
+        this._oarQ.setFromAxisAngle(this._zAxis, base + swing);
+        o.quaternion.copy(stowQ).slerp(this._oarQ, this.oarsDeployT);
       }
     }
 
-    // падение мачт: каждая валится вперёд-вбок со своим наклоном,
-    // реи и паруса едут вместе с мачтой (они её потомки)
+    // падение мачт: валится с нарастающим ускорением (ease-in),
+    // заваливаясь за борт; реи и паруса едут вместе с мачтой (они
+    // её потомки), обвязка уже оборвана (breakMast → snapRigging).
+    // Когда топ мачты достаёт воду — фонтан брызг
     for (let i = 0; i < v.masts.length; i++) {
       const f = this.mastFall[i];
       if (f >= 0 && f < 1) {
-        this.mastFall[i] = Math.min(1, f + dt * 0.42);
+        // ускорение падения: 0.30 → 0.62 (мачта «набирает ход»)
+        this.mastFall[i] = Math.min(1, f + dt * (0.30 + f * 0.32));
         const k = this.mastFall[i];
-        const lean = (i % 2 === 0 ? 1 : -1) * 0.3;
-        v.masts[i].rotation.x = k * 1.25;
-        v.masts[i].rotation.z = k * lean;
-        v.masts[i].position.y = -k * 1.6;
+        const ke = k * k; // ease-in: поворот отстаёт от прогресса
+        const lean = (i % 2 === 0 ? 1 : -1) * 0.52;
+        v.masts[i].rotation.x = ke * 1.38;
+        v.masts[i].rotation.z = ke * lean;
+        v.masts[i].position.y = -ke * 2.1;
+        // топ мачты доходит до воды — всплеск
+        if (k > 0.62 && !this.mastSplashed[i]) {
+          this.mastSplashed[i] = true;
+          const h = ((v.masts[i].userData.height as number) || 20);
+          this.tmpV.set(0, 0, h * 0.88 * Math.sin(Math.min(ke * 1.38, 1.2)))
+            .applyQuaternion(this.quaternion).add(this.position);
+          this.particles?.splash(this.tmpV.x, this.position.y + 0.1, this.tmpV.z, 1.25);
+        }
       }
     }
 
