@@ -62,6 +62,9 @@ export class Ship {
   private tmpV2 = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
   private _oarQ = new THREE.Quaternion(); // развёрнутое положение весла
+  private _oarYaw = new THREE.Quaternion(); // гребок (вокруг вертикали)
+  private _oarDip = new THREE.Quaternion(); // погружение (вокруг ДП)
+  private _yAxis = new THREE.Vector3(0, 1, 0);
   private _zAxis = new THREE.Vector3(0, 0, 1);
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
@@ -89,6 +92,16 @@ export class Ship {
   rowing = 0;
   /** сек без гребли при вываленных вёслах — потом автоубирание */
   oarsIdleT = 0;
+  /** фаза гребка (рад): ОДНА на все вёсла — синхронная гребля;
+   *  передаётся экипажу (гребцы отклоняются в такт) */
+  strokePhase = 0;
+
+  // --- пушечные порты (закрытые батареи) ---
+  /** порты открыты (команда игрока / ИИ в бою) — крышки подняты,
+   *  орудия выехали; при закрытых батареи НЕ СТРЕЛЯЮТ */
+  portsOpen = false;
+  /** 0..1 — плавное открытие/закрытие портов (анимация) */
+  portsT = 0;
 
   // --- состояние ---
   hullHP: number; hullMax: number;
@@ -830,6 +843,28 @@ export class Ship {
       posAttr.needsUpdate = true;
       this.rigSnapped = Math.min(this.rigSnapped + n, rig.meta.length);
     }
+    // ДЕРЖАЩИЕ ЭЛЕМЕНТЫ падают вместе с мачтой: ванты с выбленками
+    // из группы мелких деталей — своя пара линий на мачту — исчезает
+    // (жалоба «тросы не упали вместе с мачтой»: обрывалась только
+    // обвязка, а веер вант с выбленками висел в воздухе)
+    if (this.visual.detailRigs?.length) {
+      for (const dr of this.visual.detailRigs) {
+        if (dr.mast !== idx || !dr.lines.visible) continue;
+        dr.lines.visible = false;
+        n++;
+        // обрывки троса из середины вант
+        const g = Ship.gibs;
+        for (let k = 0; k < 3 && g; k++) {
+          const sp = this.tmpV.set((Math.random() - 0.5) * 4, 2 + Math.random() * 3,
+            this.visual.masts[idx].position.z + (Math.random() - 0.5) * 4)
+            .applyQuaternion(this.quaternion).add(this.position);
+          g.spawnPart(
+            new THREE.Vector3(sp.x, sp.y, sp.z),
+            new THREE.Vector3((Math.random() - 0.5) * 3, 1 + Math.random() * 2, (Math.random() - 0.5) * 3),
+            0.05, 0.05, 0.7 + Math.random() * 0.5, 0x241c12, 1.5 + Math.random());
+        }
+      }
+    }
     // обрывки троса + пыль от лопнувших вант
     const gibs = Ship.gibs;
     for (const sp of snappedAt) {
@@ -883,6 +918,10 @@ export class Ship {
       posAttr.needsUpdate = true;
     }
     this.rigSnapped = 0;
+    // ванты с выбленками — на место (вместе с обвязкой)
+    if (this.visual.detailRigs) {
+      for (const dr of this.visual.detailRigs) dr.lines.visible = true;
+    }
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP[i] = this.mastMaxHP;
       this.mastFall[i] = -1;
@@ -1267,25 +1306,60 @@ export class Ship {
     // руль за кормой следует за рулём
     if (v.rudderMesh) v.rudderMesh.rotation.y = this.rudder * 0.45;
 
-    // вёсла: УБРАНЫ по умолчанию — вал ВДОЛЬ борта к корме
-    // (кватернион stowQ из buildShip, «палки вверх» больше нет);
-    // вываливаются на воду при гребле (oarsDeployT → 1, slerp).
-    // Гребки в противофазе бортов, амплитуда — от хода; задний ход
-    // — гребут «наоборот» (медленнее)
+    // вёсла: УБРАНЫ по умолчанию — вал вдоль борта к корме
+    // (кватернион stowQ из buildShip). ГРЕБКА — синхронная модель:
+    //   yaw  вокруг вертикали — лопасть МЕТЁТ от носа к корме
+    //         (задний ход — зеркально, к носу);
+    //   dip   вокруг диаметрали — лопасть ПОГРУЖАЕТСЯ в рабочей
+    //         фазе (sin φ > 0) и выходит на переносе.
+    // Фаза ОДНА на все вёсла и оба борта — «гребут в ногу»;
+    // темп растёт со скоростью хода.
     if (v.oars && v.oars.length) {
       this.oarsDeployT += ((this.oarsOut ? 1 : 0) - this.oarsDeployT) * Math.min(1, dt * 1.5);
       const rowing = this.rowing !== 0 && this.oarsDeployT > 0.25;
-      const strokeAmp = 0.16 * clamp(this.speed() / Math.max(1, this.preset.maxSpeed * 0.4), 0.12, 1);
       const rowDir = this.rowing < 0 ? -1 : 1;
+      if (rowing) {
+        const spdFrac = clamp(this.speed() / Math.max(1, this.preset.maxSpeed), 0, 1);
+        const rate = 0.55 + spdFrac * 0.5;                 // гребков/с
+        this.strokePhase += dt * rate * Math.PI * 2;
+      }
+      const SWEEP = 0.42;                                  // размах гребка, рад
+      const DIP = 0.30;                                    // погружение лопасти, рад
+      const DIP0 = 0.14;                                   // статичный наклон к воде
+      const sweep = rowing ? Math.cos(this.strokePhase) * SWEEP * rowDir : 0;
+      const dip = rowing ? Math.max(0, Math.sin(this.strokePhase)) * DIP : 0;
       for (const o of v.oars) {
-        const base = o.userData.base as number;
+        const side = o.userData.side as number;
         const stowQ = o.userData.stowQ as THREE.Quaternion;
-        const phase = o.userData.phase as number;
-        const swing = rowing ? Math.sin(time * 2.3 * rowDir + phase) * strokeAmp : 0;
-        // развёрнутое положение: вал наружу с наклоном к воде + гребок
-        this._oarQ.setFromAxisAngle(this._zAxis, base + swing);
+        // развёрнутое: гребок (yaw) в осях корабля, затем наклон (dip)
+        this._oarYaw.setFromAxisAngle(this._yAxis, side * sweep);
+        this._oarDip.setFromAxisAngle(this._zAxis, -side * (DIP0 + dip));
+        this._oarQ.copy(this._oarDip).multiply(this._oarYaw);
         o.quaternion.copy(stowQ).slerp(this._oarQ, this.oarsDeployT);
       }
+    }
+
+    // пушечные порты: крышка откидывается вверх-наружу (петля вверху),
+    // орудие ВЫЕЗЖАЕТ наружу; закрыты — не стреляют (гейт в combat.ts)
+    if (v.gunPorts.length) {
+      this.portsT += ((this.portsOpen ? 1 : 0) - this.portsT) * Math.min(1, dt * 1.6);
+      const lidA = smoothstep(0, 1, this.portsT);
+      const slide = clamp((this.portsT - 0.25) / 0.75, 0, 1);
+      for (const gp of v.gunPorts) {
+        gp.open = this.portsT;
+        gp.lid.rotation.z = gp.side * 2.6 * lidA;
+        const baseX = gp.gun.userData.baseX as number;
+        const slideX = gp.gun.userData.slideX as number;
+        gp.gun.position.x = baseX + slideX * slide;
+      }
+    }
+
+    // магнитная стрелка нактоуза: плывёт в картушке и всегда смотрит
+    // на СЕВЕР (мир −Z) — рулевому виден истинный курс; лёгкая
+    // дрожь картушки от хода
+    if (v.binnacleNeedle) {
+      v.binnacleNeedle.rotation.y = -this.heading + Math.PI +
+        Math.sin(time * 3.1) * 0.03 + Math.sin(time * 7.7) * 0.015;
     }
 
     // падение мачт: валится с нарастающим ускорением (ease-in),
@@ -1375,11 +1449,17 @@ export class Ship {
       }
     }
 
-    // экипаж: анимация, потери (трупы/разрывы), эвакуация при потоплении
+    // экипаж: анимация, потери (трупы/разрывы), эвакуация при потоплении;
+    // гребным судам передаём фазу гребка — гребцы отклоняются в такт
     this.crew3d.update(dt, time, {
       crew: this.crew, maxCrew: this.preset.maxCrew,
       sinking: this.sinking, sunk: this.sunk,
       position: this.position, quaternion: this.quaternion,
+      stroke: {
+        phase: this.strokePhase,
+        active: (this.rowing !== 0 && this.oarsDeployT > 0.5 && !this.sinking) ? 1 : 0,
+        dir: this.rowing < 0 ? -1 : 1,
+      },
     });
   }
 

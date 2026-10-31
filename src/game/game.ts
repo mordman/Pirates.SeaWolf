@@ -5,7 +5,9 @@ import { clamp } from './core/rng';
 import { Water } from './water/Water';
 import { SEA, waterHeightAt } from './water/waves';
 import { Ship } from './ship/Ship';
-import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, type FlagKind } from './ship/buildShip';
+import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, type FlagKind } from './ship/buildShip';
+import { FIGUREHEADS } from './ship/figurehead';
+import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt, type PortDef } from './world/world';
@@ -89,6 +91,11 @@ export interface HudState {
   portInfo: { name: string; tierName: string; population: number } | null;
   /** вёсла (гребные суда): вывалены/выкладываются/гребут */
   oars: { has: boolean; out: boolean; deploy: number; rowing: number } | null;
+  /** пушечные порты: закрытые батареи (открыты/анимация/число) */
+  gunPorts: { has: boolean; open: boolean; anim: number; count: number } | null;
+  /** надетые фигура и украшение (магазин порта) */
+  figureOn: string | null;
+  decoOn: string | null;
   messages: HudMessage[];
   mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string }[];
   mapShips: { x: number; z: number; kind: string; cat: 'war' | 'merchant'; surrendered: boolean }[];
@@ -110,15 +117,16 @@ export const GOODS: GoodDef[] = [
   { key: 'silk', name: 'Шёлк', base: 120, weight: 0.5, icon: '🧵' },
 ];
 
-// ---------- скины (флаг / паруса / корпус) ----------
+// ---------- скины (флаг / паруса / корпус) + гальюнные фигуры + украшения ----------
 export interface SkinDef {
   id: string;
-  kind: 'flag' | 'sail' | 'hull';
+  kind: 'flag' | 'sail' | 'hull' | 'figure' | 'deco';
   name: string;
   price: number;
   flag?: FlagKind;
   hex?: number;   // -1 = вернуть штатный вид пресета
   swatch: string; // цвет кружка в UI
+  desc?: string;  // описание (фигуры/украшения)
 }
 export const SKINS: SkinDef[] = [
   { id: 'flag.pirate', kind: 'flag', name: 'Весёлый Роджер', price: 150, flag: 'pirate', swatch: '#14100c' },
@@ -138,6 +146,16 @@ export const SKINS: SkinDef[] = [
   { id: 'hull.black', kind: 'hull', name: 'Чёрный корпус', price: 550, hex: 0x4a4a50, swatch: '#4a4a50' },
   { id: 'hull.blue', kind: 'hull', name: 'Адмиральский синий', price: 450, hex: 0x6a7a9a, swatch: '#6a7a9a' },
   { id: 'hull.crimson', kind: 'hull', name: 'Багровый корпус', price: 450, hex: 0xa86058, swatch: '#a86058' },
+  // гальюнные фигуры — резные украшения форштевня (порт)
+  ...FIGUREHEADS.map(f => ({
+    id: f.id, kind: 'figure' as const, name: f.name, price: f.price,
+    swatch: f.swatch, desc: f.desc,
+  })),
+  // украшения бортов — золотые узоры/вензеля/эмблемы (порт)
+  ...DECOS.map(d => ({
+    id: d.id, kind: 'deco' as const, name: d.name, price: d.price,
+    swatch: '#d8ab48', desc: d.desc,
+  })),
 ];
 
 // ---------- улучшения корабля (верфь) ----------
@@ -194,10 +212,11 @@ export class Game {
   /** улучшения по типам судов (сохраняются при возврате к модели) */
   shipUpgrades: Record<string, ShipUpgrades> = {};
   /** купленные скины */
-  skinsOwned = new Set<string>(['flag.pirate', 'sail.default', 'hull.default']);
+  skinsOwned = new Set<string>(['flag.pirate', 'sail.default', 'hull.default', 'figure.stock', 'deco.none']);
   /** надетые скины (переносятся на любой корабль игрока) */
-  skinsOn: { flag: FlagKind | null; sail: number | null; hull: number | null } =
-    { flag: null, sail: null, hull: null };
+  skinsOn: { flag: FlagKind | null; sail: number | null; hull: number | null;
+    figure: string | null; deco: string | null } =
+    { flag: null, sail: null, hull: null, figure: null, deco: null };
 
   // ===== Полигон (мини-игра проверки повреждений) =====
   proving = false;                // активен ли режим полигона
@@ -206,7 +225,7 @@ export class Game {
   pgTarget: AIShip | null = null; // мишень на якоре
   pgModel = 'fluyt';              // модель мишени
   pgReturnFire = false;           // отвечает ли мишень огнём
-  private PG_ANCHOR = new THREE.Vector3(2300, 0, 2300); // чистая вода вдали от островов
+  private PG_ANCHOR = new THREE.Vector3(3200, 0, 2300); // чистая вода (запас до берега >1.1 км) вдали от островов
 
   private msgId = 1;
   messages: HudMessage[] = [];
@@ -272,6 +291,8 @@ export class Game {
 
     this.hud = this.makeHud();
     (window as unknown as { __game?: Game }).__game = this;
+    // THREE для E2E-тестов (повороты кватернионами в eval без бандла)
+    (window as unknown as { __THREE?: typeof THREE }).__THREE = THREE;
     window.addEventListener('resize', this.onResize);
   }
 
@@ -842,6 +863,8 @@ export class Game {
     np.anchored = old.anchored;
     np.oarsOut = false; // вёсла нового корабля убраны
     np.rowing = 0;
+    np.portsOpen = false; // порты задраены (батареи молчат до команды P)
+    np.portsT = 0;
     // улучшения и скины этого игрока — на новый корабль
     this.applyUpgrades(np);
     this.applySkins(np);
@@ -1075,6 +1098,12 @@ export class Game {
     } else if (sk.kind === 'hull') {
       this.skinsOn.hull = sk.hex !== undefined && sk.hex >= 0 ? sk.hex : null;
       setHullTint(this.player.visual, this.skinsOn.hull ?? 0xffffff);
+    } else if (sk.kind === 'figure') {
+      this.skinsOn.figure = sk.id;
+      setFigurehead(this.player.visual, this.player.preset, sk.id);
+    } else if (sk.kind === 'deco') {
+      this.skinsOn.deco = sk.id;
+      setDecoration(this.player.visual, this.player.preset, sk.id);
     }
     this.pushMessage(`Скин применён: ${sk.name}`);
     return null;
@@ -1085,6 +1114,9 @@ export class Game {
     if (this.skinsOn.flag) setFlagKind(sh.visual, this.skinsOn.flag);
     if (this.skinsOn.sail != null) setSailColor(sh.visual, this.skinsOn.sail);
     if (this.skinsOn.hull != null) setHullTint(sh.visual, this.skinsOn.hull);
+    // фигура и украшение — на любом корабле (штатные по умолчанию)
+    if (this.skinsOn.figure) setFigurehead(sh.visual, sh.preset, this.skinsOn.figure);
+    if (this.skinsOn.deco) setDecoration(sh.visual, sh.preset, this.skinsOn.deco);
   }
 
   // ---------- быстрое перемещение (глобальная карта) ----------
@@ -1196,6 +1228,28 @@ export class Game {
       }
     } else {
       p.rowing = 0;
+    }
+    // пушечные порты: P — открыть/закрыть. Открыты: крышки подняты,
+    // орудия выехали — батареи стреляют; закрыты — стреляют только
+    // палубные орудия (механика по ТЗ пользователя)
+    if (inp.pressed(c.gunports)) {
+      if (p.visual.gunPorts.length) {
+        p.portsOpen = !p.portsOpen;
+        this.audio.bell();
+        this.pushMessage(p.portsOpen
+          ? 'Порты открыты — батареи к бою!'
+          : 'Порты закрыты — орудия задраены');
+      } else {
+        this.pushMessage('На этом судне нет закрытых батарей');
+      }
+    }
+    // авто-открытие портов при залпе с прицелом (удобство: игрок
+    // жмёт огонь — команда готовит батареи, залп задержится на
+    // время анимации крышек)
+    if (p.visual.gunPorts.length && !p.portsOpen && this.combat
+        && this.combat.isAiming() && inp.pressed(c.fire)) {
+      p.portsOpen = true;
+      this.pushMessage('Порты открываются — залп задержится!');
     }
     // задний ход: обычные суда — «спиной к ветру» (S при убранных
     // парусах); гребные — S (или Alt+S) гребут назад вёслами
@@ -1321,7 +1375,7 @@ export class Game {
       cameraLabel: CAMERA_LABEL.iso, clock: '', seaState: 0, repairAction: null,
       canDock: false, nearPortName: null, canBoard: false, boardedName: null,
       shipId: 'sloop', shipName: '', shipClass: '', docked: false,
-      portInfo: null, oars: null,
+      portInfo: null, oars: null, gunPorts: null, figureOn: 'figure.stock', decoOn: 'deco.none',
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
       proving: false, target: null,
@@ -1385,6 +1439,11 @@ export class Game {
     h.oars = p.preset.oars
       ? { has: true, out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing }
       : null;
+    h.gunPorts = p.visual.gunPorts.length
+      ? { has: true, open: p.portsOpen, anim: +p.portsT.toFixed(2), count: p.visual.gunPorts.length }
+      : null;
+    h.figureOn = this.skinsOn.figure ?? 'figure.stock';
+    h.decoOn = this.skinsOn.deco ?? 'deco.none';
     h.cargoT = this.cargoUsedT();
     h.cargoMaxT = this.cargoMaxT();
     h.messages = [...this.messages];
@@ -1549,8 +1608,18 @@ export class Game {
       this.updateFires(STEP);
       for (const ai of this.aiShips) {
         ai.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
+        // ИИ открывает порты входя в бой и задраивает вне боя
+        // (крышки анимируются, орудия выезжают — как у игрока)
+        const want = ai.state === 'combat';
+        if (ai.ship.visual.gunPorts.length && ai.ship.portsOpen !== want) {
+          ai.ship.portsOpen = want;
+        }
       }
-      if (this.pgTarget) this.pgTarget.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
+      if (this.pgTarget) {
+        this.pgTarget.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
+        // мишень полигона с ответным огнём — порты открыты
+        if (this.pgTarget.ship.visual.gunPorts.length) this.pgTarget.ship.portsOpen = true;
+      }
       this.shipCollisions();
       this.accum -= STEP;
       steps++;
@@ -1641,8 +1710,18 @@ export class Game {
       treesBroken: this.world.treesBroken,
       // вёсла игрока (гребные суда)
       oars: p.preset.oars
-        ? { out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing, idle: +p.oarsIdleT.toFixed(1) }
+        ? { out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing, idle: +p.oarsIdleT.toFixed(1), phase: +p.strokePhase.toFixed(2) }
         : null,
+      // пушечные порты игрока (закрытые батареи)
+      gunPorts: p.visual.gunPorts.length
+        ? { open: p.portsOpen, anim: +p.portsT.toFixed(2), count: p.visual.gunPorts.length,
+            lidsOpen: p.visual.gunPorts.filter(gp => gp.open > 0.85).length,
+            gunsOut: p.visual.gunPorts.filter(gp => gp.gun.position.x * Math.sign(gp.gun.userData.baseX) > Math.abs(gp.gun.userData.baseX) + 0.2).length }
+        : null,
+      figureOn: this.skinsOn.figure ?? 'figure.stock',
+      decoOn: this.skinsOn.deco ?? 'deco.none',
+      // острова: размеры/дистанции для E2E карты
+      islandsBig: this.world.islands.map(i => ({ name: i.name, r: i.r, x: Math.round(i.cx), z: Math.round(i.cz) })),
       // экономика: груз, порты архипелага
       gold: Math.floor(p.gold),
       cargoT: this.cargoUsedT(),
@@ -1871,6 +1950,8 @@ export class Game {
     p.oarsOut = false;
     p.rowing = 0;
     p.oarsIdleT = 0;
+    p.portsOpen = false;
+    p.portsT = 0;
     // новый корабль — новый боекомплект (с недостачей, если включена)
     p.ammo = this.settings.gameplay.ammoJitter
       ? rollStartingAmmo(this.settings.gameplay.startingAmmo).ammo

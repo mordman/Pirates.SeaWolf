@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pbr';
+import { makeHullTextures } from './hullDeco';
+import { buildFigurehead } from './figurehead';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -36,6 +38,10 @@ export interface ShipPreset {
   gallery?: boolean;     // кормовая галерея с окнами
   oars?: number;         // вёсел на борт (гребные суда: шебека, галера)
   stripes?: { y0: number; y1: number; color: number }[]; // цветные полосы борта (доли свободного борта): «Victory stripe»
+  /** высота квартердека над главной палубой, м (у судов, где он
+   *  был в реальности: фрегаты, линейные, ост-индцы, галеон…);
+   *  0/нет — открытая палуба по всей длине */
+  quarter?: number;
 }
 
 export const PRESETS: Record<string, ShipPreset> = {
@@ -57,7 +63,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 360_000, maxSpeed: 5.6,
     hullHP: 150, sailHP: 110, maxCrew: 20, cargo: 220,
     colors: { hull: 0x4a3a2a, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
-    flagKind: 'merchant',
+    flagKind: 'merchant', quarter: 1.2,
     category: 'merchant', shipClass: 'Флейт', year: 1605, country: 'Голландия',
   },
   brig: {
@@ -67,7 +73,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 280_000, maxSpeed: 7.6,
     hullHP: 180, sailHP: 120, maxCrew: 60, cargo: 90,
     colors: { hull: 0x3d3d46, deck: 0x8f7752, trim: 0x1c1c22, sail: 0xdfd6bd },
-    flagKind: 'navy',
+    flagKind: 'navy', quarter: 1.1,
     category: 'war', shipClass: 'Бриг', year: 1780, country: 'Великобритания',
   },
   caravel: {
@@ -78,7 +84,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 110, sailHP: 105, maxCrew: 26, cargo: 70,
     colors: { hull: 0x6e4c2a, deck: 0xa8895f, trim: 0x2c1f12, sail: 0xe6d7b2 },
     flagKind: 'merchant',
-    rig: 'lateenMix',
+    rig: 'lateenMix', quarter: 0.8,
     category: 'merchant', shipClass: 'Каравелла', year: 1490, country: 'Португалия',
   },
   pinnace: {
@@ -89,7 +95,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 165, sailHP: 115, maxCrew: 34, cargo: 190,
     colors: { hull: 0x54402c, deck: 0x9d8158, trim: 0x241a10, sail: 0xd9ccb0 },
     flagKind: 'merchant',
-    flatBow: true,
+    flatBow: true, quarter: 0.9,
     category: 'merchant', shipClass: 'Пинасс', year: 1600, country: 'Англия',
   },
   cog: {
@@ -111,7 +117,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 250, sailHP: 130, maxCrew: 75, cargo: 120,
     colors: { hull: 0x3a2e22, deck: 0x8f7752, trim: 0x8a6a2a, sail: 0xe3d8bd },
     flagKind: 'navy',
-    gunportRows: 2, beakhead: true, gallery: true,
+    gunportRows: 2, beakhead: true, gallery: true, quarter: 2.1,
     category: 'war', shipClass: 'Галеон', year: 1577, country: 'Англия',
   },
   frigate: {
@@ -122,7 +128,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 300, sailHP: 140, maxCrew: 90, cargo: 100,
     colors: { hull: 0x2a2d33, deck: 0x8f7752, trim: 0x9a7a33, sail: 0xe9e0c8 },
     flagKind: 'navy',
-    gunportRows: 2, gallery: true,
+    gunportRows: 2, gallery: true, quarter: 1.9,
     category: 'war', shipClass: 'Фрегат 5 ранга', year: 1750, country: 'Великобритания',
   },
 
@@ -134,7 +140,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 3_500_000, maxSpeed: 6.4,
     hullHP: 950, sailHP: 320, maxCrew: 850, cargo: 550,
     colors: { hull: 0x1c1c22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xece3cb },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 2.4,
     category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1765, country: 'Великобритания',
     stripes: [{ y0: 0.24, y1: 0.36, color: 0xc9a24a }, { y0: 0.41, y1: 0.53, color: 0xc9a24a }, { y0: 0.58, y1: 0.70, color: 0xc9a24a }],
   },
@@ -145,7 +151,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 4_300_000, maxSpeed: 6.0,
     hullHP: 1100, sailHP: 340, maxCrew: 1050, cargo: 620,
     colors: { hull: 0x7a2a22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xe9e0c8 },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 2.5,
     category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1769, country: 'Испания',
     stripes: [{ y0: 0.23, y1: 0.33, color: 0xd8d2c2 }, { y0: 0.35, y1: 0.45, color: 0xd8d2c2 }, { y0: 0.47, y1: 0.57, color: 0xd8d2c2 }, { y0: 0.60, y1: 0.70, color: 0xd8d2c2 }],
   },
@@ -156,7 +162,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 2_800_000, maxSpeed: 6.6,
     hullHP: 880, sailHP: 300, maxCrew: 850, cargo: 500,
     colors: { hull: 0x27406b, deck: 0xa8895f, trim: 0xc9a24a, sail: 0xece3cb },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 2.3,
     category: 'war', shipClass: 'Линейный корабль 1 ранга', year: 1693, country: 'Франция',
     stripes: [{ y0: 0.24, y1: 0.36, color: 0xc9a24a }, { y0: 0.41, y1: 0.53, color: 0xc9a24a }, { y0: 0.58, y1: 0.70, color: 0xc9a24a }],
   },
@@ -167,7 +173,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_900_000, maxSpeed: 6.4,
     hullHP: 620, sailHP: 240, maxCrew: 470, cargo: 400,
     colors: { hull: 0x4c4030, deck: 0x9d8158, trim: 0x2b4a6b, sail: 0xe3d8bd },
-    flagKind: 'navy',
+    flagKind: 'navy', quarter: 2.2,
     category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1741, country: 'Россия',
     stripes: [{ y0: 0.36, y1: 0.54, color: 0x9db3c9 }],
   },
@@ -178,7 +184,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 2_200_000, maxSpeed: 6.5,
     hullHP: 660, sailHP: 250, maxCrew: 500, cargo: 380,
     colors: { hull: 0x1c1c22, deck: 0xa8895f, trim: 0x8a6a2a, sail: 0xe9e0c8 },
-    flagKind: 'navy',
+    flagKind: 'navy', quarter: 2.2,
     category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1781, country: 'Великобритания',
     stripes: [{ y0: 0.36, y1: 0.54, color: 0xc9a24a }],
   },
@@ -189,7 +195,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_900_000, maxSpeed: 6.4,
     hullHP: 630, sailHP: 240, maxCrew: 470, cargo: 400,
     colors: { hull: 0x6e6a5c, deck: 0x9d8158, trim: 0x2b5a8a, sail: 0xe3d8bd },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 2.2,
     category: 'war', shipClass: 'Линейный корабль 3 ранга', year: 1715, country: 'Россия',
     stripes: [{ y0: 0.38, y1: 0.56, color: 0x2b5a8a }],
   },
@@ -200,7 +206,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 2_200_000, maxSpeed: 7.8,
     hullHP: 740, sailHP: 280, maxCrew: 450, cargo: 380,
     colors: { hull: 0x17171c, deck: 0xa8895f, trim: 0xd8d2c2, sail: 0xece3cb },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 2.3,
     category: 'war', shipClass: 'Тяжёлый фрегат 4 ранга', year: 1797, country: 'США',
     stripes: [{ y0: 0.34, y1: 0.54, color: 0xd8d2c2 }],
   },
@@ -211,7 +217,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 700_000, maxSpeed: 8.6,
     hullHP: 290, sailHP: 170, maxCrew: 200, cargo: 150,
     colors: { hull: 0x2a2d33, deck: 0x9d8158, trim: 0x1c1c22, sail: 0xe9e0c8 },
-    flagKind: 'navy',
+    flagKind: 'navy', quarter: 1.8,
     category: 'war', shipClass: 'Фрегат 6 ранга', year: 1796, country: 'Великобритания',
     stripes: [{ y0: 0.34, y1: 0.56, color: 0xc9b45a }],
   },
@@ -222,7 +228,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_050_000, maxSpeed: 8.0,
     hullHP: 330, sailHP: 200, maxCrew: 255, cargo: 180,
     colors: { hull: 0x2b4a7a, deck: 0x9d8158, trim: 0xc9a24a, sail: 0xece3cb },
-    flagKind: 'navy', gallery: true,
+    flagKind: 'navy', gallery: true, quarter: 1.9,
     category: 'war', shipClass: 'Фрегат (класс Concorde)', year: 1779, country: 'Франция',
     stripes: [{ y0: 0.32, y1: 0.54, color: 0xc9a24a }],
   },
@@ -234,7 +240,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 240, sailHP: 200, maxCrew: 150, cargo: 120,
     colors: { hull: 0x6e3423, deck: 0xa8895f, trim: 0x2c1f12, sail: 0xe6d7b2 },
     flagKind: 'navy',
-    rig: 'lateen', oars: 8,
+    rig: 'lateen', oars: 8, quarter: 1.1,
     category: 'war', shipClass: 'Военная шебека (гребная)', year: 1750, country: 'Франция',
   },
   galley: {
@@ -245,7 +251,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     hullHP: 260, sailHP: 150, maxCrew: 260, cargo: 100,
     colors: { hull: 0x5c3020, deck: 0x93764f, trim: 0xc9a24a, sail: 0xdccfa8 },
     flagKind: 'navy',
-    rig: 'lateen', oars: 12,
+    rig: 'lateen', oars: 12, quarter: 1.2,
     category: 'war', shipClass: 'Военная галера (гребная)', year: 1750, country: 'Средиземноморье',
   },
   blackpearl: {
@@ -258,7 +264,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 640_000, maxSpeed: 10.6,
     hullHP: 430, sailHP: 220, maxCrew: 130, cargo: 160,
     colors: { hull: 0x141419, deck: 0x453c33, trim: 0x1e1e26, sail: 0x1a1a20 },
-    flagKind: 'pirate', gallery: true, beakhead: true,
+    flagKind: 'pirate', gallery: true, beakhead: true, quarter: 2.0,
     category: 'war', shipClass: 'Легендарный галеон', year: 1693, country: 'Карибское море',
   },
 
@@ -270,7 +276,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_800_000, maxSpeed: 5.6,
     hullHP: 520, sailHP: 260, maxCrew: 120, cargo: 1400,
     colors: { hull: 0x4a3a2a, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
-    flagKind: 'merchant', gallery: true,
+    flagKind: 'merchant', gallery: true, quarter: 1.8,
     category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1748, country: 'Голландия',
     stripes: [{ y0: 0.30, y1: 0.50, color: 0x6b7a86 }],
   },
@@ -281,7 +287,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_700_000, maxSpeed: 5.5,
     hullHP: 560, sailHP: 280, maxCrew: 160, cargo: 1500,
     colors: { hull: 0x3d3226, deck: 0x9d8158, trim: 0x241a10, sail: 0xd8cbae },
-    flagKind: 'merchant', gallery: true,
+    flagKind: 'merchant', gallery: true, quarter: 1.8,
     category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1796, country: 'Великобритания',
     stripes: [{ y0: 0.30, y1: 0.52, color: 0x2b4a6b }],
   },
@@ -292,7 +298,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 1_500_000, maxSpeed: 5.9,
     hullHP: 480, sailHP: 250, maxCrew: 140, cargo: 1200,
     colors: { hull: 0x5f4a2e, deck: 0x9d8158, trim: 0x27406b, sail: 0xd8cbae },
-    flagKind: 'merchant', gallery: true,
+    flagKind: 'merchant', gallery: true, quarter: 1.7,
     category: 'merchant', shipClass: 'Ост-Индский корабль', year: 1738, country: 'Швеция',
     stripes: [{ y0: 0.32, y1: 0.52, color: 0x27406b }],
   },
@@ -303,7 +309,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 700_000, maxSpeed: 6.4,
     hullHP: 340, sailHP: 190, maxCrew: 24, cargo: 420,
     colors: { hull: 0x17171c, deck: 0xa8895f, trim: 0xd8d2c2, sail: 0xd8cbae },
-    flagKind: 'merchant',
+    flagKind: 'merchant', quarter: 1.4,
     category: 'merchant', shipClass: 'Торговый Индский корабль', year: 1797, country: 'США',
     stripes: [{ y0: 0.34, y1: 0.56, color: 0xd8d2c2 }],
   },
@@ -314,7 +320,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 400_000, maxSpeed: 5.8,
     hullHP: 250, sailHP: 130, maxCrew: 85, cargo: 380,
     colors: { hull: 0x5c4028, deck: 0x93764f, trim: 0x241a10, sail: 0xd6c8a8 },
-    flagKind: 'navy', flatBow: true,
+    flagKind: 'navy', flatBow: true, quarter: 1.3,
     category: 'merchant', shipClass: 'Исследовательское судно', year: 1764, country: 'Великобритания',
   },
   bounty: {
@@ -324,7 +330,7 @@ export const PRESETS: Record<string, ShipPreset> = {
     mass: 380_000, maxSpeed: 6.8,
     hullHP: 210, sailHP: 140, maxCrew: 46, cargo: 320,
     colors: { hull: 0x4f3b26, deck: 0x93764f, trim: 0x2e2013, sail: 0xdccfa8 },
-    flagKind: 'navy',
+    flagKind: 'navy', quarter: 1.3,
     category: 'merchant', shipClass: 'Вооружённое транспортное судно', year: 1784, country: 'Великобритания',
   },
   essex: {
@@ -394,6 +400,39 @@ export interface ShipVisual {
   rigging: Rigging;
   /** материалы дерева корпуса (для скина «цвет корабля») — без экипажа */
   tintMats: THREE.MeshStandardMaterial[];
+  /** Пушечные порты: крышки на верхних петлях + орудия закрытых
+   *  батарей, выезжающие наружу при открытии (Ship.portsOpen) */
+  gunPorts: GunPortVis[];
+  /** ванты с выбленками из группы мелких деталей — ПОКАЖИТЕЛЬНАЯ
+   *  принадлежность мачте: рвутся вместе с ней */
+  detailRigs: { mast: number; lines: THREE.LineSegments }[];
+  /** материал обшивки (для покупки украшений бортов) */
+  hullMat: THREE.MeshStandardMaterial;
+  /** текущая гальюнная фигура (покупается в порту) */
+  figurehead: THREE.Group;
+  /** магнитная стрелка нактоуза (плавает, смотрит на север) */
+  binnacleNeedle?: THREE.Object3D;
+  /** квартердек (если был у прототипа): геометрия + ориентиры */
+  quarter?: QuarterVis;
+}
+
+/** Пушечный порт закрытой батареи: крышка + орудие */
+export interface GunPortVis {
+  side: -1 | 1;
+  z: number; y: number;
+  lid: THREE.Object3D;   // группа-петля вверху порта
+  gun: THREE.Object3D;   // орудие (выезжает из порта)
+  open: number;          // 0 закрыт .. 1 открыт (текущая анимация)
+}
+
+/** Квартердек: геометрия + ключевые точки для экипажа/штурвала */
+export interface QuarterVis {
+  height: number;      // подъём над главной палубой
+  frontZ: number;      // передняя кромка (лесенки/балюстрада)
+  sternZ: number;      // кормовая кромка
+  wheelZ: number;      // штурвал на квартердеке
+  mastIndex: number;   // мачта, проходящая сквозь квартердек
+  floorY(z: number): number;  // высота настила в точке z
 }
 
 export interface SailRig {
@@ -657,6 +696,9 @@ export function gunLayout(P: ShipPreset): GunSlot[] {
   const L = P.length;
   const rows = Math.max(0, Math.min(4, P.gunportRows ?? 0));
   const tiers = rows === 0 ? 1 : Math.max(2, rows);
+  // у судов с квартердеком открытая батарея начинается ОТ его
+  // передней кромки (под квартердеком орудий на палубе не ставят)
+  const qFront = P.quarter ? quarterFrontZ(P) : -Infinity;
   // распределение стволов по ярусам: поровну, остаток — верхним ярусам
   const counts = new Array<number>(tiers).fill(0);
   for (let i = 0; i < N; i++) counts[i % tiers]++;
@@ -665,8 +707,9 @@ export function gunLayout(P: ShipPreset): GunSlot[] {
     const n = counts[tier];
     if (n <= 0) continue;
     if (tier === 0) {
-      // открытая палуба: от кормы (не задевая надстройки) до полубака
-      const z0 = -L * 0.22, z1 = P.castleH ? L * 0.18 : L * 0.24;
+      // открытая палуба: от квартердека (или кормы) до полубака
+      const z0 = Math.max(-L * 0.22, qFront + Math.max(0.9, L * 0.025));
+      const z1 = P.castleH ? L * 0.18 : L * 0.24;
       for (let i = 0; i < n; i++) {
         const z = THREE.MathUtils.lerp(z0, z1, n === 1 ? 0.5 : i / (n - 1));
         slots.push({ z, tier: 0, y: 0 }); // y палубы считает потребитель
@@ -683,6 +726,28 @@ export function gunLayout(P: ShipPreset): GunSlot[] {
     }
   }
   return slots;
+}
+
+// ---------- квартердек ----------
+/** Передняя кромка квартердека (лесенки): чуть ПЕРЕД мачтой,
+ *  которая сквозь него проходит (бизань — у 3-мачтовых, грот — у 2-мачтовых) */
+export function quarterMastZ(P: ShipPreset): number {
+  return P.masts === 2 ? -P.length * 0.10 : -P.length * 0.28;
+}
+export function quarterFrontZ(P: ShipPreset): number {
+  return quarterMastZ(P) + THREE.MathUtils.clamp(P.length * 0.045, 1.1, 2.4);
+}
+/** Штурвал: ЗА мачтой квартердека (рулевой видит бизань над головой) */
+export function quarterWheelZ(P: ShipPreset): number {
+  return quarterMastZ(P) - THREE.MathUtils.clamp(P.length * 0.035, 1.0, 2.2);
+}
+/** Позиция штурвала на ЛЮБОМ судне: на квартердеке, если он есть,
+ *  иначе — в корме, не задевая бизань (жалоба «штурвал в мачте») */
+export function wheelZFor(P: ShipPreset): number {
+  if (P.quarter) return quarterWheelZ(P);
+  if (P.castleH) return THREE.MathUtils.lerp(-P.length / 2, P.length / 2, 0.29);
+  // 3-мачтовые без квартердека: бизань на −0.28L — уходим в корму от неё
+  return P.masts === 3 ? -P.length * 0.40 : THREE.MathUtils.lerp(-P.length / 2, P.length / 2, 0.2);
 }
 
 function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
@@ -1115,6 +1180,259 @@ function buildCastles(P: ShipPreset): THREE.BufferGeometry {
   return bakedGeo(t);
 }
 
+/** Квартердек / кормовая надстройка: приподнятый настил с фальшбортом,
+ *  передней переборкой, двумя трапами с перилами, балюстрадой,
+ *  нактоузом (компас с лампой под стеклом), световыми люками
+ *  в медной оправе и нагельными планками с концами к мачте.
+ *  Возвращает группу + точку подвеса штурвала и стрелку компаса */
+function buildQuarterdeck(
+  P: ShipPreset,
+  mastIndex: number,
+): { group: THREE.Group; vis: QuarterVis; needle: THREE.Object3D; pinRopeEnds: { a: THREE.Vector3; b: THREE.Vector3 }[] } {
+  const L = P.length;
+  const group = new THREE.Group();
+  const q = P.quarter ?? 0;
+  const railH = THREE.MathUtils.clamp(q * 0.55, 0.62, 1.05); // фальшборт квартердека
+  const frontZ = quarterFrontZ(P);
+  const sternZ = -L / 2 + Math.max(0.35, L * 0.012);
+  const mastZ = quarterMastZ(P);
+  const deckYAt = (z: number) => {
+    const t = clamp2((z + L / 2) / L, 0, 1);
+    return hullProfile(t, P).bulwark - 1.0;
+  };
+  const floorY = (z: number) => deckYAt(z) + q;
+
+  // дерево квартердека чуть светлее палубы — читается как надстройка
+  const cWall = new THREE.Color(P.colors.trim).lerp(new THREE.Color(0x6e5433), 0.5);
+  const cWallD = new THREE.Color(P.colors.trim);
+  const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.92);
+  const cGold = new THREE.Color(0xc9a24a);
+  const cCopper = new THREE.Color(0x9a6a3a);
+  const cWoodPeg = new THREE.Color(0xb08a58);
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
+  // металл (медная оправа люков/нактоуза) — отдельным мешем
+  const tm: BakedTarget = { pos: [], col: [], uv: [] };
+
+  // === НАСТИЛ: полоса от кормы до передней кромки, вплотную к бортам ===
+  const S = 12;
+  const floorPos: number[] = [], floorIdx: number[] = [];
+  for (let s = 0; s <= S; s++) {
+    const z = THREE.MathUtils.lerp(sternZ, frontZ, s / S);
+    const tt = clamp2((z + L / 2) / L, 0, 1);
+    const y = floorY(z);
+    // ширина настила = корпус на высоте настила минус зазор на обшивку стены
+    const w = Math.max(0.3, hullHalfWidthAt(P, tt, y) - 0.16);
+    floorPos.push(w, y, z, -w, y, z);
+  }
+  for (let s = 0; s < S; s++) {
+    const a = s * 2, b = a + 1, c = a + 2, d = a + 3;
+    floorIdx.push(a, b, c, b, d, c); // нормали вверх
+  }
+  const floorGeo = new THREE.BufferGeometry();
+  floorGeo.setAttribute('position', new THREE.Float32BufferAttribute(floorPos, 3));
+  floorGeo.setIndex(floorIdx);
+  floorGeo.computeVertexNormals();
+  const floorMesh = new THREE.Mesh(floorGeo, new THREE.MeshStandardMaterial({
+    vertexColors: false, color: cFloor.getHex(), metalness: 0.04,
+    normalMap: woodNormalTex('deck'), roughnessMap: woodRoughTex('deck'),
+    normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1, side: THREE.DoubleSide,
+  }));
+  group.add(floorMesh);
+
+  // === БОРТОВЫЕ СТЕНЫ: от главной палубы до планширя квартердека ===
+  // (сплошные — щелей и просветов между корпусом и настилом нет)
+  const SW = 14;
+  for (let s = 0; s < SW; s++) {
+    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
+    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
+    const tt = clamp2(((z0 + z1) / 2 + L / 2) / L, 0, 1);
+    const yBase = deckYAt((z0 + z1) / 2);
+    const yTop = floorY((z0 + z1) / 2) + railH;
+    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, yBase)); // ширина на уровне палубы
+    const h = yTop - yBase;
+    for (const side of [-1, 1]) {
+      bakeInto(t, new THREE.BoxGeometry(0.26, h, (z1 - z0) * 1.04), cWall,
+        side * (hw - 0.03), yBase + h / 2, (z0 + z1) / 2);
+    }
+  }
+  // планширь по верхней кромке
+  for (let s = 0; s < SW; s++) {
+    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
+    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
+    const tt = clamp2(((z0 + z1) / 2 + L / 2) / L, 0, 1);
+    const yTop = floorY((z0 + z1) / 2) + railH;
+    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, deckYAt((z0 + z1) / 2)));
+    bakeInto(t, new THREE.BoxGeometry(0.4, 0.09, (z1 - z0) * 1.05),
+      new THREE.Color(P.colors.trim).multiplyScalar(1.35), 0, yTop, (z0 + z1) / 2);
+    bakeInto(t, new THREE.BoxGeometry(0.34, 0.07, (z1 - z0) * 1.05),
+      new THREE.Color(P.colors.trim).multiplyScalar(1.35), hw - 0.03, yTop, (z0 + z1) / 2);
+    bakeInto(t, new THREE.BoxGeometry(0.34, 0.07, (z1 - z0) * 1.05),
+      new THREE.Color(P.colors.trim).multiplyScalar(1.35), -(hw - 0.03), yTop, (z0 + z1) / 2);
+  }
+
+  // === ПЕРЕДНЯЯ ПЕРЕБОРКА (сплошная — сквозь квартердек не видно) ===
+  {
+    const tt = clamp2((frontZ + L / 2) / L, 0, 1);
+    const hw = Math.max(0.4, hullHalfWidthAt(P, tt, deckYAt(frontZ)) - 0.18);
+    const h = floorY(frontZ) + railH - deckYAt(frontZ);
+    bakeInto(t, new THREE.BoxGeometry(hw * 2, h, 0.22), cWall, 0,
+      deckYAt(frontZ) + h / 2, frontZ - 0.02);
+    // золочёный поручень переборки
+    bakeInto(t, new THREE.BoxGeometry(hw * 2, 0.1, 0.3), cGold, 0,
+      floorY(frontZ) + railH + 0.03, frontZ - 0.02);
+  }
+
+  // === ТРАПЫ С ПЕРИЛАМИ: два, у бортов, вдоль диаметрали ===
+  const nSteps = Math.max(3, Math.ceil(q / 0.26));
+  const runLen = nSteps * 0.34;
+  for (const side of [-1, 1]) {
+    const tt = clamp2((frontZ + runLen * 0.5 + L / 2) / L, 0, 1);
+    const xStair = Math.max(0.55, hullHalfWidthAt(P, tt, deckYAt(frontZ)) - 0.52) * side;
+    for (let i = 0; i < nSteps; i++) {
+      const z = frontZ + runLen * (1 - (i + 0.5) / nSteps);
+      const y = deckYAt(z) + (q * (i + 1)) / nSteps;
+      bakeInto(t, new THREE.BoxGeometry(0.86, 0.07, 0.36), cFloor, xStair, y - 0.035, z);
+    }
+    // перила трапа: стойки + наклонный поручень + средний трос
+    const zTop = frontZ + 0.1, zBot = frontZ + runLen;
+    const yTop = floorY(zTop) + railH * 0.8, yBot = deckYAt(zBot) + 0.9;
+    const xRail = xStair - side * 0.42; // внутренняя сторона
+    for (let k = 0; k <= 2; k++) {
+      const f = k / 2;
+      const z = THREE.MathUtils.lerp(zBot, zTop, f);
+      const y = THREE.MathUtils.lerp(yBot, yTop, f);
+      bakeInto(t, new THREE.BoxGeometry(0.09, 0.95, 0.09), cWallD, xRail, y - 0.42, z);
+    }
+    const railLen = Math.hypot(zTop - zBot, yTop - yBot);
+    const railAng = Math.atan2(yTop - yBot, -(zTop - zBot));
+    const rail = new THREE.BoxGeometry(0.08, 0.08, railLen * 1.02);
+    bakeInto(t, rail, cGold, xRail, (yTop + yBot) / 2, (zTop + zBot) / 2,
+      new THREE.Euler(0, 0, railAng));
+    const railMid = new THREE.BoxGeometry(0.05, 0.05, railLen * 1.02);
+    bakeInto(t, railMid, cWallD, xRail, (yTop + yBot) / 2 - 0.32, (zTop + zBot) / 2,
+      new THREE.Euler(0, 0, railAng));
+  }
+
+  // === БАЛЮСТРАДА по передней кромке (между трапами): резные балясины ===
+  {
+    const tt = clamp2((frontZ + L / 2) / L, 0, 1);
+    const spanHalf = Math.max(0.3, hullHalfWidthAt(P, tt, floorY(frontZ)) - 0.75);
+    const y0 = floorY(frontZ);
+    for (let x = -spanHalf; x <= spanHalf + 0.001; x += 0.42) {
+      // точёная балясина: база + ножка с яблоком + капитель
+      bakeInto(t, new THREE.BoxGeometry(0.12, 0.07, 0.12), cWallD, x, y0 + 0.035, frontZ - 0.24);
+      bakeInto(t, new THREE.CylinderGeometry(0.028, 0.04, railH - 0.22, 5), cWall, x, y0 + railH / 2, frontZ - 0.24);
+      bakeInto(t, new THREE.SphereGeometry(0.055, 5, 4), cWall, x, y0 + railH * 0.52, frontZ - 0.24);
+      bakeInto(t, new THREE.BoxGeometry(0.13, 0.06, 0.13), cWallD, x, y0 + railH - 0.03, frontZ - 0.24);
+    }
+    // поручень балюстрады
+    bakeInto(t, new THREE.BoxGeometry(spanHalf * 2 + 0.3, 0.09, 0.16),
+      new THREE.Color(P.colors.trim).multiplyScalar(1.3), 0, y0 + railH + 0.045, frontZ - 0.24);
+    // нижний прогон
+    bakeInto(t, new THREE.BoxGeometry(spanHalf * 2 + 0.2, 0.06, 0.1), cWallD, 0, y0 + 0.1, frontZ - 0.24);
+  }
+
+  // === НАКТОУЗ (компас): тумба перед штурвалом, лампа под стеклом,
+  //     магнитная стрелка плавает и смотрит на север ===
+  const binnacleZ = frontZ - THREE.MathUtils.clamp(L * 0.02, 0.7, 1.2);
+  const binnacleY = floorY(binnacleZ);
+  const needle = new THREE.Group();
+  {
+    // шкафчик-тумба (медь по кромкам, дерево внутри)
+    bakeInto(t, new THREE.BoxGeometry(0.6, 0.92, 0.44), cWall, 0, binnacleY + 0.46, binnacleZ);
+    bakeInto(tm, new THREE.BoxGeometry(0.66, 0.1, 0.5), cCopper, 0, binnacleY + 0.95, binnacleZ);
+    bakeInto(tm, new THREE.BoxGeometry(0.66, 0.08, 0.5), cCopper, 0, binnacleY + 0.04, binnacleZ);
+    // компасный котелок под стеклом
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.16, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0x9fc8dc, transparent: true, opacity: 0.35,
+        metalness: 0.4, roughness: 0.08,
+      }));
+    glass.position.set(0, binnacleY + 1.06, binnacleZ);
+    group.add(glass);
+    // лампа: тёплое свечение под стеклом (горит и ночью)
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.055, 6, 5),
+      new THREE.MeshStandardMaterial({
+        color: 0xffd88a, emissive: 0xffa644, emissiveIntensity: 2.2,
+      }));
+    lamp.position.set(0, binnacleY + 1.14, binnacleZ);
+    group.add(lamp);
+    // магнитная стрелка (двусторонняя: красный конец — на север)
+    const nRed = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.015, 0.14),
+      new THREE.MeshStandardMaterial({ color: 0xb02020, emissive: 0x400808 }));
+    nRed.position.z = 0.07;
+    const nWhite = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.015, 0.14),
+      new THREE.MeshStandardMaterial({ color: 0xe8e0d0 }));
+    nWhite.position.z = -0.07;
+    needle.add(nRed, nWhite);
+    needle.position.set(0, binnacleY + 1.06, binnacleZ);
+    group.add(needle);
+  }
+
+  // === СВЕТОВЫЕ ЛЮКИ: плоские коробки со стеклом в медной оправе,
+  //     по центру палубы (свет в кают-компанию внизу) ===
+  const nSky = L > 42 ? 2 : 1;
+  for (let k = 0; k < nSky; k++) {
+    const z = mastZ - L * (0.06 + k * 0.09);
+    const y = floorY(z) + 0.14;
+    bakeInto(t, new THREE.BoxGeometry(1.15, 0.26, 0.85), cWall, 0, y, z);
+    bakeInto(tm, new THREE.BoxGeometry(1.25, 0.1, 0.95), cCopper, 0, y + 0.16, z);
+    const skyGlass = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.05, 0.65),
+      new THREE.MeshStandardMaterial({
+        color: 0x2e4a56, metalness: 0.55, roughness: 0.22,
+        emissive: 0x0c1a20, emissiveIntensity: 0.6,
+        transparent: true, opacity: 0.85,
+      }));
+    skyGlass.position.set(0, y + 0.15, z);
+    group.add(skyGlass);
+    // ребра-переплёты
+    bakeInto(tm, new THREE.BoxGeometry(1.0, 0.04, 0.06), cCopper, 0, y + 0.17, z);
+    bakeInto(tm, new THREE.BoxGeometry(0.06, 0.04, 0.7), cCopper, 0, y + 0.17, z);
+  }
+
+  // === НАГЕЛЬНЫЕ ПЛАНКИ: брусья с колышками вдоль бортов,
+  //     концы к бизани (обрываются вместе с мачтой — в buildRigging) ===
+  const pinRopeEnds: { a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+  const pinZ0 = sternZ + L * 0.05, pinZ1 = mastZ - 0.9;
+  const nPegs = Math.max(2, Math.floor((pinZ1 - pinZ0) / 0.6));
+  for (const side of [-1, 1]) {
+    const zc = (pinZ0 + pinZ1) / 2;
+    const tt = clamp2((zc + L / 2) / L, 0, 1);
+    const xPin = Math.max(0.4, hullHalfWidthAt(P, tt, floorY(zc) + 0.5) - 0.34) * side;
+    bakeInto(t, new THREE.BoxGeometry(0.14, 0.12, pinZ1 - pinZ0), cWallD, xPin, floorY(zc) + 0.5, zc);
+    for (let i = 0; i < nPegs; i++) {
+      const z = THREE.MathUtils.lerp(pinZ0, pinZ1, nPegs === 1 ? 0.5 : i / (nPegs - 1));
+      bakeInto(t, new THREE.CylinderGeometry(0.03, 0.035, 0.2, 5), cWoodPeg, xPin, floorY(z) + 0.64, z);
+      if (i % 2 === 0 && pinRopeEnds.length < 8) {
+        pinRopeEnds.push({
+          a: new THREE.Vector3(xPin, floorY(z) + 0.72, z),
+          b: new THREE.Vector3(0, 2.2, mastZ), // до пяты бизани
+        });
+      }
+    }
+  }
+
+  const walls = new THREE.Mesh(bakedGeo(t), new THREE.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.05, side: THREE.DoubleSide,
+    normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+    normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
+  }));
+  walls.castShadow = true;
+  group.add(walls);
+  const copper = new THREE.Mesh(bakedGeo(tm), new THREE.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.75, roughness: 0.45,
+    normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+    normalScale: new THREE.Vector2(0.35, 0.35),
+  }));
+  group.add(copper);
+
+  const vis: QuarterVis = {
+    height: q, frontZ, sternZ,
+    wheelZ: quarterWheelZ(P), mastIndex, floorY,
+  };
+  return { group, vis, needle, pinRopeEnds };
+}
+
 /** Наружный декор корпуса: пушечные порты с вельсовыми полосами
  *  (галеон/фрегат), кормовая галерея с окнами, плоская носовая
  *  переборка пинасса, гальюн галеона */
@@ -1157,9 +1475,14 @@ function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
     any = true;
   }
 
-  // кормовая галерея: два яруса окон с золочёными рамами
+  // кормовая галерея: два яруса окон с золочёными рамами.
+  // Высоты — как на настоящих кораблях: верхний ярус на уровне
+  // каюты ПОД квартердеком (у судов с квартердеком окна выше)
   if (P.gallery) {
-    for (const y of [P.freeboard * 0.3, P.freeboard * 0.64]) {
+    const rowsY = P.quarter
+      ? [P.freeboard * 0.46, P.freeboard * 0.80]
+      : [P.freeboard * 0.30, P.freeboard * 0.64];
+    for (const y of rowsY) {
       for (const xoff of [-P.beam * 0.24, 0, P.beam * 0.24]) {
         bakeInto(t, new THREE.BoxGeometry(0.62, 0.54, 0.1), cGold, xoff, y, -L / 2 + 0.02);
         bakeInto(t, new THREE.BoxGeometry(0.46, 0.38, 0.12), cGlass, xoff, y, -L / 2 + 0.03);
@@ -1200,8 +1523,13 @@ function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
 
 /** Мелкие детали, видимые только вблизи (LOD): выбленки на вантах,
  *  шлюпка вверх дном, настоящие якоря у скул, крышки пушечных портов,
- *  камбуз с трубой, кранцы, стол экипажа, блоки у мачт */
-function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): THREE.Group {
+ *  камбуз с трубой, кранцы, стол экипажа, блоки у мачт.
+ *  Ванты с выбленками — ОТДЕЛЬНЫМИ линиями на мачту (detailRigs):
+ *  вместе с мачтой они ОБРЫВАЮТСЯ (Ship.snapRigging прячет свою пару) */
+function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
+  group: THREE.Group;
+  detailRigs: { mast: number; lines: THREE.LineSegments }[];
+} {
   const L = P.length;
   const group = new THREE.Group();
   const deckYAt = (tt: number) => hullProfile(tt, P).bulwark - 1.0;
@@ -1209,10 +1537,13 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
   const cWoodD = new THREE.Color(0x4a3420);
   const cRope = new THREE.Color(0xa08656);
 
-  // --- ванты с выбленками (верёвочная лестница) — линиями ---
-  const pts: number[] = [];
-  const addLine = (a: THREE.Vector3, b: THREE.Vector3) => { pts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
-  for (const m of mastDefs) {
+  // --- ванты с выбленками (верёвочная лестница) — СВОЯ пара
+  //     LineSegments на каждую мачту (рвётся вместе с ней) ---
+  const detailRigs: { mast: number; lines: THREE.LineSegments }[] = [];
+  const ropeMat = new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.9 });
+  mastDefs.forEach((m, mastIdx) => {
+    const pts: number[] = [];
+    const addLine = (a: THREE.Vector3, b: THREE.Vector3) => { pts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
     for (const side of [-1, 1]) {
       const N = 5;
       const tops: THREE.Vector3[] = [], bases: THREE.Vector3[] = [];
@@ -1229,9 +1560,18 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
         }
       }
     }
-  }
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const lines = new THREE.LineSegments(lg, ropeMat);
+    group.add(lines);
+    detailRigs.push({ mast: mastIdx, lines });
+  });
 
   const t: BakedTarget = { pos: [], col: [], uv: [] };
+  // разрозненные снасти (фалы якорей, фалини кранцев) — отдельные
+  // линии, НЕ принадлежащие мачтам (не рвутся с ними)
+  const miscPts: number[] = [];
+  const addLine = (a: THREE.Vector3, b: THREE.Vector3) => { miscPts.push(a.x, a.y, a.z, b.x, b.y, b.z); };
   // металлическая выпечка (якоря): отдельный меш с PBR-металлом —
   // отражает небо, кованая фактура картой нормалей
   const tm: BakedTarget = { pos: [], col: [], uv: [] };
@@ -1310,10 +1650,6 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
     bakeInto(t, new THREE.CylinderGeometry(0.09, 0.09, 0.14, 6), cWoodD, -0.35, deckYAt(0.5 + md.z / L) + 0.35, md.z - 0.6);
   }
 
-  const lg = new THREE.BufferGeometry();
-  lg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.9 }));
-  group.add(lines);
   const mesh = new THREE.Mesh(bakedGeo(t),
     new THREE.MeshStandardMaterial({
       vertexColors: true, metalness: 0.2, side: THREE.DoubleSide,
@@ -1321,6 +1657,11 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
       normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
     }));
   group.add(mesh);
+  if (miscPts.length) {
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute('position', new THREE.Float32BufferAttribute(miscPts, 3));
+    group.add(new THREE.LineSegments(mg, ropeMat));
+  }
   // якоря — кованое железо: PBR-металл с картой окружения неба
   if (tm.pos.length) {
     const mm = new THREE.Mesh(bakedGeo(tm),
@@ -1331,17 +1672,19 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): T
       }));
     group.add(mm);
   }
-  return group;
+  return { group, detailRigs };
 }
 
 /** Вёсла гребных судов (шебека, галера): вальные порты по борту +
- *  вёсла с лопастями. ВАЖНО: вал строится ВНАРУЖУ от своего борта
- *  (dir = side) — раньше оба борта строились в +X и левые вёсла
- *  торчали СКВОЗЬ корпус на правый край.
- *  УБРАНОЕ положение (stow): вал лежит ВДОЛЬ борта валом к корме
- *  (как на стоящей галере) — НЕ вертикально вверх («торчащие
- *  вверх палки» из фидбека). Разворот задан кватернионом:
- *  Ship.updateVisual slerp'ит stow → развёрнутое (валом к воде) */
+ *  вёсла с лопастями. Модель поворота — ДВА чистых поворота в осях
+ *  КОРАБЛЯ (как у весла на уключине):
+ *    yaw  — гребок: лопасть метёт по горизонтали от носа к корме;
+ *    roll — погружение: лопасть опускается в воду на рабочем ходу.
+ *  Гребут ВСЕ вёсла СИНХРОННО (одна фаза на оба борта — как на
+ *  галере; раньше борта были в противофазе, а фаза «ехала» вдоль
+ *  корпуса). Задний ход — зеркальный гребок (лопасть метёт к носу).
+ *  УБРАНОЕ положение: вал вдоль борта к корме, горизонтально,
+ *  прижат к скуле — не «палки вниз» и не вертикально вверх. */
 function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] } {
   const group = new THREE.Group();
   const oars: THREE.Object3D[] = [];
@@ -1354,6 +1697,7 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
     normalScale: new THREE.Vector2(0.45, 0.45), roughness: 1,
   });
   const portMat = new THREE.MeshStandardMaterial({ color: 0x14100d, roughness: 0.9 });
+  const leatherMat = new THREE.MeshStandardMaterial({ color: 0x4a3626, roughness: 0.85 });
   const oarLen = clamp2(L * 0.17, 4.5, 11);
   const z0 = -L * 0.26, z1 = L * 0.30;
   for (let i = 0; i < n; i++) {
@@ -1363,11 +1707,11 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
     const y = P.freeboard * 0.30; // вальная палуба — ниже орудийной
     const hw = hullHalfWidthAt(P, tt, y);
     for (const side of [-1, 1]) {
-      // тёмный вальный порт
+      // тёмный вальный порт (обшивка уключины)
       const port = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.26, 0.3), portMat);
       port.position.set(side * (hw + 0.01), y, z);
       group.add(port);
-      // весло: вал + лопасть — ВНАРУЖУ борта (side), наклон к воде
+      // весло: вал + лопасть, вытянуто вдоль локального ±X (наружу)
       const dir = side;
       const oar = new THREE.Group();
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, oarLen, 5), shaftMat);
@@ -1377,15 +1721,17 @@ function buildOars(P: ShipPreset): { group: THREE.Group; oars: THREE.Object3D[] 
       const blade = new THREE.Mesh(new THREE.BoxGeometry(oarLen * 0.3, 0.03, 0.2), shaftMat);
       blade.position.x = dir * oarLen * 0.92;
       oar.add(blade);
+      // кожаная обмотка уключины — читается место опоры
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.3, 6), leatherMat);
+      collar.rotation.z = Math.PI / 2;
+      collar.position.x = dir * oarLen * 0.06;
+      oar.add(collar);
       oar.position.set(side * (hw + 0.04), y, z);
-      // УБРАНО: вал вдоль борта к корме (yaw ~80°), чуть приподнят.
-      // Раньше rotation.z = side*1.52 ставил вёсла ВЕРТИКАЛЬНО вверх
+      // УБРАНО: вал вдоль борта к корме (yaw ~87°), лопать приподнята
       const stowQ = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(0, side * 1.40, side * 0.12));
+        new THREE.Euler(0, side * 1.52, side * 0.10, 'YZX'));
       oar.quaternion.copy(stowQ);
-      oar.userData.phase = t * Math.PI * 2 + (side > 0 ? Math.PI : 0);
       oar.userData.side = side;
-      oar.userData.base = side * -0.34; // развёрнуто: вал наружу, к воде
       oar.userData.stowQ = stowQ;
       group.add(oar);
       oars.push(oar);
@@ -1406,7 +1752,8 @@ export interface Rigging {
   lines: THREE.LineSegments;
   meta: RigLine[];
 }
-function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3): Rigging {
+function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3,
+  pinRopes?: { mast: number; ends: { a: THREE.Vector3; b: THREE.Vector3 }[] }): Rigging {
   const meta: RigLine[] = [];
   const L = P.length;
   const addLine = (mast: number, a: THREE.Vector3, b: THREE.Vector3) => {
@@ -1434,6 +1781,11 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
     addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
     addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
   }
+  // концы с нагельных планок квартердека — к СВОЕЙ мачте
+  // (вместе с ней рвутся — «тросы падают вместе с мачтой»)
+  if (pinRopes) {
+    for (const e of pinRopes.ends) addLine(pinRopes.mast, e.a, e.b);
+  }
   const pts: number[] = [];
   for (const l of meta) pts.push(l.a.x, l.a.y, l.a.z, l.b.x, l.b.y, l.b.z);
   const g = new THREE.BufferGeometry();
@@ -1451,11 +1803,21 @@ export function buildShip(P: ShipPreset): ShipVisual {
   const { geometry: hullGeo, outline } = buildHull(P);
   // DoubleSide: даже если камера (или волна) заглянет под корпус/за корму —
   // стенки видны, «прозрачной кормы» нет (изнутри односторонние грани куллятся)
-  // PBR: пояс обшивки + волокна — нормали, крашеное дерево — шероховатость
+  // PBR: пояс обшивки + волокна — нормали, крашеное дерево — шероховатость.
+  // ТЕКСТУРА БОРТОВ: бесплатная текстура дерева (three.js examples, CC)
+  // + процедурные швы/потёки + (для купленных украшений) ЗОЛОТО,
+  // которое блестит за счёт тёмных пятен на карте шероховатости
+  // и светлых на карте металличности — дерево остаётся матовым.
+  const hullTex = makeHullTextures(P, 'deco.none',
+    gunLayout(P).filter(s => s.tier > 0).map(s => ({ z: s.z, y: s.y })));
   const hullMat = new THREE.MeshStandardMaterial({
-    vertexColors: true, metalness: 0.05, side: THREE.DoubleSide,
-    normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
-    normalScale: new THREE.Vector2(0.6, 0.6), roughness: 1,
+    vertexColors: true, metalness: 1.0, roughness: 1.0,
+    side: THREE.DoubleSide,
+    map: hullTex.map,
+    roughnessMap: hullTex.rough,
+    metalnessMap: hullTex.metal,
+    normalMap: woodNormalTex('hull'),
+    normalScale: new THREE.Vector2(0.6, 0.6),
   });
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
@@ -1735,38 +2097,64 @@ export function buildShip(P: ShipPreset): ShipVisual {
   masts[mainMastIdx].add(flag);
 
   // пушки по бортам — по раскладке gunLayout: ИТОГО ровно gunsPerSide
-  // на борт. Верхняя палуба — полные лафеты, закрытые деки — стволы,
-  // высунутые из портов (лафет внутри корпуса не виден)
+  // на борт. Верхняя палуба — полные лафеты, закрытые деки — стволы
+  // ЗА ПОРТАМИ: при закрытых крышках орудие УБРАНО внутрь (не видно),
+  // при открытии — крышка откидывается вверх, лафет выезжает наружу
+  // (Ship.portsOpen анимирует lid.rotation и gun.position).
+  // Ядра вылетают ИЗ ДУЛА: muzzleLocal = позиция орудия + ось ствола.
   const gunsPort: THREE.Object3D[] = [];
   const gunsStarboard: THREE.Object3D[] = [];
+  const gunPorts: GunPortVis[] = [];
+  const barrelMat = new THREE.MeshStandardMaterial({
+    // СВЕТЛЫЙ gunmetal — тёмное железо в metalness-пайплайне
+    // отражает ~12% неба и выглядит «картонкой»; светлее + глянец +
+    // усиленные отражения неба = видимый солнечный блик по стволу
+    color: 0x4a4e57, metalness: 0.9, envMapIntensity: 1.6,
+    normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+    normalScale: new THREE.Vector2(0.55, 0.55), roughness: 0.72,
+  });
+  const lidMat = new THREE.MeshStandardMaterial({
+    color: 0x5a2f26, metalness: 0.06, roughness: 0.8,
+    normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
+    normalScale: new THREE.Vector2(0.4, 0.4),
+  });
   for (const slot of gunLayout(P)) {
     const tt = clamp2((slot.z + L / 2) / L, 0, 1);
     const isDeck = slot.tier === 0;
     const prof = hullProfile(tt, P);
     for (const side of [-1, 1]) {
       const gun = new THREE.Group();
-      // ствол: СВЕТЛЫЙ gunmetal — тёмное железо в metalness-пайплайне
-      // отражает ~12% неба и выглядит «картонкой»; светлее + глянец +
-      // усиленные отражения неба = видимый солнечный блик по стволу
-      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 12),
-        new THREE.MeshStandardMaterial({
-          color: 0x4a4e57, metalness: 0.9, envMapIntensity: 1.6,
-          normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
-          normalScale: new THREE.Vector2(0.55, 0.55), roughness: 0.72,
-        }));
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.15, 12), barrelMat);
       barrel.rotation.z = Math.PI / 2;
       barrel.position.set(side * 0.62, 0.08, 0);
       gun.add(barrel);
       const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.55), darkMat);
       gun.add(carriage);
+      gun.userData.side = side;
+      gun.userData.tier = slot.tier;
+      // дуло в локальных осях орудия (ствол длиной 1.15, центр 0.62)
+      gun.userData.muzzleX = side * (0.62 + 0.575);
       if (isDeck) {
         gun.position.set(side * (prof.w * 0.9 - 0.15), prof.bulwark - 0.72, slot.z);
       } else {
-        // закрытая батарея: дуло высунуто из порта за борт
+        // закрытая батарея: УБРАНО (дульный срез за обшивкой),
+        // при открытии порта лафет выезжает на 0.6 м наружу
         const hw = hullHalfWidthAt(P, tt, slot.y);
-        gun.position.set(side * (hw - 0.85), slot.y, slot.z);
+        const baseX = side * (hw - 1.35);
+        gun.position.set(baseX, slot.y, slot.z);
+        gun.userData.baseX = baseX;
+        gun.userData.slideX = side * 0.6;
+        // крышка порта: петля ВВЕРХУ, закрыта — висит, закрывая порт;
+        // открыта — откинута вверх-наружу, прижата к борту
+        const lidH = Math.min(0.52, Math.max(0.4, P.freeboard * 0.095));
+        const lid = new THREE.Group();
+        lid.position.set(side * (hw + 0.05), slot.y + lidH / 2, slot.z);
+        const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(0.06, lidH, 0.66), lidMat);
+        lidMesh.position.y = -lidH / 2;
+        lid.add(lidMesh);
+        group.add(lid);
+        gunPorts.push({ side: side as -1 | 1, z: slot.z, y: slot.y, lid, gun, open: 0 });
       }
-      gun.userData.side = side;
       group.add(gun);
       // локальный −X = штирборт (правый борт), локальный +X = порт (левый)
       (side < 0 ? gunsStarboard : gunsPort).push(gun);
@@ -1811,9 +2199,30 @@ export function buildShip(P: ShipPreset): ShipVisual {
   wheelAxle.rotation.x = Math.PI / 2;
   wheelAxle.position.set(0, hubY, 0.12);
   wheelAsm.add(wheelAxle);
-  const wheelT = P.castleH ? 0.29 : 0.2;
-  wheelAsm.position.set(0, hullProfile(wheelT, P).bulwark - 1.0, THREE.MathUtils.lerp(-L / 2, L / 2, wheelT));
+  // штурвал стоит НА КВАРТЕРДЕКЕ (если он есть) — ЗА мачтой, которая
+  // сквозь него проходит; на судах без квартердека — в корме,
+  // гарантированно не задевая бизань (жалоба «штурвал в мачте»)
+  const wheelZ = wheelZFor(P);
+  const wheelDeckY = P.quarter
+    ? hullProfile(clamp2((wheelZ + L / 2) / L, 0, 1), P).bulwark - 1.0 + P.quarter
+    : hullProfile(clamp2((wheelZ + L / 2) / L, 0, 1), P).bulwark - 1.0;
+  wheelAsm.position.set(0, wheelDeckY, wheelZ);
   group.add(wheelAsm);
+
+  // === КВАРТЕРДЕК (кормовая надстройка): настил + переборка +
+  // трапы + балюстрада + нактоуз + световые люки + нагельные планки.
+  // Концы с нагелей уходят к мачте и рвутся вместе с ней ===
+  let quarterVis: QuarterVis | undefined;
+  let binnacleNeedle: THREE.Object3D | undefined;
+  let pinRopes: { mast: number; ends: { a: THREE.Vector3; b: THREE.Vector3 }[] } | undefined;
+  if (P.quarter) {
+    const qMastIdx = P.masts === 2 ? 1 : 2; // грот / бизань
+    const qd = buildQuarterdeck(P, qMastIdx);
+    group.add(qd.group);
+    quarterVis = qd.vis;
+    binnacleNeedle = qd.needle;
+    if (qd.pinRopeEnds.length) pinRopes = { mast: qMastIdx, ends: qd.pinRopeEnds };
+  }
 
   // палубный реквизит: гратинг-люк, бочки, канаты, кнехты, колокол, ядра,
   // сундук, ведро — одним мешом
@@ -1828,8 +2237,12 @@ export function buildShip(P: ShipPreset): ShipVisual {
 
   // шпиль, фонарь, якоря — строго на палубе
   const deckYAt = (t: number) => hullProfile(t, P).bulwark - 1.0;
+  // шпиль — ПЕРЕД квартердеком (у судов с ним): не прячется под настилом
+  const capstanZ = P.quarter
+    ? quarterFrontZ(P) + Math.max(1.2, L * 0.05)
+    : -L * 0.16;
   const capstan = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 0.7, 8), woodMat);
-  capstan.position.set(0, deckYAt(0.36) + 0.35, -L * 0.16);
+  capstan.position.set(0, deckYAt(clamp2((capstanZ + L / 2) / L, 0, 1)) + 0.35, capstanZ);
   group.add(capstan);
   const sternLantern = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8),
     new THREE.MeshStandardMaterial({
@@ -1841,20 +2254,18 @@ export function buildShip(P: ShipPreset): ShipVisual {
   sternLantern.position.set(0, P.freeboard * 1.15, -L / 2 - 0.15);
   group.add(sternLantern);
   let lantern: THREE.PointLight | undefined;
-  // фигура на носу
-  const figure = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.8, 6),
-    new THREE.MeshStandardMaterial({
-      color: 0xc9a24a, metalness: 0.6,
-      normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
-      normalScale: new THREE.Vector2(0.45, 0.45), roughness: 1,
-    }));
-  figure.position.set(0, P.freeboard * 1.12, L / 2 - 0.2);
-  figure.rotation.x = -0.5;
-  group.add(figure);
+  // гальюнная фигура на носу — ШТАТНАЯ (конус); покупные фигуры
+  // ставит setFigurehead (порт → «Убранство»), ломается как и штатная
+  const figurehead = buildFigurehead(P, 'figure.stock');
+  const figScale = THREE.MathUtils.clamp(P.freeboard * 0.30, 0.8, 1.6);
+  figurehead.scale.setScalar(figScale);
+  figurehead.position.set(0, P.freeboard * 1.02, L / 2 - 0.15);
+  figurehead.rotation.x = 0.08;
+  group.add(figurehead);
   // (простые якоря-коробки заменены настоящими якорями в группе мелких деталей)
 
-  // такелаж
-  const rigging = buildRigging(P, mastDefs, bowspritTip);
+  // такелаж (+ концы с нагельных планок квартердека — к своей мачте)
+  const rigging = buildRigging(P, mastDefs, bowspritTip, pinRopes);
   group.add(rigging.lines);
 
   // надстройки-«замки» (когг) — силуэт виден издалека
@@ -1878,8 +2289,10 @@ export function buildShip(P: ShipPreset): ShipVisual {
         normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
       })));
   }
-  // мелкие детали — только вблизи (LOD, переключает game.ts)
-  const detail = buildShipDetail(P, mastDefs);
+  // мелкие детали — только вблизи (LOD, переключает game.ts);
+  // ванты с выбленками — отдельными парами на мачту (рвутся с ней)
+  const detailRes = buildShipDetail(P, mastDefs);
+  const detail = detailRes.group;
   detail.visible = false;
   group.add(detail);
 
@@ -1903,7 +2316,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   const rig: SailRig = { sails };
 
   // ломаемые детали палубы: срываются попаданиями / давлением воды
-  const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figure, rudderMesh];
+  const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figurehead, rudderMesh];
 
   // материалы дерева для скина «цвет корабля» (собираем ДО того, как
   // в группу добавится экипаж с общим CREW_MAT — его тонировать нельзя)
@@ -1922,6 +2335,8 @@ export function buildShip(P: ShipPreset): ShipVisual {
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
     masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
+    gunPorts, detailRigs: detailRes.detailRigs, hullMat,
+    figurehead, binnacleNeedle, quarter: quarterVis,
   };
 }
 
@@ -1951,6 +2366,39 @@ export function setSailColor(vis: ShipVisual, hex: number) {
 export function setHullTint(vis: ShipVisual, hex: number) {
   const c = new THREE.Color(hex);
   for (const m of vis.tintMats) m.color.copy(c);
+}
+
+// ---------- гальюнные фигуры и украшения бортов (порт) ----------
+/** Пресет по id фигуры (для покупок/сохранений) */
+export function setFigurehead(vis: ShipVisual, P: ShipPreset, id: string) {
+  const old = vis.figurehead;
+  const pos = old.position.clone();
+  const rot = old.rotation.clone();
+  const broken = !old.visible; // фигура уже сорвана — новая тоже сорвана
+  vis.group.remove(old);
+  old.traverse(o => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); });
+  const fh = buildFigurehead(P, id);
+  fh.scale.setScalar(THREE.MathUtils.clamp(P.freeboard * 0.30, 0.8, 1.6));
+  fh.position.copy(pos);
+  fh.rotation.copy(rot);
+  fh.visible = !broken;
+  vis.group.add(fh);
+  vis.figurehead = fh;
+  // держим ломаемые детали в синхроне (damageProp/clearDamage)
+  const i = vis.breakables.indexOf(old);
+  if (i >= 0) vis.breakables[i] = fh;
+}
+
+/** Применить купленное украшение бортов: заново собрать тройку
+ *  холстов (золото на карте цвета + ТЁМНОЕ золото на карте
+ *  шероховатости = глянцевый металл + СВЕТЛОЕ на металличности) */
+export function setDecoration(vis: ShipVisual, P: ShipPreset, decoId: string) {
+  const tex = makeHullTextures(P, decoId,
+    gunLayout(P).filter(s => s.tier > 0).map(s => ({ z: s.z, y: s.y })));
+  vis.hullMat.map = tex.map;
+  vis.hullMat.roughnessMap = tex.rough;
+  vis.hullMat.metalnessMap = tex.metal;
+  vis.hullMat.needsUpdate = true;
 }
 
 /** Цена судна на верфи (золото) — от ТТХ; легендарные суда дороже */

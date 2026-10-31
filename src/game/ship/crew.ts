@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ShipPreset, hullProfile, gunLayout } from './buildShip';
+import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './buildShip';
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
 
@@ -47,7 +47,7 @@ export function setCrewFx(gibs: GibPool, particles: Particles) {
 /** Текущие эффекты (гибы/частицы) — для islandFolk.ts */
 export function crewFx() { return FX; }
 
-type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker' | 'helmsman';
+type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker' | 'helmsman' | 'rower';
 export type DeathMode = 'fall' | 'gib';
 /** способ поражения: картечь валит, ядро разрывает */
 export type KillMode = 'grape' | 'ball';
@@ -65,6 +65,7 @@ export interface CrewFigure {
   walkSpeed: number;
   xPath?: number;
   phase: number;              // фаза покачивания
+  baseScaleY: number;         // исходный рост (гребцы «сидят» — 0.78)
   // --- смерть ---
   dead: boolean;
   deadT: number;              // сек с момента смерти
@@ -293,7 +294,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewF
       leg.position.y = off;
     }
     return {
-      group, role, legL, legR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1,
+      group, role, legL, legR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, baseScaleY: 1,
       walkSpeed: 0.55 + rnd() * 0.5, phase: rnd() * 6.28,
       dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
       skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
@@ -304,7 +305,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewF
   const legsStatic = new THREE.Mesh(bakeGeom(t2legs(traits, legH)), CREW_MAT);
   group.add(legsStatic);
   return {
-    group, role, seed, walkT: 0, walkDir: 1, walkSpeed: 0, phase: rnd() * 6.28,
+    group, role, seed, walkT: 0, walkDir: 1, walkSpeed: 0, phase: rnd() * 6.28, baseScaleY: 1,
     dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
     skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
     hasHook: traits.hook !== 0, hasPeg: traits.pegLeg !== 0,
@@ -344,10 +345,13 @@ export function segSegDist3D(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector
 }
 function clampN(v: number, lo: number, hi: number) { return v < lo ? lo : v > hi ? hi : v; }
 
-/** Состояние корабля для анимации экипажа */
+/** Состояние корабля для анимации экипажа.
+ *  stroke — фаза гребка для гребцов (гребные суда): phase (рад),
+ *  active (0/1 — гребут сейчас), dir (+1 вперёд / −1 назад) */
 export interface CrewShipState {
   crew: number; maxCrew: number; sinking: boolean; sunk: boolean;
   position: THREE.Vector3; quaternion: THREE.Quaternion;
+  stroke?: { phase: number; active: number; dir: number };
 }
 
 export interface CrewVisual {
@@ -374,9 +378,12 @@ export interface CrewVisual {
 export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   const group = new THREE.Group();
   const L = P.length;
+  // палуба под ногами: на квартердеке — приподнята; корма судов
+  // без квартердека — обычная палуба
+  const qFront = P.quarter ? quarterFrontZ(P) : -Infinity;
   const deckYAt = (z: number) => {
     const t = Math.min(1, Math.max(0, (z + L / 2) / L));
-    return hullProfile(t, P).bulwark - 1.0;
+    return hullProfile(t, P).bulwark - 1.0 + (z < qFront ? (P.quarter ?? 0) : 0);
   };
   const halfW = (z: number) => {
     const t = Math.min(1, Math.max(0, (z + L / 2) / L));
@@ -400,34 +407,53 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
 
   const mastZ = P.masts === 2 ? [L * 0.16, -L * 0.10] : [L * 0.18, -L * 0.05, -L * 0.28];
   const deckGuns = gunLayout(P).filter(sl => sl.tier === 0).map(sl => sl.z);
-  const wheelT = P.castleH ? 0.29 : 0.2;
-  const wheelZ = THREE.MathUtils.lerp(-L / 2, L / 2, wheelT);
+  const wheelZ = wheelZFor(P);
 
   // план ролей по приоритету: капитан → рулевой → боцман →
-  // канониры у орудий (до 2 на ствол) → вахтенные у мачт (2 на
-  // мачту) → ходоки по 4 полосам палубы
+  // ГРЕБЦЫ (гребные суда, на банках у вёсел) → канониры у орудий
+  // (до 2 на ствол) → вахтенные у мачт (2 на мачту) → ходоки
   const plan: CrewRole[] = ['captain'];
   if (nDeck >= 2) plan.push('helmsman');
   if (nDeck >= 4) plan.push('boatswain');
   const nRest = nDeck - plan.length;
-  const nGunners = Math.min(Math.floor(nRest * 0.5), deckGuns.length * 2, 16);
-  const nWatch = Math.min(Math.max(0, nRest - nGunners), P.masts * 2, 6);
-  const nWalk = Math.max(0, nRest - nGunners - nWatch);
+  const nRowers = P.oars ? Math.min(Math.max(2, nRest * 0.45), 14) : 0;
+  const nGunners = Math.min(Math.floor((nRest - nRowers) * 0.5), deckGuns.length * 2, 16);
+  const nWatch = Math.min(Math.max(0, nRest - nRowers - nGunners), P.masts * 2, 6);
+  const nWalk = Math.max(0, nRest - nRowers - nGunners - nWatch);
+  for (let i = 0; i < nRowers; i++) plan.push('rower');
   for (let i = 0; i < nGunners; i++) plan.push('gunner');
   for (let i = 0; i < nWatch; i++) plan.push('watch');
   for (let i = 0; i < nWalk; i++) plan.push('walker');
 
-  let gi = 0, wi = 0, ki = 0;
+  let gi = 0, wi = 0, ki = 0, ri = 0;
+  // банки гребцов: позиции вёсел (z от buildOars) — гребцы сидят
+  // лицом к корме (как на галерах), по двое на банку с обоих бортов
+  const oarN = P.oars ?? 0;
+  const oarZ = oarN
+    ? Array.from({ length: oarN }, (_, i) =>
+        THREE.MathUtils.lerp(-L * 0.26, L * 0.30, oarN === 1 ? 0.5 : i / (oarN - 1)))
+    : [];
   for (const role of plan) {
     const f = buildFigure(role, rollTraits(rot, role), nextSeed());
     if (role === 'captain') {
-      place(f, 0.55, -L * 0.245, 0.3);
+      // капитан — на квартердеке (если есть), у штурвала
+      place(f, 0.55, wheelZ - 1.6, 0.3);
     } else if (role === 'helmsman') {
       // рулевой — за штурвалом (руки на ободе), лицом к носу
       place(f, 0, wheelZ - 0.52, 0);
     } else if (role === 'boatswain') {
-      // боцман — у шпиля (шпиль на -L*0.16), лицом к носу-борту
-      place(f, -0.75, -L * 0.115, 0.5);
+      // боцман — у шпиля (шпиль перед квартердеком), лицом к носу-борту
+      place(f, -0.75, wheelZ + 2.4, 0.5);
+    } else if (role === 'rower') {
+      // гребец — на банке у своего весла, лицом к корме (сидя)
+      const z = oarZ.length ? oarZ[(ri * 2) % oarZ.length] : L * 0.1;
+      const side = ri % 2 === 0 ? -1 : 1;
+      ri++;
+      place(f, side * Math.max(0.55, halfW(z) * 0.5), z + 0.35, Math.PI);
+      // «сидит»: приземнее и приземистее стоящего матроса
+      f.group.position.y -= 0.30;
+      f.group.scale.y = 0.78;
+      f.baseScaleY = 0.78;
     } else if (role === 'gunner') {
       // канонир — за ПАЛУБНЫМ орудием (через одно), борт чередуется;
       // при 16 канонирах — лёгкий разброс вдоль ствола (без слипаний)
@@ -445,10 +471,11 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       place(f, side * Math.max(0.7, halfW(mz) * 0.42), mz + 0.9, side * (Math.PI / 2));
     } else {
       // ходок — гуляет по палубе туда-обратно; 4 полосы движения
-      // (по две на борт от диаметрали — мачты на оси не задеваем)
+      // (по две на борт от диаметрали — мачты на оси не задеваем);
+      // на судах с квартердеком — только ПЕРЕД его передней кромкой
       const LANES = [-0.31, -0.13, 0.13, 0.31];
       f.xPath = LANES[ki % 4] * Math.max(0.55, halfW(0)) + (rot() - 0.5) * 0.3;
-      f.walkA = P.castleH ? -L * 0.22 : -L * 0.3;
+      f.walkA = Math.max(P.castleH ? -L * 0.22 : -L * 0.3, qFront + 1.2);
       f.walkB = P.castleH ? L * 0.2 : L * 0.28;
       f.walkT = rot();
       ki++;
@@ -550,7 +577,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
         f.group.visible = true;
         f.group.rotation.x = 0;
         f.group.rotation.z = 0;
-        f.group.scale.setScalar(1);
+        f.group.scale.set(1, f.baseScaleY, 1);
       }
       vis.dead = 0;
       vis.shown = figures.length;
@@ -582,7 +609,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       // Избыток умирает по одной за кадр — трупы падают естественно
       const target = Math.min(figures.length, deckCrewFor(Math.max(ship.crew, 0)));
       const nAlive = figures.reduce((a, f) => a + (f.dead ? 0 : 1), 0);
-      const order: CrewRole[] = ['walker', 'watch', 'gunner', 'boatswain', 'helmsman', 'captain'];
+      const order: CrewRole[] = ['walker', 'rower', 'watch', 'gunner', 'boatswain', 'helmsman', 'captain'];
       let shownAlive = 0;
       let excess: CrewFigure | null = null; // одна «потеря» за кадр
       if (nAlive > target) {
@@ -602,9 +629,16 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       vis.shown = shownAlive;
 
       // --- анимация живых ---
+      const stroke = ship.stroke;
       for (const f of figures) {
         if (!f.group.visible || f.dead) continue;
-        if (f.role === 'walker' && f.xPath !== undefined && f.walkA !== undefined && f.walkB !== undefined) {
+        if (f.role === 'rower' && stroke && stroke.active) {
+          // гребец отклоняется в такт: замах на переносе, наклон
+          // корпуса на рабочем ходу (лёгкая асимметрия от фазы)
+          const lean = Math.sin(stroke.phase) * stroke.dir;
+          f.group.rotation.x = -0.26 * lean;
+          f.group.rotation.z = Math.sin(stroke.phase * 2) * 0.03;
+        } else if (f.role === 'walker' && f.xPath !== undefined && f.walkA !== undefined && f.walkB !== undefined) {
           const span = f.walkB - f.walkA;
           f.walkT += (f.walkDir * f.walkSpeed * dt) / span;
           if (f.walkT > 1) { f.walkT = 1; f.walkDir = -1; }

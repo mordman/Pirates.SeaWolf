@@ -92,6 +92,8 @@ export class CombatSystem {
   private leadMarker: THREE.Mesh;
   private reloads: number[] = []; // по орудиям обеих бортов
   private muzzleWorld = new THREE.Vector3();
+  private tmpQ = new THREE.Quaternion();
+  private tmpV = new THREE.Vector3();
   private aimDir = new THREE.Vector3();
 
   constructor(player: Ship, particles: Particles, emit: (t: string, p?: unknown) => void) {
@@ -209,6 +211,9 @@ export class CombatSystem {
     this.emit(GameEvents.AIM_TOGGLED, this.aim.active);
     return this.aim.active;
   }
+
+  /** Прицел активен (для авто-открытия портов в game.ts) */
+  isAiming(): boolean { return this.aim.active; }
   /** Мировое направление прицела */
   aimDirection(out: THREE.Vector3): THREE.Vector3 {
     const heading = this.player.heading;
@@ -224,6 +229,19 @@ export class CombatSystem {
 
   private gunIndex(side: -1 | 1, i: number): number {
     return side === 1 ? i : this.player.visual.gunsPort.length + i;
+  }
+
+  /** Орудие может стрелять: палубные (tier 0) — всегда; закрытые
+   *  батареи — только при ОТКРЫТЫХ пушечных портах (portsT > 0.85).
+   *  Закрытые порты — батареи молчат, «стреляют только те, что на
+   *  палубе» (жалоба/механика пользователя) */
+  private gunReady(gun: THREE.Object3D): boolean {
+    const tier = (gun.userData.tier as number) ?? 0;
+    return tier === 0 || this.player.portsT > 0.85;
+  }
+
+  private hasClosedGuns(guns: THREE.Object3D[]): boolean {
+    return guns.some(g => ((g.userData.tier as number) ?? 0) > 0);
   }
 
   /** Перестроить таймеры перезарядки под другое число орудий
@@ -246,10 +264,14 @@ export class CombatSystem {
     const guns = this.aim.side === 1 ? this.player.visual.gunsStarboard : this.player.visual.gunsPort;
     for (let i = 0; i < guns.length; i++) {
       const idx = this.gunIndex(this.aim.side, i);
-      if (this.reloads[idx] <= 0) {
+      if (this.reloads[idx] <= 0 && this.gunReady(guns[i])) {
         this.fireGun(idx, guns[i]);
         return;
       }
+    }
+    if (this.hasClosedGuns(guns) && this.player.portsT <= 0.85) {
+      this.emit(GameEvents.MESSAGE, { text: 'Порты закрыты — батареи молчат! (P — открыть)' });
+      return;
     }
     this.emit(GameEvents.MESSAGE, { text: 'Орудия перезаряжаются!' });
   }
@@ -260,7 +282,7 @@ export class CombatSystem {
     let fired = 0;
     for (let i = 0; i < guns.length; i++) {
       const idx = this.gunIndex(this.aim.side, i);
-      if (this.reloads[idx] <= 0) {
+      if (this.reloads[idx] <= 0 && this.gunReady(guns[i])) {
         // лёгкий разброс залпа
         const az0 = this.aim.azimuth, el0 = this.aim.elevation;
         this.aim.azimuth += (Math.random() - 0.5) * 0.06;
@@ -269,7 +291,13 @@ export class CombatSystem {
         fired++;
       }
     }
-    if (!fired) this.emit(GameEvents.MESSAGE, { text: 'Борт перезаряжается!' });
+    if (!fired) {
+      if (this.hasClosedGuns(guns) && this.player.portsT <= 0.85) {
+        this.emit(GameEvents.MESSAGE, { text: 'Порты закрыты — батареи молчат! (P — открыть)' });
+      } else {
+        this.emit(GameEvents.MESSAGE, { text: 'Борт перезаряжается!' });
+      }
+    }
   }
 
   private fireGun(idx: number, gun: THREE.Object3D, delay = 0) {
@@ -291,11 +319,14 @@ export class CombatSystem {
 
   private doFire(gun: THREE.Object3D, info: typeof AMMO_INFO[AmmoType]) {
     const ship = this.player;
-    // позиция дула в МИРОВЫХ координатах (без matrixWorld — floating origin!)
+    // позиция дула в МИРОВЫХ координатах (без matrixWorld — floating origin!):
+    // ИЗ СТВОЛА орудия — ось ствола на локальном X (muzzleX), ось Y +0.08;
+    // для закрытых батарей gun.position уже включает выезд порта
     const sideDir = gun.userData.side > 0 ? 1 : -1;
+    const muzzleX = (gun.userData.muzzleX as number) ?? sideDir * 1.2;
     this.muzzleWorld.copy(gun.position);
-    this.muzzleWorld.x += sideDir * 1.35;
-    this.muzzleWorld.y += 0.12;
+    this.muzzleWorld.x += muzzleX;
+    this.muzzleWorld.y += 0.08;
     this.muzzleWorld.applyQuaternion(ship.quaternion).add(ship.position);
     const h = ship.heading;
 
@@ -374,7 +405,9 @@ export class CombatSystem {
     this.emit(GameEvents.CANNON_FIRED, { pos: muzzle, power: 0.6 });
   }
 
-  /** Залп ИИ ядрами по игроку (с упреждением и разбросом) */
+  /** Залп ИИ ядрами по игроку (с упреждением и разбросом).
+   *  Ядра летят ИЗ ДУЛ реальных орудий борта, обращённого к цели:
+   *  берём стволы по локальной X цели — залп «веером» из портов */
   aiBallVolley(shooter: Ship, target: Ship) {
     const to = new THREE.Vector3().subVectors(target.position, shooter.position);
     const dist = to.length();
@@ -384,13 +417,37 @@ export class CombatSystem {
     const aim = target.position.clone().addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
     // размер залпа — от числа орудий борта (шлюп 5 → 3 ядра, бриг 14 → 5)
     const n = Math.max(2, Math.min(5, Math.round(shooter.preset.gunsPerSide * 0.55)));
+    // какой борт смотрит на цель: локальная X цели в осях корабля
+    const invQ = this.tmpQ.copy(shooter.quaternion).invert();
+    const local = this.tmpV.copy(to).applyQuaternion(invQ);
+    const sideGuns = local.x >= 0 ? shooter.visual.gunsPort : shooter.visual.gunsStarboard;
+    // выбираем до n стволов, равномерно по длине (палубные + батареи)
+    const guns: THREE.Object3D[] = [];
+    if (sideGuns.length) {
+      for (let i = 0; i < n; i++) {
+        const g = sideGuns[Math.floor(i * sideGuns.length / n)];
+        if (g && !guns.includes(g)) guns.push(g);
+      }
+    }
+    const muzzleOf = (g: THREE.Object3D, out: THREE.Vector3) => {
+      const sdir = g.userData.side > 0 ? 1 : -1;
+      out.copy(g.position);
+      out.x += (g.userData.muzzleX as number) ?? sdir * 1.2;
+      out.y += 0.08;
+      out.applyQuaternion(shooter.quaternion).add(shooter.position);
+    };
     for (let i = 0; i < n; i++) {
       const pr = this.projectiles.find(q => !q.active);
       if (!pr) break;
       pr.active = true;
-      pr.pos.copy(shooter.position).addScaledVector(aim, shooter.preset.beam * 0.55);
+      if (guns.length) {
+        muzzleOf(guns[i % guns.length], this.muzzleWorld);
+        pr.pos.copy(this.muzzleWorld);
+      } else {
+        pr.pos.copy(shooter.position).addScaledVector(aim, shooter.preset.beam * 0.55);
+        pr.pos.y += 1.0;
+      }
       pr.prev.copy(pr.pos);
-      pr.pos.y += 1.0;
       pr.type = 'ball';
       pr.shooter = shooter;
       pr.age = 0;
@@ -404,15 +461,16 @@ export class CombatSystem {
       dir.normalize();
       pr.vel.copy(dir).multiplyScalar(170).add(shooter.velocity);
     }
-    // дым и звук
-    const muzzle = shooter.position.clone().addScaledVector(aim, shooter.preset.beam * 0.7);
-    muzzle.y += 1.2;
+    // дым и звук — от первого дула (или центра борта)
+    const muzzle = new THREE.Vector3();
+    if (guns.length) muzzleOf(guns[0], muzzle);
+    else { muzzle.copy(shooter.position).addScaledVector(aim, shooter.preset.beam * 0.7); muzzle.y += 1.2; }
     for (let s = 0; s < 2; s++) {
       this.particles.smoke(muzzle.x, muzzle.y, muzzle.z,
         aim.x * 1.6 + (Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.25,
         aim.z * 1.6 + (Math.random() - 0.5) * 0.6, 1.05 + Math.random() * 0.25, 1.0 + Math.random() * 0.2);
     }
-    this.emit(GameEvents.CANNON_FIRED, { pos: muzzle, power: 0.9 });
+    this.emit(GameEvents.CANNON_FIRED, { pos: muzzle.clone(), power: 0.9 });
   }
 
   // ---------- обновление ----------

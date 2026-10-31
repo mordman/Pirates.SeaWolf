@@ -370,7 +370,7 @@ export default function Home() {
     ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     for (let x = 0; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
     for (let y = 0; y < H; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-    const scale = 0.055; // мир -> пиксели
+    const scale = 0.048; // мир -> пиксели (увеличенная карта до ±4.5 км)
     const cx = W / 2, cy = H / 2;
     const px = (x: number) => cx + x * scale;
     const pz = (z: number) => cy + z * scale;
@@ -437,7 +437,7 @@ export default function Home() {
     const rect = cv.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (cv.width / rect.width);
     const my = (e.clientY - rect.top) * (cv.height / rect.height);
-    const scale = 0.055;
+    const scale = 0.048;
     const wx = (mx - cv.width / 2) / scale;
     const wz = (my - cv.height / 2) / scale;
     let bestName: string | null = null;
@@ -481,7 +481,7 @@ export default function Home() {
               <span><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — боеприпасы</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера (изометрия и др.)</span>
               <span><b className="text-amber-200">Колесо</b> — зум</span>
-              <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">S</b> — назад · <b className="text-amber-200">O</b> — вывалить</span>
+              <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">S</b> — назад · <b className="text-amber-200">O</b> — вывалить · <b className="text-amber-200">P</b> — порты</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
@@ -593,6 +593,22 @@ export default function Home() {
                         : 'border-amber-400 bg-amber-900/40 text-amber-200'
                       : 'border-stone-700 bg-stone-900 text-stone-500'}`}>
                     {!hud.oars.out ? 'убраны' : hud.oars.deploy < 0.95 ? 'вываливаются…' : hud.oars.rowing > 0 ? 'гребля вперёд' : hud.oars.rowing < 0 ? 'гребля назад' : 'на воде'}
+                  </div>
+                </div>
+              )}
+              {/* пушечные порты (закрытые батареи) */}
+              {hud.gunPorts && (
+                <div className="text-center">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
+                    Порты ({keyLabel(settings.controls.gunports)}) · батарей {Math.round(hud.gunPorts.count / 2)}
+                  </div>
+                  <div className={`rounded-sm border px-2 py-1 text-[11px] font-semibold ${
+                    hud.gunPorts.open
+                      ? hud.gunPorts.anim > 0.9
+                        ? 'border-red-400 bg-red-900/50 text-red-200'
+                        : 'border-amber-400 bg-amber-900/40 text-amber-200'
+                      : 'border-stone-700 bg-stone-900 text-stone-500'}`}>
+                    {!hud.gunPorts.open ? 'задраены' : hud.gunPorts.anim > 0.9 ? 'открыты — к бою!' : 'открываются…'}
                   </div>
                 </div>
               )}
@@ -831,7 +847,7 @@ export default function Home() {
             <div className="mb-3 flex flex-wrap gap-1.5">
               {([
                 ['harbor', '🔨 Гавань'], ['market', '📦 Рынок'], ['yard', '⚓ Верфь'],
-                ['upgrades', '⬆ Улучшения'], ['skins', '🎭 Скины'],
+                ['upgrades', '⬆ Улучшения'], ['skins', '🎭 Убранство'],
               ] as [typeof portTab, string][]).map(([tab, label]) => (
                 <button key={tab} onClick={() => { setPortTab(tab); setPortMsg(null); }}
                   className={`pointer-events-auto rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
@@ -1032,13 +1048,16 @@ export default function Home() {
               );
             })()}
 
-            {/* ===== СКИНЫ: флаг / паруса / корпус ===== */}
+            {/* ===== СКИНЫ И УБРАНСТВО: флаг / паруса / корпус / фигуры / украшения ===== */}
             {portTab === 'skins' && (
               <div className="max-h-[42vh] space-y-3 overflow-y-auto pr-1">
                 <p className="text-[11px] text-stone-500">
-                  Купленные скины переносятся на любой ваш корабль. «Штатные» возвращают заводской вид.
+                  Купленное переносится на любой ваш корабль. «Штатные» возвращают заводской вид.
+                  Гальюнные фигуры — на носу; украшения бортов — золотая резьба: золото БЛЕСТИТ
+                  (глянцевый металл), дерево остаётся матовым.
                 </p>
-                {([['flag', '🏴 Флаги'], ['sail', '⛵ Паруса'], ['hull', '🛡 Корпус']] as ['flag' | 'sail' | 'hull', string][]).map(([kind, label]) => (
+                {([['flag', '🏴 Флаги'], ['sail', '⛵ Паруса'], ['hull', '🛡 Корпус'],
+                  ['figure', '⚓ Носовые фигуры'], ['deco', '✨ Украшения бортов']] as ['flag' | 'sail' | 'hull' | 'figure' | 'deco', string][]).map(([kind, label]) => (
                   <div key={kind}>
                     <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">{label}</div>
                     <div className="grid grid-cols-2 gap-1.5">
@@ -1046,10 +1065,13 @@ export default function Home() {
                         const owned = g.skinsOwned.has(sk.id);
                         const equipped = (kind === 'flag' && g.skinsOn.flag === sk.flag)
                           || (kind === 'sail' && ((sk.hex ?? -1) < 0 ? g.skinsOn.sail == null : g.skinsOn.sail === sk.hex))
-                          || (kind === 'hull' && ((sk.hex ?? -1) < 0 ? g.skinsOn.hull == null : g.skinsOn.hull === sk.hex));
+                          || (kind === 'hull' && ((sk.hex ?? -1) < 0 ? g.skinsOn.hull == null : g.skinsOn.hull === sk.hex))
+                          || (kind === 'figure' && (sk.id === 'figure.stock' ? g.skinsOn.figure == null : g.skinsOn.figure === sk.id))
+                          || (kind === 'deco' && (sk.id === 'deco.none' ? g.skinsOn.deco == null : g.skinsOn.deco === sk.id));
                         return (
                           <button key={sk.id}
                             onClick={() => act(gg => (owned ? gg.equipSkin(sk.id) : gg.buySkin(sk.id)))}
+                            title={sk.desc ?? sk.name}
                             className={`pointer-events-auto flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
                               equipped
                                 ? 'border-amber-400 bg-amber-800/50'
@@ -1059,8 +1081,11 @@ export default function Home() {
                             <span className="h-5 w-5 shrink-0 rounded-full border border-stone-500" style={{ background: sk.swatch }} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-xs font-semibold text-stone-200">{sk.name}</span>
+                              <span className={`block truncate text-[9px] ${equipped ? 'text-amber-300/80' : 'text-stone-500'}`}>
+                                {equipped ? 'на корабле' : sk.desc}
+                              </span>
                               <span className={`text-[10px] ${equipped ? 'text-amber-300' : owned ? 'text-emerald-300' : 'text-stone-500'}`}>
-                                {equipped ? 'надет' : owned ? 'надеть' : sk.price > hud.gold ? `${sk.price} зол. (не хватает)` : `${sk.price} зол.`}
+                                {equipped ? 'надето' : owned ? 'надеть' : sk.price > hud.gold ? `${sk.price} зол. (не хватает)` : `${sk.price} зол.`}
                               </span>
                             </span>
                           </button>
@@ -1105,6 +1130,7 @@ export default function Home() {
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsUp)} / {keyLabel(settings.controls.sailsDown)}</b> — поднять/убрать паруса (0–3)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль (инерция!)</div>
               <div><b className="text-amber-200">Alt+W / Alt+S</b> — вёсла вперёд/назад (гребные суда)</div>
+              <div><b className="text-amber-200">P</b> — открыть/закрыть пушечные порты (закрытые батареи молчат — стреляют только палубные орудия)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
