@@ -171,17 +171,17 @@ await sleep(4500);
 const sail1 = jparse(ev(`(() => { const s = window.__sea; return JSON.stringify({spd: +s.speed.toFixed(1), set: s.sailSet}); })()`));
 log('C: ход Amsterdam:', JSON.stringify(sail1));
 check('C: Amsterdam идёт под парусами', sail1.spd > 0.2, JSON.stringify(sail1));
-// карта: быстрое перемещение кликом по острову «Плёс» (250, -1400)
+// карта: быстрое перемещение кликом по острову «Плёс» (375, -2100; мир увеличен в Task 21)
 run('press Tab');
 await sleep(900);
 shot('v30_map_open');
-const clickRes = ev(`(() => { const canvases = document.querySelectorAll('canvas'); let map = null; for (const c of canvases) { if (c.width === 640 && c.height === 520) map = c; } if (!map) return 'no map canvas'; const r = map.getBoundingClientRect(); const mx = r.left + (320 + 250 * 0.055) * (r.width / 640); const my = r.top + (260 - 1400 * 0.055) * (r.height / 520); map.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, clientX: mx, clientY: my})); return 'clicked'; })()`);
+const clickRes = ev(`(() => { const canvases = document.querySelectorAll('canvas'); let map = null; for (const c of canvases) { if (c.width === 640 && c.height === 520) map = c; } if (!map) return 'no map canvas'; const r = map.getBoundingClientRect(); const mx = r.left + (320 + 375 * 0.048) * (r.width / 640); const my = r.top + (260 + (-2100) * 0.048) * (r.height / 520); map.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, clientX: mx, clientY: my})); return 'clicked'; })()`);
 log('C: клик по карте:', clickRes);
 check('C: клик по карте доставлен', clickRes.includes('clicked'), clickRes);
 await sleep(1800);
 const pos1 = jparse(ev(`(() => { const s = window.__sea; return JSON.stringify({x: +s.x.toFixed(0), z: +s.z.toFixed(0)}); })()`));
 log('C: позиция после телепорта:', JSON.stringify(pos1));
-check('C: телепорт к острову Плёс (250,-1400)', Math.hypot(pos1.x - 250, pos1.z + 1400) < 500, JSON.stringify(pos1));
+check('C: телепорт к острову Плёс (375,-2100)', Math.hypot(pos1.x - 375, pos1.z + 2100) < 700, JSON.stringify(pos1));
 shot('v30_travel_arrived');
 // вторая смена: галера (гребной, военные)
 ev(`(() => { const g = window.__game; g.docked = true; return 'docked2'; })()`);

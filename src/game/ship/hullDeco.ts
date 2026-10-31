@@ -119,26 +119,63 @@ export function makeHullTextures(P: ShipPreset, decoId: string, ports: PortRef[]
     const r = cRough.getContext('2d')!;
     const mt = cMetal.getContext('2d')!;
 
-    // ===== БАЗА: дерево =====
-    // map: белая база (мультипликативно сохраняет вершинные цвета —
-    // окраску борта, вельсы, полосы пресета) + зерно + швы + потёки
-    m.fillStyle = '#ffffff';
-    m.fillRect(0, 0, W, H);
+    // ===== БАЗА: ОКРАСКА БОРТА ПИШЕТСЯ В КАРТУ ЦВЕТА =====
+    // (та же схема, что была в вершинных цветах: подводная часть →
+    // ватерлинионный пояс → полосы пресета → вельс → основной цвет,
+    // лёгкая полосатость досок). КАРТА теперь НЕ умножается на
+    // вершинные цвета — узоры рисуются ПОЛНЫМ цветом и видны
+    // даже на тёмном корпусе (череп на чёрном борту — как надо).
+    // Дерево остаётся матовым, золото — глянцевым металлом.
+    const F = P.freeboard;
+    const cHull = new THREE.Color(P.colors.hull);
+    const cBelow = new THREE.Color(0x33402a); // обрастание под водой
+    const cBoot = new THREE.Color(0xd8d2c2); // пояс ватерлинии
+    const cWale = new THREE.Color(P.colors.trim);
+    const stripesL = (P.stripes ?? []).map(st => ({
+      y0: st.y0 * F, y1: st.y1 * F, c: new THREE.Color(st.color),
+    }));
+    const bootTop = Math.max(0.42, F * 0.13);
+    const waleY0 = Math.max(0.9, F * 0.22);
+    const waleY1 = waleY0 + Math.max(0.45, F * 0.09);
+    const Bw = P.beam;
+    const rowCol = new THREE.Color();
+    for (let py = 0; py < H; py++) {
+      const y = (vMin + (1 - py / H) * vSpan) * Bw; // мировая высота строки
+      if (y < -0.15) rowCol.copy(cHull).lerp(cBelow, Math.min(1, (-y + 0.15) / P.draft));
+      else if (y < bootTop) rowCol.copy(cBoot);
+      else {
+        let st = false;
+        for (const s of stripesL) {
+          if (y >= s.y0 && y <= s.y1) { rowCol.copy(s.c); st = true; break; }
+        }
+        if (!st) {
+          if (y > waleY0 && y < waleY1) rowCol.copy(cWale);
+          else rowCol.copy(cHull);
+        }
+      }
+      // лёгкая полосатость обшивки (как было в вершинных цветах)
+      const k = 1 - 0.06 * (Math.sin(y * 9.0) * 0.5 + 0.5);
+      m.fillStyle = `rgb(${Math.round(rowCol.r * 255 * k)},${Math.round(rowCol.g * 255 * k)},${Math.round(rowCol.b * 255 * k)})`;
+      m.fillRect(0, py, W, 1);
+    }
+
+    // шероховатость/металличность базы
     r.fillStyle = 'rgb(197,197,197)';   // ~0.77 — матовое крашеное дерево
     r.fillRect(0, 0, W, H);
     mt.fillStyle = 'rgb(13,13,13)';     // ~0.05 — дерево не металл
     mt.fillRect(0, 0, W, H);
 
     if (grainLoaded && grainImg && roughImg) {
-      // зерно вдоль корпуса (доски тянутся по длине — вдоль u)
-      m.globalAlpha = 0.30;
-      r.globalAlpha = 0.22;
+      // зерно вдоль корпуса (доски тянутся по длине — вдоль u);
+      // в карту цвета — мягким умножением (фактура без смены тона)
+      m.save();
+      m.globalAlpha = 0.22;
+      m.globalCompositeOperation = 'multiply';
       const tileW = 512;
-      for (let x = 0; x < W; x += tileW) {
-        m.drawImage(grainImg, x, 0, tileW, H);
-        r.drawImage(roughImg, x, 0, tileW, H);
-      }
-      m.globalAlpha = 1;
+      for (let x = 0; x < W; x += tileW) m.drawImage(grainImg, x, 0, tileW, H);
+      m.restore();
+      r.globalAlpha = 0.22;
+      for (let x = 0; x < W; x += 512) r.drawImage(roughImg, x, 0, 512, H);
       r.globalAlpha = 1;
     }
 

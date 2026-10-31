@@ -331,6 +331,11 @@ export class World {
   }
 
   // ---------- растительность ----------
+  // ДЕРЕВЬЯ ПО ОСТРОВУ: раньше все деревья всех островов сидели в
+  // ОДНОМ InstancedMesh с frustumCulled=false (мелкий мир — ок);
+  // с увеличенными островами это стало ~2× треугольников В КАЖДОМ
+  // кадре (даже за спиной). Теперь инстансы ГО на остров — и
+  // отсекаются по фрустуму: за бортом рисуются только близкие острова
   private buildVegetation() {
     interface Slot { geo: () => THREE.BufferGeometry; sway: number; }
     const types: Record<string, Slot> = {
@@ -341,14 +346,16 @@ export class World {
       bamboo: { geo: bambooGeo, sway: 0.06 },
       rock: { geo: rockGeo, sway: 0 },
     };
-    const placements: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> = {};
-    for (const k of Object.keys(types)) placements[k] = [];
+    // placements[остров][порода] — отдельный инстанс-меш на пару
+    const perIsland: { isl: IslandDef; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> }[] = [];
 
     for (const isl of this.islands) {
       const density = isl.type === 'rock' ? 0.35 : isl.type === 'atoll' ? 1.0 : 1.25;
       const area = Math.PI * isl.r * isl.r;
       const target = Math.floor(area / 220 * density);
       const rng = new RNG(WORLD_SEED + isl.cx * 31 + isl.cz);
+      const byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> = {};
+      for (const k of Object.keys(types)) byKind[k] = [];
       let tries = 0;
       let placed = 0;
       while (placed < target && tries < target * 14) {
@@ -374,35 +381,40 @@ export class World {
           new THREE.Vector3(x, h - 0.15, z),
           new THREE.Quaternion().setFromEuler(new THREE.Euler(rng.range(-0.06, 0.06), rng.range(0, Math.PI * 2), rng.range(-0.06, 0.06))),
           new THREE.Vector3(s, s * rng.range(0.85, 1.2), s));
-        placements[kind].push({ m, islandType: isl.type, h });
+        byKind[kind].push({ m, islandType: isl.type, h });
         placed++;
       }
+      perIsland.push({ isl, byKind });
     }
 
-    for (const [kind, list] of Object.entries(placements)) {
-      if (!list.length) continue;
-      const geo = types[kind].geo();
-      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-      if (types[kind].sway > 0) applySway(mat, types[kind].sway);
-      const inst = new THREE.InstancedMesh(geo, mat, list.length);
-      list.forEach((p, i) => inst.setMatrixAt(i, p.m));
-      inst.castShadow = true;
-      inst.receiveShadow = false;
-      inst.frustumCulled = false; // острова распределены широко — оставляем всегда видимыми
-      this.group.add(inst);
-      // позиции для ломания (камни не ломаются)
-      const positions = list.map((p) => {
-        const v = new THREE.Vector3();
-        v.setFromMatrixPosition(p.m);
-        return v;
-      });
-      this.vegSlots.push({
-        inst, positions,
-        broken: new Array(list.length).fill(false),
-        breakable: kind !== 'rock',
-        kind,
-        scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
-      });
+    for (const { byKind } of perIsland) {
+      for (const [kind, list] of Object.entries(byKind)) {
+        if (!list.length) continue;
+        const geo = types[kind].geo();
+        const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+        if (types[kind].sway > 0) applySway(mat, types[kind].sway);
+        const inst = new THREE.InstancedMesh(geo, mat, list.length);
+        list.forEach((p, i) => inst.setMatrixAt(i, p.m));
+        inst.castShadow = true;
+        inst.receiveShadow = false;
+        // по острову — фрустум отсекает далёкие/за спиной
+        inst.frustumCulled = true;
+        inst.computeBoundingSphere();
+        this.group.add(inst);
+        // позиции для ломания (камни не ломаются)
+        const positions = list.map((p) => {
+          const v = new THREE.Vector3();
+          v.setFromMatrixPosition(p.m);
+          return v;
+        });
+        this.vegSlots.push({
+          inst, positions,
+          broken: new Array(list.length).fill(false),
+          breakable: kind !== 'rock',
+          kind,
+          scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
+        });
+      }
     }
   }
 

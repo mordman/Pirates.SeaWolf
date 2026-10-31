@@ -55,8 +55,10 @@ const pbrA = jparse(ev(`(() => {
   let hull = null, deck = null;
   v.group.traverse(o => {
     if (!o.isMesh || !o.material || !o.material.normalMap) return;
-    if (o.material.map && !deck) deck = o;
-    else if (o.material.side === 2 && !hull) hull = o; // THREE.DoubleSide === 2
+    // корпус: теперь несёт map+metalnessMap (окраска/золото в Task 21);
+    // квартердек/фальшборт тоже DoubleSide — отличаем по картам
+    if (o.material.map && o.material.metalnessMap && !hull) hull = o;
+    else if (o.material.map && !deck) deck = o;
   });
   const pole = v.masts[0] ? v.masts[0].children[0] : null;
   const gun = v.gunsPort[0] ? v.gunsPort[0].children[0] : null;
@@ -65,7 +67,8 @@ const pbrA = jparse(ev(`(() => {
   const t = g.pgTarget.ship;
   let tHull = null;
   t.visual.group.traverse(o => {
-    if (!tHull && o.isMesh && o.material && o.material.side === 2 && o.material.normalMap) tHull = o;
+    if (!tHull && o.isMesh && o.material && o.material.map && o.material.metalnessMap
+      && o.material.normalMap) tHull = o;
   });
   const uvInfo = (geo) => {
     if (!geo || !geo.attributes.uv) return null;

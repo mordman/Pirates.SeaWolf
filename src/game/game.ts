@@ -293,6 +293,8 @@ export class Game {
     (window as unknown as { __game?: Game }).__game = this;
     // THREE для E2E-тестов (повороты кватернионами в eval без бандла)
     (window as unknown as { __THREE?: typeof THREE }).__THREE = THREE;
+    // высота суши для E2E (проверки лагеря/островов)
+    (window as unknown as { __heightAt?: (x: number, z: number) => number }).__heightAt = heightAt;
     window.addEventListener('resize', this.onResize);
   }
 

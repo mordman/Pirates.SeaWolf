@@ -276,9 +276,12 @@ const qdC = jparse(ev(`(() => {
   // стрелка держит СЕВЕР: при повороте корпуса её локальный поворот
   // меняется РОВНО на противоположный повороту (мир-фикс)
   const h0 = p.heading;
-  const rot0 = v.binnacleNeedle.rotation.y;
   let needleOk = true;
   let time = g.time;
+  // прокрутить один кадр: у ТОЛЬКО ЧТО построенного корабля стрелка
+  // ещё не обновлялась (rotation 0) — сначала синхронизируем
+  p.updateVisual(time, 1 / 60, g.particles);
+  const rot0 = v.binnacleNeedle.rotation.y;
   const T = window.__THREE;
   const eu = new T.Euler().setFromQuaternion(p.quaternion, 'YXZ');
   p.quaternion.setFromEuler(new T.Euler(eu.x, eu.y + 0.6, eu.z, 'YXZ'));
@@ -531,6 +534,7 @@ const aiH0 = jparse(ev(`(() => {
   g.player.position.copy(target.ship.position).add(new T.Vector3(120, 0, 40));
   g.player.velocity.set(0, 0, 0);
   const before = target.ship.portsOpen;
+  target.onPlayerAggression(g.aiShips);
   return JSON.stringify({ before, state: target.state, n: target.ship.visual.gunPorts.length });
 })()`));
 log('H-агрессия:', JSON.stringify(aiH0));
@@ -541,23 +545,63 @@ const aiH = jparse(ev(`(() => {
   const target = g.aiShips.find(a => a.ship.preset.gunportRows && a.ship.visual.gunPorts.length
     && a.state !== 'anchored');
   if (!target) return JSON.stringify({ err: 'нет' });
+  // RAF уже включил порты (portsOpen=true); докрутить анимацию крышек
+  // (headless SwiftShader даёт ~2 fps — реальный темп выше)
+  const p = target.ship;
+  const animByRaf = +p.portsT.toFixed(2);
+  let time = g.time;
+  for (let i = 0; i < 240; i++) {
+    time += 1 / 60;
+    p.updateVisual(time, 1 / 60, g.particles);
+  }
   return JSON.stringify({
     state: target.state,
     after: target.ship.portsOpen,
-    anim: +target.ship.portsT.toFixed(2),
-    lids: target.ship.visual.gunPorts.every(gp => Math.abs(Math.abs(gp.lid.rotation.z) - 2.6) < 0.15),
+    animByRaf,
+    anim: +p.portsT.toFixed(2),
+    lids: p.visual.gunPorts.every(gp => Math.abs(Math.abs(gp.lid.rotation.z) - 2.6) < 0.15),
   });
 })()`));
 log('H:', JSON.stringify(aiH));
 if (!aiH || aiH.err) {
   check('H: ИИ с портами найден', false, JSON.stringify(aiH));
 } else {
-  check('H: агрессия → ИИ в бою и порты ОТКРЫТЫ',
-    aiH.state === 'combat' && aiH.after === true && aiH.anim > 0.8 && aiH.lids,
+  check('H: агрессия → ИИ в бою, порты ОТКРЫТЫ, крышки подняты',
+    aiH.state === 'combat' && aiH.after === true && aiH.animByRaf > 0 && aiH.anim > 0.95 && aiH.lids,
     JSON.stringify(aiH));
 }
 
-// ================= I: скриншоты для VLM =================
+// ================= I: FPS и скриншоты для VLM =================
+log('=== I: FPS (ДО скриншотов — captureScreenshot душит RAF headless) ===');
+// ВАЖНО: каждый screenshot в headless Chrome кумулятивно урежает
+// RAF (замер: 45 → 33 → 23 → 1.4 fps после двух кадров) — проверку
+// живости рендера делаем ДО снимков, в стандартной сцене
+ev(`(() => {
+  const g = window.__game;
+  g.player.position.set(3200, 0, 2300);
+  g.player.velocity.set(0, 0, 0);
+  g.player.anchored = true;
+  g.setCameraMode('iso');
+  g.rig.distSet(200);
+  g.rig.snap();
+  return 'fps scene ready';
+})()`);
+let fpsMax = 0, infoMax = null;
+for (let k = 0; k < 3; k++) {
+  await sleep(2300);
+  const f = jparse(ev(`(() => {
+    const g = window.__game;
+    return JSON.stringify({ fps: +g.fpsSmooth.toFixed(1), calls: g.renderer.info.render.calls, tris: g.renderer.info.render.triangles });
+  })()`));
+  if (f && f.fps) fpsMax = Math.max(fpsMax, f.fps);
+  if (f) infoMax = f;
+}
+check('I: FPS живой в стандартной сцене (> 4, SwiftShader)', fpsMax > 4, `fpsMax=${fpsMax}`);
+check('I: рендер-цикл рисует сцену (вызовы > 50, треугольники > 100k)',
+  infoMax && infoMax.calls > 50 && infoMax.tris > 100000,
+  infoMax ? `calls=${infoMax.calls} tris=${infoMax.tris}` : 'нет данных');
+
+// ================= скриншоты для VLM =================
 log('=== I: скриншоты ===');
 // I1: квартердек фрегата с кормы (нактоуз/балюстрада/трапы)
 ev(`(() => {
@@ -647,11 +691,11 @@ ev(`(() => {
   g.equipSkin('figure.mermaid');
   p.anchored = true;
   g.setCameraMode('free');
-  g.rig.freeAzimSet(0.9);
-  g.rig.freeElevSet(0.22);
-  g.rig.distSet(11);
+  g.rig.freeAzimSet(0.75);
+  g.rig.freeElevSet(0.13);
+  g.rig.distSet(6.5);
   g.rig.snap();
-  return 'fig=' + g.skinsOn.figure;
+  return 'fig=' + g.skinsOn.figure + ' children=' + p.visual.figurehead.children.length;
 })()`);
 await sleep(2800);
 shot('v38_figurehead_mermaid');
@@ -695,7 +739,6 @@ const errs = (() => {
   return /Uncaught|TypeError|ReferenceError|Error:|Hydration/i.test(e) ? e : '';
 })();
 check('I: страница без ошибок', !errs, errs.slice(0, 200));
-const fpsF = jparse(ev(`(() => { return window.__sea ? JSON.stringify({ fps: +window.__sea.fps.toFixed(1) }) : '{}'; })()`));
-check('I: FPS живой (> 1.5: SwiftShader CPU-рендер, 4 текстуры на корпус, острова ×2 площади)', fpsF.fps > 1.5, `fps=${fpsF.fps}`);
+
 log(fails === 0 ? '\nALL OK' : `\nFAILURES: ${fails}`);
 process.exit(fails === 0 ? 0 : 1);

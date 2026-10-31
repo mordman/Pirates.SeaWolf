@@ -1804,20 +1804,23 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // DoubleSide: даже если камера (или волна) заглянет под корпус/за корму —
   // стенки видны, «прозрачной кормы» нет (изнутри односторонние грани куллятся)
   // PBR: пояс обшивки + волокна — нормали, крашеное дерево — шероховатость.
-  // ТЕКСТУРА БОРТОВ: бесплатная текстура дерева (three.js examples, CC)
-  // + процедурные швы/потёки + (для купленных украшений) ЗОЛОТО,
-  // которое блестит за счёт тёмных пятен на карте шероховатости
-  // и светлых на карте металличности — дерево остаётся матовым.
+  // ТЕКСТУРА БОРТОВ (вместо вершинных цветов): бесплатная текстура
+  // дерева (three.js examples, CC) + ОКРАСКА (подводная часть, пояс
+  // ватерлинии, полосы, вельс — как раньше в вершинах) + швы/потёки
+  // + покупные ЗОЛОТЫЕ узоры полным цветом. Золото блестит за счёт
+  // тёмных пятен на карте шероховатости и светлых на металличности —
+  // дерево остаётся матовым.
   const hullTex = makeHullTextures(P, 'deco.none',
     gunLayout(P).filter(s => s.tier > 0).map(s => ({ z: s.z, y: s.y })));
   const hullMat = new THREE.MeshStandardMaterial({
-    vertexColors: true, metalness: 1.0, roughness: 1.0,
+    vertexColors: false, metalness: 1.0, roughness: 1.0,
     side: THREE.DoubleSide,
     map: hullTex.map,
     roughnessMap: hullTex.rough,
     metalnessMap: hullTex.metal,
     normalMap: woodNormalTex('hull'),
     normalScale: new THREE.Vector2(0.6, 0.6),
+    envMapIntensity: 1.35,
   });
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
@@ -2138,12 +2141,13 @@ export function buildShip(P: ShipPreset): ShipVisual {
         gun.position.set(side * (prof.w * 0.9 - 0.15), prof.bulwark - 0.72, slot.z);
       } else {
         // закрытая батарея: УБРАНО (дульный срез за обшивкой),
-        // при открытии порта лафет выезжает на 0.6 м наружу
+        // при открытии порта лафет ВЫЕЗЖАЕТ наружу — ствол выдаётся
+        // за борт на ~0.85 м (как при ran out guns перед залпом)
         const hw = hullHalfWidthAt(P, tt, slot.y);
-        const baseX = side * (hw - 1.35);
+        const baseX = side * (hw - 1.55);
         gun.position.set(baseX, slot.y, slot.z);
         gun.userData.baseX = baseX;
-        gun.userData.slideX = side * 0.6;
+        gun.userData.slideX = side * 1.0;
         // крышка порта: петля ВВЕРХУ, закрыта — висит, закрывая порт;
         // открыта — откинута вверх-наружу, прижата к борту
         const lidH = Math.min(0.52, Math.max(0.4, P.freeboard * 0.095));

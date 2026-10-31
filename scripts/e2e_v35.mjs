@@ -125,9 +125,9 @@ check('B: стоят на рельефе (высота 0.3..12)', folkB.err === 
 const folkKill = jparse(ev(`(() => {
   const g = window.__game;
   const lf = g.lairFolk;
-  // движение: замер по каждой 4-й фигуре (костровые дворовые идут
-  // первыми в списке, ходоки — позже: срез i%4 покрывает весь список)
-  const alive0 = lf.group.children.filter((c, i) => i % 4 === 0).slice(0, 30);
+  // движение: меряем ВСЕ фигуры (лагерь — костровые дворовые В
+  // НАЧАЛЕ списка, ходоки — в конце; срез первых 90 их не видел)
+  const alive0 = lf.group.children.slice();
   const p0 = alive0.map(c => ({ x: c.position.x, z: c.position.z }));
   for (let i = 0; i < 72; i++) lf.update(1/60, i/60);
   const moved = Math.max(...alive0.map((c, k) =>
