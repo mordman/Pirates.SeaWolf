@@ -1720,6 +1720,24 @@ export class Game {
             lidsOpen: p.visual.gunPorts.filter(gp => gp.open > 0.85).length,
             gunsOut: p.visual.gunPorts.filter(gp => gp.gun.position.x * Math.sign(gp.gun.userData.baseX) > Math.abs(gp.gun.userData.baseX) + 0.2).length }
         : null,
+      // шлюпка на палубе (Task 22): поперёк, видимость, разлёт
+      boat: p.visual.boat
+        ? {
+            ok: true, visible: p.visual.boat.visible,
+            rotY: +p.visual.boat.rotation.y.toFixed(2),
+            len: +(p.visual.boat.userData.boatLen as number).toFixed(2),
+            x: +p.visual.boat.position.x.toFixed(1), z: +p.visual.boat.position.z.toFixed(1),
+          }
+        : { ok: false },
+      // якоря игрока: отдача (F) — анимация 0..1 + буй на воде
+      anchors: p.visual.anchors?.length
+        ? {
+            n: p.visual.anchors.length, down: p.anchored, t: +p.anchorT.toFixed(2),
+            anchorY: p.visual.anchors.map(A => +A.anchor.position.y.toFixed(2)),
+            buoyY: p.visual.anchors.map(A => +A.buoy.position.y.toFixed(2)),
+            stowQuatX: p.visual.anchors.map(A => +(Math.abs(A.anchor.quaternion.x) + Math.abs(A.anchor.quaternion.z)).toFixed(2)),
+          }
+        : null,
       figureOn: this.skinsOn.figure ?? 'figure.stock',
       decoOn: this.skinsOn.deco ?? 'deco.none',
       // острова: размеры/дистанции для E2E карты

@@ -81,6 +81,8 @@ export class Ship {
   rudder = 0;              // -1..1 (реальный угол)
   rudderTarget = 0;
   anchored = false;
+  /** анимация якоря: 0 — убран (лежит вдоль борта), 1 — отдан (под водой на цепи) */
+  anchorT = 0;
   reverseThrust = false;
   helmActive = false;
   // --- вёсла (гребные суда: шебека, галера) ---
@@ -757,15 +759,18 @@ export class Ship {
     best.visible = false;
     const wp = this.tmpV.copy(best.position).applyQuaternion(this.quaternion).add(this.position);
     const gibs = Ship.gibs;
+    // шлюпка разлетается ЩЕПОЙ ПОКРУПНЕЕ (доски вразлёт)
+    const isBoat = !!(best.userData as { deckBoat?: boolean }).deckBoat;
     if (gibs) {
-      for (let i = 0; i < 6; i++) {
+      const n = isBoat ? 14 : 6;
+      for (let i = 0; i < n; i++) {
         gibs.spawnPart(
-          new THREE.Vector3(wp.x + (Math.random() - 0.5) * 0.6, wp.y + Math.random() * 0.8, wp.z + (Math.random() - 0.5) * 0.6),
-          new THREE.Vector3((Math.random() - 0.5) * 7, 2.5 + Math.random() * 4, (Math.random() - 0.5) * 7),
-          0.16, 0.1, 0.5, 0x5c4430, 1.8 + Math.random());
+          new THREE.Vector3(wp.x + (Math.random() - 0.5) * (isBoat ? 1.8 : 0.6), wp.y + Math.random() * (isBoat ? 1.0 : 0.8), wp.z + (Math.random() - 0.5) * (isBoat ? 1.8 : 0.6)),
+          new THREE.Vector3((Math.random() - 0.5) * (isBoat ? 10 : 7), 2.5 + Math.random() * (isBoat ? 5 : 4), (Math.random() - 0.5) * (isBoat ? 10 : 7)),
+          isBoat ? 0.24 : 0.16, 0.1, 0.55, isBoat && Math.random() < 0.55 ? 0x8a6a44 : 0x5c4430, 1.8 + Math.random());
       }
     }
-    this.particles.smoke(wp.x, wp.y, wp.z, 0, 0.6, 0, 1.0, 1.1);
+    this.particles.smoke(wp.x, wp.y, wp.z, 0, isBoat ? 1.1 : 0.6, 0, 1.0, isBoat ? 1.6 : 1.1);
     return true;
   }
 
@@ -1326,7 +1331,10 @@ export class Ship {
       const SWEEP = 0.42;                                  // размах гребка, рад
       const DIP = 0.30;                                    // погружение лопасти, рад
       const DIP0 = 0.14;                                   // статичный наклон к воде
-      const sweep = rowing ? Math.cos(this.strokePhase) * SWEEP * rowDir : 0;
+      // знак гребка РАЗВЁРНУТ (замечание игрока): в подводной фазе
+      // (sin φ > 0) лопасть теперь метётся К КОРМЕ — как на настоящей
+      // галере; раньше выходил «задом наперёд»
+      const sweep = rowing ? -Math.cos(this.strokePhase) * SWEEP * rowDir : 0;
       const dip = rowing ? Math.max(0, Math.sin(this.strokePhase)) * DIP : 0;
       for (const o of v.oars) {
         const side = o.userData.side as number;
@@ -1360,6 +1368,50 @@ export class Ship {
     if (v.binnacleNeedle) {
       v.binnacleNeedle.rotation.y = -this.heading + Math.PI +
         Math.sin(time * 3.1) * 0.03 + Math.sin(time * 7.7) * 0.015;
+    }
+
+    // ЯКОРЯ (отдача/подъём, клавиша F): якорь вываливается за борт
+    // по дуге и опускается под воду на цепи; жёлтый буй-кольцо
+    // всплывает у цепи и покачивается на волне. Убран — лежит
+    // вдоль борта у скулы (просьба игрока: с анимацией отдачи).
+    if (v.anchors?.length) {
+      const target = this.anchored ? 1 : 0;
+      const prev = this.anchorT;
+      if (this.anchorT !== target) {
+        this.anchorT += Math.sign(target - this.anchorT) * Math.min(Math.abs(target - this.anchorT), dt * 0.4);
+        // якоря входят в воду — всплеск под обоими
+        if (prev < 0.42 && this.anchorT >= 0.42 && target === 1) {
+          for (const A of v.anchors) {
+            this.tmpV.copy(A.ctrlPos).lerp(A.dropPos, 0.3)
+              .applyQuaternion(this.quaternion).add(this.position);
+            this.particles?.splash(this.tmpV.x, this.position.y + 0.1, this.tmpV.z, 1.0);
+          }
+        }
+      }
+      const sa = smoothstep(0, 1, this.anchorT);
+      const p1 = this.tmpV, p2 = this.tmpV2;
+      for (const A of v.anchors) {
+        // позиция по квадратичной дуге «вывалился — упал»
+        p1.lerpVectors(A.stowPos, A.ctrlPos, sa);
+        p2.lerpVectors(A.ctrlPos, A.dropPos, sa);
+        A.anchor.position.lerpVectors(p1, p2, sa);
+        A.anchor.quaternion.slerpQuaternions(A.stowQuat, A.dropQuat, sa);
+        // цепь: клюз -> рым якоря, с провисом наружу
+        p1.copy(A.ringOffset).applyQuaternion(A.anchor.quaternion).add(A.anchor.position);
+        const pos = A.chain.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const n = pos.count;
+        for (let i = 0; i < n; i++) {
+          const u = i / (n - 1);
+          const sag = Math.sin(Math.PI * u) * (0.12 + sa * 0.5);
+          p2.lerpVectors(A.cathead, p1, u);
+          pos.setXYZ(i, p2.x + A.side * sag, p2.y - sag * 0.45, p2.z);
+        }
+        pos.needsUpdate = true;
+        // буй: у планширя -> плавает у цепи
+        A.buoy.position.lerpVectors(A.buoyStow, A.buoyFloat, sa);
+        A.buoy.position.y += Math.sin(time * 1.6 + A.side * 2.1) * 0.045 * sa;
+        A.buoy.rotation.z = Math.sin(time * 1.2 + A.side) * 0.14 * sa;
+      }
     }
 
     // падение мачт: валится с нарастающим ускорением (ease-in),

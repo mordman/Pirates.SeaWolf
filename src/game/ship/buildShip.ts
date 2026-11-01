@@ -408,6 +408,11 @@ export interface ShipVisual {
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   /** материал обшивки (для покупки украшений бортов) */
   hullMat: THREE.MeshStandardMaterial;
+  /** Шлюпка на палубе (круглодонная, лежит поперёк) — ломаемая */
+  boat?: THREE.Group;
+  /** Якоря у скул: убраны — лежат ВДОЛЬ борта; отдача (Ship.anchored)
+   *  вываливает якорь и опускает его под воду на цепи */
+  anchors?: AnchorVis[];
   /** текущая гальюнная фигура (покупается в порту) */
   figurehead: THREE.Group;
   /** магнитная стрелка нактоуза (плавает, смотрит на север) */
@@ -1180,10 +1185,12 @@ function buildCastles(P: ShipPreset): THREE.BufferGeometry {
   return bakedGeo(t);
 }
 
-/** Квартердек / кормовая надстройка: приподнятый настил с фальшбортом,
- *  передней переборкой, двумя трапами с перилами, балюстрадой,
- *  нактоузом (компас с лампой под стеклом), световыми люками
- *  в медной оправе и нагельными планками с концами к мачте.
+/** Квартердек / кормовая надстройка: приподнятый настил, невысокий
+ *  сплошной фальшборт в ЦВЕТ КОРПУСА + открытые перила со стойками
+ *  (не «коробка»), задняя транцевая стенка, передняя стена с ПРОЁМАМИ
+ *  НАД ТРАПАМИ и балюстрадой, два трапа (поручень ровно над ступенями),
+ *  нактоуз (компас с лампой под стеклом), световые люки в медной
+ *  оправе и нагельные планки с концами к мачте.
  *  Возвращает группу + точку подвеса штурвала и стрелку компаса */
 function buildQuarterdeck(
   P: ShipPreset,
@@ -1202,8 +1209,9 @@ function buildQuarterdeck(
   };
   const floorY = (z: number) => deckYAt(z) + q;
 
-  // дерево квартердека чуть светлее палубы — читается как надстройка
-  const cWall = new THREE.Color(P.colors.trim).lerp(new THREE.Color(0x6e5433), 0.5);
+  // окраска — В ТОН КОРПУСА (просьба игрока): надстройка красится той
+  // же краской, что и борт; поручни/планшири — отделка цветом trim
+  const cWall = new THREE.Color(P.colors.hull).lerp(new THREE.Color(0xffffff), 0.07);
   const cWallD = new THREE.Color(P.colors.trim);
   const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.92);
   const cGold = new THREE.Color(0xc9a24a);
@@ -1239,97 +1247,126 @@ function buildQuarterdeck(
   }));
   group.add(floorMesh);
 
-  // === БОРТОВЫЕ СТЕНЫ: от главной палубы до планширя квартердека ===
-  // (сплошные — щелей и просветов между корпусом и настилом нет)
-  const SW = 14;
-  for (let s = 0; s < SW; s++) {
-    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
-    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
-    const tt = clamp2(((z0 + z1) / 2 + L / 2) / L, 0, 1);
-    const yBase = deckYAt((z0 + z1) / 2);
-    const yTop = floorY((z0 + z1) / 2) + railH;
-    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, yBase)); // ширина на уровне палубы
-    const h = yTop - yBase;
-    for (const side of [-1, 1]) {
-      bakeInto(t, new THREE.BoxGeometry(0.26, h, (z1 - z0) * 1.04), cWall,
-        side * (hw - 0.03), yBase + h / 2, (z0 + z1) / 2);
-    }
-  }
-  // планширь по верхней кромке
-  for (let s = 0; s < SW; s++) {
-    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
-    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
-    const tt = clamp2(((z0 + z1) / 2 + L / 2) / L, 0, 1);
-    const yTop = floorY((z0 + z1) / 2) + railH;
-    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, deckYAt((z0 + z1) / 2)));
-    bakeInto(t, new THREE.BoxGeometry(0.4, 0.09, (z1 - z0) * 1.05),
-      new THREE.Color(P.colors.trim).multiplyScalar(1.35), 0, yTop, (z0 + z1) / 2);
-    bakeInto(t, new THREE.BoxGeometry(0.34, 0.07, (z1 - z0) * 1.05),
-      new THREE.Color(P.colors.trim).multiplyScalar(1.35), hw - 0.03, yTop, (z0 + z1) / 2);
-    bakeInto(t, new THREE.BoxGeometry(0.34, 0.07, (z1 - z0) * 1.05),
-      new THREE.Color(P.colors.trim).multiplyScalar(1.35), -(hw - 0.03), yTop, (z0 + z1) / 2);
-  }
-
-  // === ПЕРЕДНЯЯ ПЕРЕБОРКА (сплошная — сквозь квартердек не видно) ===
-  {
-    const tt = clamp2((frontZ + L / 2) / L, 0, 1);
-    const hw = Math.max(0.4, hullHalfWidthAt(P, tt, deckYAt(frontZ)) - 0.18);
-    const h = floorY(frontZ) + railH - deckYAt(frontZ);
-    bakeInto(t, new THREE.BoxGeometry(hw * 2, h, 0.22), cWall, 0,
-      deckYAt(frontZ) + h / 2, frontZ - 0.02);
-    // золочёный поручень переборки
-    bakeInto(t, new THREE.BoxGeometry(hw * 2, 0.1, 0.3), cGold, 0,
-      floorY(frontZ) + railH + 0.03, frontZ - 0.02);
-  }
-
-  // === ТРАПЫ С ПЕРИЛАМИ: два, у бортов, вдоль диаметрали ===
+  // === ГЕОМЕТРИЯ ТРАПОВ (заранее — нужны проёмы в передней стене) ===
   const nSteps = Math.max(3, Math.ceil(q / 0.26));
   const runLen = nSteps * 0.34;
+  const ttStair = clamp2((frontZ + runLen * 0.5 + L / 2) / L, 0, 1);
+  const stairX = Math.max(0.55, hullHalfWidthAt(P, ttStair, deckYAt(frontZ)) - 0.52);
+
+  // === БОРТА: невысокий сплошной фальшборт от главной палубы до
+  // бортика над настилом + ОТКРЫТЫЕ ПЕРИЛА со стойками (по замечанию
+  // игрока: не сплошные стены-«коробка» — квартердек открытый и лёгкий;
+  // под настилом обшивка сплошная, щелей и просветов нет) ===
+  const SW = 14;
+  const parapetH = 0.14;             // бортик над настилом
+  const balH = railH - parapetH;     // высота открытых перил над бортиком
+  for (let s = 0; s < SW; s++) {
+    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
+    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
+    const zc = (z0 + z1) / 2;
+    const tt = clamp2((zc + L / 2) / L, 0, 1);
+    const yBase = deckYAt(zc);
+    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, yBase)); // ширина на уровне палубы
+    const h = floorY(zc) + parapetH - yBase; // сплошная часть — до бортика
+    for (const side of [-1, 1]) {
+      bakeInto(t, new THREE.BoxGeometry(0.26, h, (z1 - z0) * 1.04), cWall,
+        side * (hw - 0.03), yBase + h / 2, zc);
+      // стойка перил на стыке сегментов
+      bakeInto(t, new THREE.BoxGeometry(0.11, balH, 0.11), cWallD,
+        side * (hw - 0.03), floorY(zc) + parapetH + balH / 2, z1);
+    }
+  }
+  // поручень и средний прогон вдоль борта (по сегментам — повторяют кривизну)
   for (const side of [-1, 1]) {
-    const tt = clamp2((frontZ + runLen * 0.5 + L / 2) / L, 0, 1);
-    const xStair = Math.max(0.55, hullHalfWidthAt(P, tt, deckYAt(frontZ)) - 0.52) * side;
+    for (const [ry, rh] of [[parapetH + balH + 0.045, 0.1], [parapetH + balH * 0.5, 0.06]] as [number, number][]) {
+      for (let s = 0; s < SW; s++) {
+        const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
+        const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
+        const zc = (z0 + z1) / 2;
+        const tt = clamp2((zc + L / 2) / L, 0, 1);
+        const hw = Math.max(0.3, hullHalfWidthAt(P, tt, deckYAt(zc)));
+        bakeInto(t, new THREE.BoxGeometry(0.3, rh, (z1 - z0) * 1.05),
+          rh > 0.08 ? new THREE.Color(P.colors.trim).multiplyScalar(1.35) : cWallD,
+          side * (hw - 0.03), floorY(zc) + ry, zc);
+      }
+    }
+  }
+
+  // === ЗАДНЯЯ СТЕНКА (транец квартердека): сплошная, в цвет корпуса,
+  // с планширем сверху — корма закрыта (по замечанию игрока) ===
+  {
+    const ttS = clamp2((sternZ + L / 2) / L, 0, 1);
+    const hwS = Math.max(0.4, hullHalfWidthAt(P, ttS, deckYAt(sternZ)) - 0.06);
+    const yBotS = deckYAt(sternZ) + 0.25;
+    const hS = floorY(sternZ) + railH - yBotS;
+    if (hS > 0.1) {
+      bakeInto(t, new THREE.BoxGeometry(hwS * 2, hS, 0.24), cWall, 0, yBotS + hS / 2, sternZ + 0.1);
+      bakeInto(t, new THREE.BoxGeometry(hwS * 2 + 0.3, 0.11, 0.34),
+        new THREE.Color(P.colors.trim).multiplyScalar(1.35), 0, floorY(sternZ) + railH + 0.05, sternZ + 0.1);
+    }
+  }
+
+  // === ПЕРЕДНЯЯ СТЕНА (к главной палубе): сплошной парпет под
+  // настилом + БАЛЮСТРАДА над ним, ПРОЁМЫ НАД ТРАПАМИ — вход открыт
+  // (по замечанию игрока: глухая «средняя доска» переборки убрана) ===
+  {
+    const tt = clamp2((frontZ + L / 2) / L, 0, 1);
+    const hwF = Math.max(0.4, hullHalfWidthAt(P, tt, deckYAt(frontZ)) - 0.05);
+    const gapHalf = 0.55;
+    const segs: [number, number][] = [
+      [-hwF, -stairX - gapHalf],
+      [-stairX + gapHalf, stairX - gapHalf],
+      [stairX + gapHalf, hwF],
+    ];
+    for (const [xa, xb] of segs) {
+      if (xb - xa < 0.14) continue;
+      const wSeg = xb - xa, xc = (xa + xb) / 2;
+      // сплошной парпет: главная палуба -> бортик над настилом
+      const hP = floorY(frontZ) + parapetH - deckYAt(frontZ);
+      bakeInto(t, new THREE.BoxGeometry(wSeg, hP, 0.22), cWall, xc,
+        deckYAt(frontZ) + hP / 2, frontZ - 0.02);
+      // точёные балясины стоят на парпете (у кромки настила)
+      const y0 = floorY(frontZ) + parapetH;
+      for (let x = xa + 0.2; x <= xb - 0.2 + 0.001; x += 0.42) {
+        bakeInto(t, new THREE.BoxGeometry(0.12, 0.07, 0.12), cWallD, x, y0 + 0.035, frontZ - 0.08);
+        bakeInto(t, new THREE.CylinderGeometry(0.028, 0.04, balH - 0.24, 5), cWall, x, y0 + balH / 2, frontZ - 0.08);
+        bakeInto(t, new THREE.SphereGeometry(0.05, 5, 4), cWall, x, y0 + balH * 0.52, frontZ - 0.08);
+      }
+      // поручень-отделка сегмента (вровень с бортовыми)
+      bakeInto(t, new THREE.BoxGeometry(wSeg + 0.18, 0.1, 0.2),
+        new THREE.Color(P.colors.trim).multiplyScalar(1.35), xc, y0 + balH + 0.04, frontZ - 0.08);
+    }
+  }
+
+  // === ТРАПЫ С ПЕРИЛАМИ: два, у бортов; поручень ровно над ступенями,
+  // НЕ выступает вперёд за нижнюю ступень (по замечанию игрока) ===
+  const zTopStep = frontZ + runLen * (0.5 / nSteps);     // центр верхней ступени
+  const zBotStep = frontZ + runLen * (1 - 0.5 / nSteps); // центр нижней
+  for (const side of [-1, 1]) {
+    const xStair = stairX * side;
     for (let i = 0; i < nSteps; i++) {
       const z = frontZ + runLen * (1 - (i + 0.5) / nSteps);
       const y = deckYAt(z) + (q * (i + 1)) / nSteps;
       bakeInto(t, new THREE.BoxGeometry(0.86, 0.07, 0.36), cFloor, xStair, y - 0.035, z);
     }
-    // перила трапа: стойки + наклонный поручень + средний трос
-    const zTop = frontZ + 0.1, zBot = frontZ + runLen;
-    const yTop = floorY(zTop) + railH * 0.8, yBot = deckYAt(zBot) + 0.9;
+    // перила: от центра нижней ступени до центра верхней — без выноса
+    const yTop = floorY(zTopStep) + parapetH + balH * 0.85;
+    const yBot = deckYAt(zBotStep) + 0.92;
     const xRail = xStair - side * 0.42; // внутренняя сторона
     for (let k = 0; k <= 2; k++) {
       const f = k / 2;
-      const z = THREE.MathUtils.lerp(zBot, zTop, f);
+      const z = THREE.MathUtils.lerp(zBotStep, zTopStep, f);
       const y = THREE.MathUtils.lerp(yBot, yTop, f);
       bakeInto(t, new THREE.BoxGeometry(0.09, 0.95, 0.09), cWallD, xRail, y - 0.42, z);
     }
-    const railLen = Math.hypot(zTop - zBot, yTop - yBot);
-    const railAng = Math.atan2(yTop - yBot, -(zTop - zBot));
-    const rail = new THREE.BoxGeometry(0.08, 0.08, railLen * 1.02);
-    bakeInto(t, rail, cGold, xRail, (yTop + yBot) / 2, (zTop + zBot) / 2,
+    const railLen = Math.hypot(zTopStep - zBotStep, yTop - yBot);
+    const railAng = Math.atan2(yTop - yBot, -(zTopStep - zBotStep));
+    const rail = new THREE.BoxGeometry(0.08, 0.08, railLen);
+    bakeInto(t, rail, cGold, xRail, (yTop + yBot) / 2, (zTopStep + zBotStep) / 2,
       new THREE.Euler(0, 0, railAng));
-    const railMid = new THREE.BoxGeometry(0.05, 0.05, railLen * 1.02);
-    bakeInto(t, railMid, cWallD, xRail, (yTop + yBot) / 2 - 0.32, (zTop + zBot) / 2,
+    const railMid = new THREE.BoxGeometry(0.05, 0.05, railLen);
+    bakeInto(t, railMid, cWallD, xRail, (yTop + yBot) / 2 - 0.32, (zTopStep + zBotStep) / 2,
       new THREE.Euler(0, 0, railAng));
-  }
-
-  // === БАЛЮСТРАДА по передней кромке (между трапами): резные балясины ===
-  {
-    const tt = clamp2((frontZ + L / 2) / L, 0, 1);
-    const spanHalf = Math.max(0.3, hullHalfWidthAt(P, tt, floorY(frontZ)) - 0.75);
-    const y0 = floorY(frontZ);
-    for (let x = -spanHalf; x <= spanHalf + 0.001; x += 0.42) {
-      // точёная балясина: база + ножка с яблоком + капитель
-      bakeInto(t, new THREE.BoxGeometry(0.12, 0.07, 0.12), cWallD, x, y0 + 0.035, frontZ - 0.24);
-      bakeInto(t, new THREE.CylinderGeometry(0.028, 0.04, railH - 0.22, 5), cWall, x, y0 + railH / 2, frontZ - 0.24);
-      bakeInto(t, new THREE.SphereGeometry(0.055, 5, 4), cWall, x, y0 + railH * 0.52, frontZ - 0.24);
-      bakeInto(t, new THREE.BoxGeometry(0.13, 0.06, 0.13), cWallD, x, y0 + railH - 0.03, frontZ - 0.24);
-    }
-    // поручень балюстрады
-    bakeInto(t, new THREE.BoxGeometry(spanHalf * 2 + 0.3, 0.09, 0.16),
-      new THREE.Color(P.colors.trim).multiplyScalar(1.3), 0, y0 + railH + 0.045, frontZ - 0.24);
-    // нижний прогон
-    bakeInto(t, new THREE.BoxGeometry(spanHalf * 2 + 0.2, 0.06, 0.1), cWallD, 0, y0 + 0.1, frontZ - 0.24);
   }
 
   // === НАКТОУЗ (компас): тумба перед штурвалом, лампа под стеклом,
@@ -1374,20 +1411,22 @@ function buildQuarterdeck(
   const nSky = L > 42 ? 2 : 1;
   for (let k = 0; k < nSky; k++) {
     const z = mastZ - L * (0.06 + k * 0.09);
-    const y = floorY(z) + 0.14;
-    bakeInto(t, new THREE.BoxGeometry(1.15, 0.26, 0.85), cWall, 0, y, z);
-    bakeInto(tm, new THREE.BoxGeometry(1.25, 0.1, 0.95), cCopper, 0, y + 0.16, z);
-    const skyGlass = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.05, 0.65),
+    const y = floorY(z) + 0.16;
+    // крупный световой люк над кают-компанией (просьба игрока):
+    // массивная медная оправа + выпуклое стекло с переплётом
+    bakeInto(t, new THREE.BoxGeometry(1.4, 0.32, 0.95), cWall, 0, y, z);
+    bakeInto(tm, new THREE.BoxGeometry(1.5, 0.11, 1.05), cCopper, 0, y + 0.2, z);
+    const skyGlass = new THREE.Mesh(new THREE.BoxGeometry(1.16, 0.06, 0.74),
       new THREE.MeshStandardMaterial({
         color: 0x2e4a56, metalness: 0.55, roughness: 0.22,
         emissive: 0x0c1a20, emissiveIntensity: 0.6,
         transparent: true, opacity: 0.85,
       }));
-    skyGlass.position.set(0, y + 0.15, z);
+    skyGlass.position.set(0, y + 0.19, z);
     group.add(skyGlass);
     // ребра-переплёты
-    bakeInto(tm, new THREE.BoxGeometry(1.0, 0.04, 0.06), cCopper, 0, y + 0.17, z);
-    bakeInto(tm, new THREE.BoxGeometry(0.06, 0.04, 0.7), cCopper, 0, y + 0.17, z);
+    bakeInto(tm, new THREE.BoxGeometry(1.2, 0.05, 0.07), cCopper, 0, y + 0.21, z);
+    bakeInto(tm, new THREE.BoxGeometry(0.07, 0.05, 0.78), cCopper, 0, y + 0.21, z);
   }
 
   // === НАГЕЛЬНЫЕ ПЛАНКИ: брусья с колышками вдоль бортов,
@@ -1521,14 +1560,121 @@ function buildHullOrnaments(P: ShipPreset): THREE.BufferGeometry | null {
   return bakedGeo(t);
 }
 
+/** Якорь у скулы: убран — лежит ВДОЛЬ борта; при отдаче (Ship.anchored)
+ *  вываливается за борт и опускается под воду на цепи (Ship.updateVisual) */
+export interface AnchorVis {
+  side: -1 | 1;
+  anchor: THREE.Group;     // сам якорь: веретено + шток + рога + лапы + рым
+  chain: THREE.Line;       // цепь от клюза до рыма (обновляется каждый кадр)
+  buoy: THREE.Group;       // жёлтый буй-кольцо: у борта -> плавает у цепи
+  cathead: THREE.Vector3;  // клюз (подвес цепи) в локалях корабля
+  stowPos: THREE.Vector3;  // убран: лежит вдоль борта у скулы
+  ctrlPos: THREE.Vector3;  // дуга вываливания (над водой за бортом)
+  dropPos: THREE.Vector3;  // отдан: висит под водой
+  stowQuat: THREE.Quaternion;
+  dropQuat: THREE.Quaternion;
+  ringOffset: THREE.Vector3;  // рым в локалях якоря (край цепи)
+  buoyStow: THREE.Vector3;    // буй убран: у планширя
+  buoyFloat: THREE.Vector3;   // буй отдан: на воде над якорем
+}
+
+/** Шлюпка на палубе: КРУГЛОДОННОЕ корыто по шпангоутам — острая
+ *  носовая оконечность, транцевая корма, развал бортов, точёный
+ *  планширь, банки, киль и форштевень. Лежит ПОПЕРЁК палубы
+ *  на кильблоках (по замечанию игрока — не капсула вверх дном).
+ *  Возвращает группу; киль по y=0, длина по оси Z (нос +Z). */
+function buildDeckBoat(len: number): THREE.Group {
+  const group = new THREE.Group();
+  const beam = len * 0.3, depth = len * 0.18;
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
+  const cHull = new THREE.Color(0x8a6a44);
+  const cHullD = new THREE.Color(0x5a422c);
+  const cGun = new THREE.Color(0x9d7c50);
+  // форма по длине (s: 0 = транец, 1 = острый нос)
+  const halfW = (s: number) => {
+    const bow = 1 - Math.pow(clamp2((s - 0.55) / 0.45, 0, 1), 1.5);
+    const stern = 0.66 + 0.34 * Math.sin(clamp2(s / 0.24, 0, 1) * Math.PI / 2);
+    return (beam / 2) * bow * stern;
+  };
+  const depthAt = (s: number) =>
+    depth * (0.36 + 0.64 * Math.sin(clamp2((s + 0.06) / 0.94, 0, 1) * Math.PI));
+  const lift = (s: number) => depth * (0.24 * Math.pow(s, 2.3) + 0.1 * Math.pow(1 - s, 2.3));
+  // шпангоут: полукруглое сечение с развалом (0 = киль, 1 = планширь)
+  const ST = 10, K = 5;
+  const station = (s: number) => {
+    const z = (s - 0.5) * len;
+    const w = halfW(s), d = depthAt(s) + lift(s);
+    const pts: THREE.Vector3[] = [];
+    for (let k = K; k >= -K; k--) {
+      const u = Math.abs(k) / K;
+      pts.push(new THREE.Vector3(
+        Math.sign(k) * w * Math.pow(Math.max(u, 0.001), 0.62),
+        d * Math.pow(u, 1.12), z));
+    }
+    return pts;
+  };
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, col: THREE.Color) => {
+    t.pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    for (let i = 0; i < 3; i++) { t.col.push(col.r, col.g, col.b); t.uv.push(0, 0); }
+  };
+  const rings = [station(0)];
+  for (let i = 0; i < ST; i++) {
+    const r0 = rings[i], r1 = station((i + 1) / ST);
+    rings.push(r1);
+    for (let j = 0; j < r0.length - 1; j++) {
+      // наружная обшивка (нормали наружу при обходе по часовой?)
+      tri(r0[j], r0[j + 1], r1[j + 1], cHull);
+      tri(r0[j], r1[j + 1], r1[j], cHull);
+    }
+  }
+  // транец кормы — плоская доска (веером от центра)
+  {
+    const r = rings[0];
+    const c = new THREE.Vector3(0, depthAt(0) * 0.55, -len / 2 - 0.015);
+    for (let j = 0; j < r.length - 1; j++) tri(c, r[j], r[j + 1], cHullD);
+  }
+  // нос — острая точка (шпангоуты сходятся) + форштевень
+  {
+    const r = rings[ST];
+    const c = new THREE.Vector3(0, depthAt(1) * 0.5 + lift(1) * 0.5, len / 2 + 0.02);
+    for (let j = 0; j < r.length - 1; j++) tri(c, r[j + 1], r[j], cHull);
+    bakeInto(t, new THREE.BoxGeometry(0.07, depth * 0.9, 0.09), cHullD, 0, depth * 0.55, len / 2 - 0.02,
+      new THREE.Euler(-0.35, 0, 0));
+  }
+  // киль и фальшкиль
+  bakeInto(t, new THREE.BoxGeometry(0.06, 0.07, len * 0.86), cHullD, 0, 0.02, 0);
+  // банки (сиденья) — поперёк, по бортам до планширя
+  for (const s of [0.3, 0.62]) {
+    const w = halfW(s) * 0.92, y = (depthAt(s) + lift(s)) * 0.82;
+    bakeInto(t, new THREE.BoxGeometry(w * 2, 0.055, 0.24), cGun, 0, y, (s - 0.5) * len);
+  }
+  // планширь — точёный привальный брус вдоль верхней кромки обоих бортов
+  for (let i = 0; i < rings.length; i++) {
+    const r = rings[i];
+    const a = r[0], b = r[r.length - 1];
+    const seg = Math.max(0.1, len / ST * 1.3);
+    bakeInto(t, new THREE.BoxGeometry(0.07, 0.075, seg), cGun, a.x * 0.96, a.y + 0.03, a.z);
+    bakeInto(t, new THREE.BoxGeometry(0.07, 0.075, seg), cGun, b.x * 0.96, b.y + 0.03, b.z);
+  }
+  const hull = new THREE.Mesh(bakedGeo(t), new THREE.MeshStandardMaterial({
+    vertexColors: true, metalness: 0.04, side: THREE.DoubleSide,
+    normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
+    normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
+  }));
+  group.add(hull);
+  return group;
+}
+
 /** Мелкие детали, видимые только вблизи (LOD): выбленки на вантах,
- *  шлюпка вверх дном, настоящие якоря у скул, крышки пушечных портов,
- *  камбуз с трубой, кранцы, стол экипажа, блоки у мачт.
- *  Ванты с выбленками — ОТДЕЛЬНЫМИ линиями на мачту (detailRigs):
+ *  шлюпка на палубе (поперёк), якоря вдоль бортов у скул, крышки
+ *  пушечных портов, камбуз с трубой, кранцы, стол экипажа, блоки у
+ *  мачт. Ванты с выбленками — ОТДЕЛЬНЫМИ линиями на мачту (detailRigs):
  *  вместе с мачтой они ОБРЫВАЮТСЯ (Ship.snapRigging прячет свою пару) */
 function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   group: THREE.Group;
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
+  boat?: THREE.Group;
+  anchors?: AnchorVis[];
 } {
   const L = P.length;
   const group = new THREE.Group();
@@ -1577,32 +1723,128 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   const tm: BakedTarget = { pos: [], col: [], uv: [] };
   const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
-  // --- шлюпка вверх дном у борта ---
-  const boatG = new THREE.CapsuleGeometry(0.45, L * 0.14, 3, 8);
-  boatG.rotateX(Math.PI / 2);
-  boatG.scale(1, 0.5, 1);
-  bakeInto(t, boatG, new THREE.Color(0x7d6446), P.beam * 0.16, deckYAt(0.63) + 0.22, L * 0.13);
-  bakeInto(t, new THREE.BoxGeometry(0.08, 0.1, L * 0.3), cWoodD, P.beam * 0.16, deckYAt(0.63) + 0.44, L * 0.13);
-
-  // --- настоящие якоря на фалах у скул носа ---
-  for (const side of [-1, 1]) {
-    const z = L / 2 - L * 0.1;
-    const prof = hullProfile(0.85, P);
-    const ax = side * (prof.w + 0.3), ay = P.freeboard * 0.55;
-    bakeInto(tm, new THREE.BoxGeometry(0.1, 1.35, 0.1), cAnchor, ax, ay, z);          // веретено
-    bakeInto(t, new THREE.BoxGeometry(0.9, 0.11, 0.11), cWoodD, ax, ay + 0.6, z);  // шток
-    const armG = new THREE.TorusGeometry(0.4, 0.05, 5, 10, Math.PI);
-    armG.rotateZ(Math.PI); // нижняя полуокружность — рога
-    bakeInto(tm, armG, cAnchor, ax, ay - 0.6, z);
-    for (const s2 of [-1, 1]) { // лапы
-      const fl = new THREE.ConeGeometry(0.15, 0.36, 4);
-      fl.rotateZ(s2 * Math.PI / 2);
-      bakeInto(tm, fl, cAnchor, ax + s2 * 0.42, ay - 0.55, z);
+  // --- ШЛЮПКА НА ПАЛУБЕ: КРУГЛОДОННОЕ корыто (buildDeckBoat), лежит
+  //     ПОПЕРЁК палубы на кильблоках между фок-мачтой и носом —
+  //     по замечанию игрока: настоящая форма, а не капсула вверх дном.
+  //     Ломаемая: попадание рядом — и она разлетается щепой ---
+  let boat: THREE.Group | undefined;
+  {
+    const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
+    boat = buildDeckBoat(bl);
+    boat.rotation.y = Math.PI / 2;      // длина шлюпки — ПОПЕРЁК корабля
+    const zB = L * 0.235, yB = deckYAt(0.735) + 0.1;
+    boat.position.set(0, yB, zB);
+    boat.userData.deckBoat = true;
+    boat.userData.boatLen = bl;
+    group.add(boat);
+    // кильблоки-подушки под нос и корму шлюпки
+    for (const sx of [-1, 1]) {
+      bakeInto(t, new THREE.BoxGeometry(0.34, 0.12, 0.62), cWoodD, sx * bl * 0.26, yB + 0.03, zB);
     }
-    const ring = new THREE.TorusGeometry(0.14, 0.03, 5, 10);
-    bakeInto(tm, ring, cAnchor, ax, ay + 0.75, z);                                    // рым
-    addLine(new THREE.Vector3(side * prof.w * 0.7, prof.bulwark, z - 1.2),
-      new THREE.Vector3(ax, ay + 0.75, z));                                        // фал
+  }
+
+  // --- НАСТОЯЩИЕ ЯКОРЯ У СКУЛ: убраны — лежат ВДОЛЬ борта (по
+  //     замечанию игрока), шток с ЖЁЛТОЙ окраской-меткой; жёлтый
+  //     буй-кольцо — у планширя. Отдача (клавиша F, Ship.anchored)
+  //     вываливает якорь и опускает его под воду на цепи —
+  //     анимация в Ship.updateVisual ---
+  const anchors: AnchorVis[] = [];
+  {
+    const anchorMat = new THREE.MeshStandardMaterial({
+      vertexColors: true, metalness: 0.88,
+      normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
+      normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
+    });
+    const buoyMat = new THREE.MeshStandardMaterial({ color: 0xdfa71a, roughness: 0.55 });
+    const chainMat = new THREE.LineBasicMaterial({ color: 0x2b2b30, transparent: true, opacity: 0.95 });
+    for (const side of [-1, 1] as const) {
+      const zA = L / 2 - L * 0.115;
+      const prof = hullProfile(0.865, P);
+      const scale = clamp2(L * 0.028, 0.8, 1.6);
+      const shank = clamp2(L * 0.05, 1.3, 2.5);
+      // кран-балка (клюз) над водой у скулы
+      bakeInto(t, new THREE.BoxGeometry(0.8, 0.15, 0.2), cWoodD,
+        side * (prof.w * 0.82 + 0.4), prof.bulwark + 0.14, zA - 1.0);
+      // сам якорь: веретено вверх, рога-∪ внизу, шток поперёк
+      const a = new THREE.Group();
+      const ta: BakedTarget = { pos: [], col: [], uv: [] };
+      const R = shank * 0.34;
+      bakeInto(ta, new THREE.BoxGeometry(0.1, shank, 0.1), cAnchor, 0, shank / 2 - R, 0);
+      bakeInto(ta, new THREE.BoxGeometry(shank * 0.62, 0.12, 0.12), cWoodD, 0, shank * 0.8 - R, 0);
+      // жёлтая окраска штока — метка якоря (жёлтое кольцо рядом — буй)
+      bakeInto(ta, new THREE.BoxGeometry(shank * 0.64, 0.13, 0.13), new THREE.Color(0xd8a418), 0, shank * 0.8 - R, 0);
+      const armG = new THREE.TorusGeometry(R, 0.055, 5, 12, Math.PI);
+      armG.rotateY(Math.PI / 2); // плоскость рогов -> YZ (вдоль веретена)
+      armG.rotateX(Math.PI);     // полудуга вниз: концы рогов смотрят вверх
+      armG.translate(0, R, 0);   // вершина (тренд) — в начале координат
+      bakeInto(ta, armG, cAnchor, 0, 0, 0);
+      for (const s2 of [-1, 1] as const) { // лапы на концах рогов
+        const fl = new THREE.ConeGeometry(0.15, 0.4, 4);
+        fl.rotateX(s2 * 0.72);
+        bakeInto(ta, fl, cAnchor, 0, R + 0.08, s2 * (R * 0.96));
+      }
+      const ringG = new THREE.TorusGeometry(0.15, 0.035, 5, 10);
+      bakeInto(ta, ringG, cAnchor, 0, shank - R + 0.1, 0); // рым
+      a.add(new THREE.Mesh(bakedGeo(ta), anchorMat));
+      a.scale.setScalar(scale);
+      a.position.set(side * (prof.w + 0.3), P.freeboard * 0.5, zA); // убран: вдоль борта
+      a.quaternion.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, side * 0.9, 'ZYX'));
+      group.add(a);
+      // цепь (клюз -> рым) — обновляется в Ship.updateVisual
+      const chGeo = new THREE.BufferGeometry();
+      chGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(14 * 3), 3));
+      const chain = new THREE.Line(chGeo, chainMat);
+      chain.frustumCulled = false;
+      group.add(chain);
+      // жёлтый буй-кольцо: убран — у планширя, отдан — плавает у цепи
+      const buoy = new THREE.Group();
+      const bRing = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.09, 7, 14), buoyMat);
+      bRing.rotation.x = Math.PI / 2;
+      buoy.add(bRing);
+      const bStick = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.34, 5),
+        new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.9 }));
+      bStick.position.y = 0.14;
+      buoy.add(bStick);
+      group.add(buoy);
+      anchors.push({
+        side, anchor: a, chain, buoy,
+        cathead: new THREE.Vector3(side * (prof.w * 0.82 + 0.4), prof.bulwark + 0.26, zA - 1.0),
+        stowPos: a.position.clone(),
+        ctrlPos: new THREE.Vector3(side * (prof.w + 1.15), P.freeboard * 0.95, zA - 0.7),
+        dropPos: new THREE.Vector3(side * (prof.w * 0.85 + 0.6), -(P.draft + 0.9), zA - 2.2),
+        stowQuat: a.quaternion.clone(),
+        dropQuat: new THREE.Quaternion(),
+        ringOffset: new THREE.Vector3(0, (shank - R + 0.1) * scale, 0),
+        buoyStow: new THREE.Vector3(side * (prof.w * 0.72), prof.bulwark + 0.1, zA - 0.35),
+        buoyFloat: new THREE.Vector3(side * (prof.w * 0.85 + 0.55), 0.12, zA - 1.4),
+      });
+      buoy.position.copy(anchors[anchors.length - 1].buoyStow);
+    }
+  }
+
+  // --- спасательные круги: на выносных штифтах за планширем —
+  //     целиком СНАРУЖИ борта, обшивку не пересекают (по замечанию
+  //     игрока); белый торус с красными секторами ---
+  for (const side of [-1, 1] as const) {
+    const z = L * (side < 0 ? 0.04 : -0.03);
+    const prof = hullProfile(0.5 + z / L, P);
+    bakeInto(t, new THREE.BoxGeometry(0.34, 0.07, 0.07), cWoodD,
+      side * (prof.w + 0.06), prof.bulwark - 0.05, z); // штифт-кронштейн
+    const ring = new THREE.Group();
+    const white = new THREE.Mesh(new THREE.TorusGeometry(0.27, 0.08, 7, 16),
+      new THREE.MeshStandardMaterial({ color: 0xe9e6dd, roughness: 0.85 }));
+    ring.add(white);
+    const redMat = new THREE.MeshStandardMaterial({ color: 0xb03028, roughness: 0.85 });
+    for (let k = 0; k < 4; k++) {
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.2, 0.11), redMat);
+      const ang = Math.PI / 4 + k * Math.PI / 2;
+      seg.position.set(Math.cos(ang) * 0.27, Math.sin(ang) * 0.27, 0);
+      seg.rotation.z = ang - Math.PI / 2;
+      ring.add(seg);
+    }
+    ring.rotation.y = Math.PI / 2; // плоскость кольца — вдоль борта
+    ring.position.set(side * (prof.w + 0.2), prof.bulwark - 0.02, z);
+    group.add(ring);
   }
 
   // --- крышки пушечных портов (открытые, на верхних петлях) — только
@@ -1662,17 +1904,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     mg.setAttribute('position', new THREE.Float32BufferAttribute(miscPts, 3));
     group.add(new THREE.LineSegments(mg, ropeMat));
   }
-  // якоря — кованое железо: PBR-металл с картой окружения неба
-  if (tm.pos.length) {
-    const mm = new THREE.Mesh(bakedGeo(tm),
-      new THREE.MeshStandardMaterial({
-        vertexColors: true, metalness: 0.88,
-        normalMap: metalNormalTex(), roughnessMap: metalRoughTex(),
-        normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
-      }));
-    group.add(mm);
-  }
-  return { group, detailRigs };
+  return { group, detailRigs, boat, anchors };
 }
 
 /** Вёсла гребных судов (шебека, галера): вальные порты по борту +
@@ -1977,11 +2209,14 @@ export function buildShip(P: ShipPreset): ShipVisual {
     mesh.frustumCulled = false;
     const pivot = new THREE.Group();
     pivot.position.set(0, md.h * 0.72 - P.draft * 0.3, 0);
-    // рея: от головы у мачты к носу-вниз
+    // рея: от головы у мачты к носу-вниз — В ДИАМЕТРАЛЬНОЙ ПЛОСКОСТИ
+    // (как полотно паруса после поворота меша -90° вокруг Y: локальный
+    // x -> корабельный z=нос). Раньше цилиндр реи оставался в локальной
+    // XY-плоскости БЕЗ этого поворота и торчал В БОК от мачты палкой.
     const yardLen = Math.hypot(T.x - H.x, T.y - H.y) * 1.06;
     const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.085, yardLen, 5), woodMat);
-    yard.rotation.z = Math.atan2(T.y - H.y, T.x - H.x) - Math.PI / 2;
-    yard.position.set(T.x / 2, T.y / 2, 0);
+    yard.rotation.set(Math.atan2(T.x, T.y), 0, 0); // ось цилиндра -> (0, Ty, Tx)
+    yard.position.set(0, T.y / 2, T.x / 2);
     pivot.add(yard);
     pivot.add(mesh);
     masts[mastIndex].add(pivot);
@@ -2319,8 +2554,10 @@ export function buildShip(P: ShipPreset): ShipVisual {
 
   const rig: SailRig = { sails };
 
-  // ломаемые детали палубы: срываются попаданиями / давлением воды
+  // ломаемые детали палубы: срываются попаданиями / давлением воды;
+  // шлюпка — тоже ломаемая: прямое попадание разлетается щепой
   const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figurehead, rudderMesh];
+  if (detailRes.boat) breakables.push(detailRes.boat);
 
   // материалы дерева для скина «цвет корабля» (собираем ДО того, как
   // в группу добавится экипаж с общим CREW_MAT — его тонировать нельзя)
@@ -2340,6 +2577,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
     masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
     gunPorts, detailRigs: detailRes.detailRigs, hullMat,
+    boat: detailRes.boat, anchors: detailRes.anchors,
     figurehead, binnacleNeedle, quarter: quarterVis,
   };
 }

@@ -63,6 +63,9 @@ export interface CrewFigure {
   walkT: number;              // 0..1 фаза пути
   walkDir: number;            // ±1
   walkSpeed: number;
+  walkPause?: number;         // сек паузы у поворота (осматривается)
+  driftAmp?: number;          // дрейф полосы поперёк палубы, м
+  driftPeriod?: number;       // период дрейфа, сек
   xPath?: number;
   phase: number;              // фаза покачивания
   baseScaleY: number;         // исходный рост (гребцы «сидят» — 0.78)
@@ -470,14 +473,19 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       wi++;
       place(f, side * Math.max(0.7, halfW(mz) * 0.42), mz + 0.9, side * (Math.PI / 2));
     } else {
-      // ходок — гуляет по палубе туда-обратно; 4 полосы движения
-      // (по две на борт от диаметрали — мачты на оси не задеваем);
-      // на судах с квартердеком — только ПЕРЕД его передней кромкой
+      // ходок — гуляет по палубе туда-обратно; полосы движения +
+      // живой дрейф поперёк (каждый со своим периодом), паузы у
+      // поворотов и разный темп — толпа не марширует строем
+      // (по замечанию игрока: экипаж ходит по палубе живее)
       const LANES = [-0.31, -0.13, 0.13, 0.31];
       f.xPath = LANES[ki % 4] * Math.max(0.55, halfW(0)) + (rot() - 0.5) * 0.3;
       f.walkA = Math.max(P.castleH ? -L * 0.22 : -L * 0.3, qFront + 1.2);
       f.walkB = P.castleH ? L * 0.2 : L * 0.28;
       f.walkT = rot();
+      f.walkSpeed = 0.5 + rot() * 0.45;                    // разный темп
+      f.driftAmp = 0.1 + rot() * 0.22;                     // дрейф полосы
+      f.driftPeriod = 7 + rot() * 9;
+      f.walkPause = 0;
       ki++;
       figures.push(f);
       group.add(f.group);
@@ -640,18 +648,32 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
           f.group.rotation.z = Math.sin(stroke.phase * 2) * 0.03;
         } else if (f.role === 'walker' && f.xPath !== undefined && f.walkA !== undefined && f.walkB !== undefined) {
           const span = f.walkB - f.walkA;
-          f.walkT += (f.walkDir * f.walkSpeed * dt) / span;
-          if (f.walkT > 1) { f.walkT = 1; f.walkDir = -1; }
-          if (f.walkT < 0) { f.walkT = 0; f.walkDir = 1; }
-          const z = THREE.MathUtils.lerp(f.walkA, f.walkB, f.walkT);
-          f.group.position.set(f.xPath, deckYAt(z), z);
-          f.group.rotation.y = f.walkDir > 0 ? 0 : Math.PI;
-          const step = time * f.walkSpeed * 7;
-          if (f.legL && f.legR) {
-            f.legL.rotation.x = Math.sin(step) * 0.55;
-            f.legR.rotation.x = -Math.sin(step) * 0.55;
+          if ((f.walkPause ?? 0) > 0) {
+            // пауза у планширя: осматривается, ноги стоят
+            f.walkPause = (f.walkPause ?? 0) - dt;
+            const swayP = Math.sin(time * 1.1 + f.phase) * 0.05;
+            f.group.rotation.z = swayP;
+            f.group.rotation.y = (f.walkDir > 0 ? 0 : Math.PI) + Math.sin(time * 0.5 + f.phase) * 0.7;
+            if (f.legL && f.legR) {
+              f.legL.rotation.x *= 0.8; f.legR.rotation.x *= 0.8;
+            }
+          } else {
+            f.walkT += (f.walkDir * f.walkSpeed * dt) / span;
+            if (f.walkT > 1) { f.walkT = 1; f.walkDir = -1; f.walkPause = 0.7 + f.phase * 2.2; }
+            if (f.walkT < 0) { f.walkT = 0; f.walkDir = 1; f.walkPause = 0.7 + (1 - f.phase) * 2.2; }
+            const z = THREE.MathUtils.lerp(f.walkA, f.walkB, f.walkT);
+            // живой дрейф полосы поперёк палубы (у каждого свой)
+            const x = f.xPath + Math.sin(time / (f.driftPeriod ?? 10) + f.phase * 6) * (f.driftAmp ?? 0.15);
+            f.group.position.set(x, deckYAt(z), z);
+            f.group.rotation.y = f.walkDir > 0 ? 0 : Math.PI;
+            f.group.rotation.z = 0;
+            const step = time * f.walkSpeed * 7;
+            if (f.legL && f.legR) {
+              f.legL.rotation.x = Math.sin(step) * 0.55;
+              f.legR.rotation.x = -Math.sin(step) * 0.55;
+            }
+            f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
           }
-          f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
         } else {
           // idle: лёгкое покачивание, боцман «осматривается»
           const sway = Math.sin(time * 1.3 + f.phase) * 0.035;
