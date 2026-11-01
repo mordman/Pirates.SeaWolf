@@ -437,6 +437,7 @@ export interface QuarterVis {
   sternZ: number;      // кормовая кромка
   wheelZ: number;      // штурвал на квартердеке
   mastIndex: number;   // мачта, проходящая сквозь квартердек
+  stairX: number;      // x-позиции трапов (в них ПРОЁМЫ передней стены)
   floorY(z: number): number;  // высота настила в точке z
 }
 
@@ -1250,8 +1251,12 @@ function buildQuarterdeck(
   // === ГЕОМЕТРИЯ ТРАПОВ (заранее — нужны проёмы в передней стене) ===
   const nSteps = Math.max(3, Math.ceil(q / 0.26));
   const runLen = nSteps * 0.34;
-  const ttStair = clamp2((frontZ + runLen * 0.5 + L / 2) / L, 0, 1);
-  const stairX = Math.max(0.55, hullHalfWidthAt(P, ttStair, deckYAt(frontZ)) - 0.52);
+  // ширина корпуса у САМОЙ передней кромки (корма уже) — отступ от неё:
+  // верхние ступени гарантированно не чиркают торец бортового фальшборта
+  const ttStair = clamp2((frontZ + L / 2) / L, 0, 1);
+  // трапы — С ОТСТУПОМ от борта (ступени 0.86 шириной НЕ втыкаются в
+  // торец бортового фальшборта у передней кромки — было −0.52)
+  const stairX = Math.max(0.55, hullHalfWidthAt(P, ttStair, deckYAt(frontZ)) - 0.78);
 
   // === БОРТА: невысокий сплошной фальшборт от главной палубы до
   // бортика над настилом + ОТКРЫТЫЕ ПЕРИЛА со стойками (по замечанию
@@ -1467,7 +1472,7 @@ function buildQuarterdeck(
 
   const vis: QuarterVis = {
     height: q, frontZ, sternZ,
-    wheelZ: quarterWheelZ(P), mastIndex, floorY,
+    wheelZ: quarterWheelZ(P), mastIndex, stairX, floorY,
   };
   return { group, vis, needle, pinRopeEnds };
 }
