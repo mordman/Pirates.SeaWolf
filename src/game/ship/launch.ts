@@ -11,15 +11,20 @@ import type { Particles } from '../fx/particles';
 // борт корабля; добавь анимацию спуска и подъёма»).
 //
 // Фазы:
-//   stowed  — ял висит на шлюпбалках за транцем (носом от корабля)
+//   stowed  — ял висит на шлюпбалках за транцем НОСОМ ВДОЛЬ
+//             корпуса — к носу корабля (Task 25)
 //   lowering— ФАЛЫ ТРАВЯТСЯ: шлюпка опускается с шлюпбалок к воде
 //             (лёгкое покачивание на талях, дрейф за транец)
 //   afloat  — на воде: отдельная сущность в мире; W/S — вёсла
 //             (гребки синхронные, импульс в рабочей фазе),
-//             A/D — румпель; качка на волнах Gerstner, вёсла
-//             развёрнуты на воду, гребцы качаются в такт
+//             A/D — поворот вёслами (руля нет); качка на волнах
+//             Gerstner, вёсла развёрнуты на воду, гребцы качаются
+//             в такт
 //   raising — подъём: подтяжка под шлюпбалки (мир) → репарент →
-//             выборка талов до исходного положения
+//             выборка талов до исходного положения. Доворот курса —
+//             ВСЕГДА по кратчайшей дуге с гашением крена/дифферента:
+//             старый slerp на ~180° ПЕРЕВОРАЧИВАЛ шлюпку через борт
+//             (замечание игрока Task 25).
 //
 // Управление шлюпкой — ПОКА игрок не вернётся на борт (B у кормы).
 // Условие спуска: малый ход/якорь, шлюпка цела, есть экипаж.
@@ -36,6 +41,12 @@ const DIP = 0.34;          // погружение лопасти, рад
 const DIP0 = 0.12;         // статичный наклон к воде
 
 const sm = (x: number) => { const c = Math.min(1, Math.max(0, x)); return c * c * (3 - 2 * c); };
+/** приведение угла к [−π, π] — повороты ТОЛЬКО по кратчайшей дуге */
+const wrapPi = (a: number) => {
+  a = (a + Math.PI) % (Math.PI * 2);
+  if (a < 0) a += Math.PI * 2;
+  return a - Math.PI;
+};
 
 export interface LaunchDeps {
   ship: Ship;
@@ -237,9 +248,12 @@ export class BoatLaunch {
             .applyQuaternion(this.ship.quaternion).add(this.ship.position);
           this._v.y = Math.max(this._v.y, waterHeightAt(this._v.x, this._v.z, time) + 0.9);
           b.position.lerpVectors(this.pullFrom, this._v, k);
-          // доворот к курсу корабля (носом от кормы)
-          this._q.setFromEuler(this._e.set(0, this.ship.heading + Math.PI, 0));
-          b.quaternion.slerpQuaternions(this.pullQuat, this._q, k);
+          // доворот к курсу корабля — по кратчайшей дуге, крен/дифферент
+          // гаснут (никаких переворотов через борт на ~180°)
+          this._e.setFromQuaternion(b.quaternion, 'YXZ');
+          const dy = wrapPi(this.ship.heading - this._e.y);
+          this._e.set(this._e.x * (1 - k), this._e.y + dy * k, this._e.z * (1 - k), 'YXZ');
+          b.quaternion.setFromEuler(this._e);
           // фалы тянутся к поднимаемой шлюпке (мировые → локальные корабля)
           this.fallsToBoat();
           if (this.t >= 1) {
@@ -257,14 +271,19 @@ export class BoatLaunch {
           b.position.y = THREE.MathUtils.lerp(this.pullY, this.vis.stowPos.y, k);
           b.position.z = THREE.MathUtils.lerp(this.vis.stowPos.z - 0.9, this.vis.stowPos.z, k);
           b.rotation.z = Math.sin(k * Math.PI) * 0.05;
-          this._q.setFromEuler(this._e.set(0, this.vis.stowRotY, 0));
-          b.quaternion.slerp(this._q, Math.min(1, dt * 2.5));
+          // курс — к stowRotY по кратчайшей дуге, качка гаснет
+          this._e.setFromQuaternion(b.quaternion, 'YXZ');
+          const k2 = Math.min(1, dt * 2.5);
+          const dy = wrapPi(this.vis.stowRotY - this._e.y);
+          this._e.set(this._e.x * (1 - k2), this._e.y + dy * k2, this._e.z * (1 - k2), 'YXZ');
+          b.quaternion.setFromEuler(this._e);
           // вёсла убираются на планширь по мере подъёма
           this.oarDeploy = Math.max(0, 1 - k * 1.6);
           this.animateOars(0, false);
           updateBoatFalls(this.vis);
           if (this.t >= 1) {
             b.position.copy(this.vis.stowPos);
+            this._q.setFromEuler(this._e.set(0, this.vis.stowRotY, 0));
             b.quaternion.copy(this._q);
             b.rotation.set(0, this.vis.stowRotY, 0);
             this.stowOars();
@@ -287,7 +306,7 @@ export class BoatLaunch {
     this._qi.copy(this.ship.quaternion).invert();
     // центр шлюпки в локалах корабля
     const c = this._v2.copy(b.position).sub(this.ship.position).applyQuaternion(this._qi);
-    const rotY = this.vis.stowRotY;   // шлюпка выровнена носом от кормы
+    const rotY = this.vis.stowRotY;   // шлюпка выровнена носом вдоль корпуса
     const cos = Math.cos(rotY), sin = Math.sin(rotY);
     let i = 0;
     for (const head of this.vis.davitHeads) {
@@ -308,9 +327,10 @@ export class BoatLaunch {
     if (!this.vis) return;
     const b = this.vis.group;
     this.worldGroup.attach(b);
-    // положение/курс: шлюпка висела носом от кормы — курс = курс корабля + π
+    // шлюпка висела носом вдоль корпуса (к носу корабля) —
+    // курс на воде = курсу корабля
     this.pos.set(b.position.x, b.position.y, b.position.z);
-    this.heading = this.ship.heading + Math.PI;
+    this.heading = this.ship.heading;
     this.vel = 0;
     this.yawRate = 0;
     this.strokePhase = 0;
@@ -318,7 +338,7 @@ export class BoatLaunch {
     this.splashed = false;
     this.setRowersVisible(true);
     updateBoatFalls(this.vis, true);   // хвосты талов у девиц
-    this.msg?.('Шлюпка на воде! W/S — вёсла, A/D — румпель. B у кормы — подняться на борт');
+    this.msg?.('Шлюпка на воде! W/S — вёсла, A/D — поворот вёслами. B у кормы — подняться на борт');
   }
 
   /** жизнь на воде: гребля, руль, качка, коллизии */
@@ -334,7 +354,8 @@ export class BoatLaunch {
     this.vel += this.row * power * dt * 1.5;
     this.vel -= this.vel * Math.abs(this.vel) * 0.34 * dt + this.vel * 0.14 * dt;
     this.vel = THREE.MathUtils.clamp(this.vel, -MAX_REV, MAX_FWD);
-    // --- румпель (на заднем ходу руль наоборот) ---
+    // --- поворот дифференциальной греблёй (руля нет: на заднем
+    //     ходу руление зеркально) ---
     const turn = this.steer * (0.3 + Math.min(1.0, Math.abs(this.vel)) * 0.34);
     this.yawRate += (turn - this.yawRate) * Math.min(1, dt * 3.2);
     this.heading += this.yawRate * dt * (this.vel < -0.05 ? -1 : 1);
@@ -400,8 +421,7 @@ export class BoatLaunch {
         + Math.sin(time * 1.2 + i * 2.1) * 0.02;
       r.rotation.z = Math.sin(time * 1.6 + i) * 0.025;
     }
-    // --- румпель ---
-    if (this.vis.tiller) this.vis.tiller.rotation.y = -this.steer * 0.45;
+    // --- румпеля нет: курс держат вёсла ---
   }
 
   /** вёсла: стowed → на воде, гребок/погружение */

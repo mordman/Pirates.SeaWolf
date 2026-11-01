@@ -1643,9 +1643,11 @@ export interface AnchorVis {
  *  — подуключины с нагелями, ДВА вёсла уложены на планширях
  *    ЛОПАСТЯМИ К НОСУ (как на яле: «вёсла укладываются на банки
  *    по бортам лопастями на нос»);
- *  — руль на транце с румпелем.
+ *  — БЕЗ руля (по замечанию игрока Task 25: руль на подвесной
+ *    шлюпке читался как «палочка сзади»; на стоянке руль вообще
+ *    снимали и укладывали в шлюпку — исторично).
  *  Киль по y=0, длина по оси Z (нос +Z). В userData — всё для
- *  спуска на воду (launch.ts): точки подвеса, вёсла, румпель. */
+ *  спуска на воду (launch.ts): точки подвеса, вёсла. */
 function buildDeckBoat(len: number): THREE.Group {
   const group = new THREE.Group();
   const beam = len * 0.275, halfBeam = beam / 2, depth = len * 0.155;
@@ -1780,31 +1782,11 @@ function buildDeckBoat(len: number): THREE.Group {
   }));
   group.add(hull);
 
-  // --- РУЛЬ на транце с РУМПЕЛЕМ (анимация в launch.ts) ---
-  const rudder = new THREE.Group();
-  {
-    const rt: BakedTarget = { pos: [], col: [], uv: [] };
-    // перо руля: от транца вниз, ниже киля
-    bakeInto(rt, new THREE.BoxGeometry(0.045, depth * 0.62, len * 0.16), cHullD,
-      0, -depth * 0.16, -len * 0.085);
-    // петли-стрепки к транцу
-    bakeInto(rt, new THREE.BoxGeometry(0.06, 0.05, len * 0.1), new THREE.Color(0x3a3f46),
-      0, -depth * 0.02, 0);
-    rudder.add(new THREE.Mesh(bakedGeo(rt), new THREE.MeshStandardMaterial({
-      vertexColors: true, roughness: 0.9, side: THREE.DoubleSide,
-    })));
-    // румпель: от головы руля ВНУТРЬ шлюпки (по курсу +Z)
-    const tiller = new THREE.Mesh(
-      new THREE.BoxGeometry(0.035, 0.035, len * 0.22),
-      new THREE.MeshStandardMaterial({ color: 0x9d7c50, roughness: 0.85 }));
-    tiller.geometry.translate(0, 0, len * 0.11);
-    tiller.position.set(0, sheer(0) - 0.16, -len / 2 + 0.06);
-    tiller.userData.tiller = true;
-    rudder.add(tiller);
-    rudder.userData.tiller = tiller;
-    rudder.position.set(0, keel(0) + depth * 0.42, -len / 2 - 0.01);
-    group.add(rudder);
-  }
+  // РУЛЬ УБРАН по замечанию игрока Task 25 («у лодок какая-то
+  // палочка сзади — убери»): перо руля на транце читалось как
+  // торчащая палка. На подвешенной на шлюпбалках шлюпке руля и не
+  // должно быть — его навешивали только перед спуском на воду;
+  // поворотом гребной лодки управляют вёслами (launch.ts).
 
   // --- ВЁСЛА (2 шт.): вальный стержень + лопасть; лежат на планширях
   //     ЛОПАСТЯМИ К НОСУ (ял: «вёсла укладываются на банки по бортам
@@ -1852,28 +1834,26 @@ function buildDeckBoat(len: number): THREE.Group {
   group.userData.thwartY = sheer(rowS) - 0.235;
   group.userData.thwarts = thwarts;
   group.userData.oars = oars;
-  group.userData.tiller = rudder.userData.tiller as THREE.Object3D;
   return group;
 }
 
 /** Шлюпка на шлюпбалках за кормой: группа + всё для спуска на воду
  *  (launch.ts): точки подвеса талов, убранное положение, ДИНАМИЧЕСКИЕ
  *  фалы (4 линии от голов девиц к планширю — удлиняются при спуске),
- *  вёсла на уключинах и румпель. */
+ *  вёсла на уключинах. Руля НЕТ (Task 25). */
 export interface BoatVis {
   group: THREE.Group;
   len: number;
   beam: number;
   davitHeads: THREE.Vector3[];   // головы шлюпбалок (локально корабля), 2 шт.
   stowPos: THREE.Vector3;        // убрана: позиция группы
-  stowRotY: number;              // убрана: поворот (нос ОТ корабля)
+  stowRotY: number;              // убрана: поворот (0 = нос к носу корабля)
   gunY: number;                  // планширь над килем шлюпки
   gunX: number;                  // полуширина в точке подвеса
   hangZ: number;                 // точки подвеса по длине шлюпки
   falls: THREE.LineSegments;     // 4 динамические линии талов
   oars: THREE.Object3D[];        // вёсла (пивоты у уключин)
   rowZ: number;                  // z гребной банки (в локалах шлюпки)
-  tiller?: THREE.Object3D;       // румпель (поворачивается с рулём)
 }
 
 /** Обновить фалы-тали по ТЕКУЩЕМУ положению шлюпки (пока она в
@@ -1961,16 +1941,18 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   const tm: BakedTarget = { pos: [], col: [], uv: [] };
   const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
-  // --- ШЛЮПКА ЗА КОРМОЙ НА ШЛЮПБАЛКАХ (по замечанию игрока: прикреплена
-  //     сзади; РАЗВЕРНУТА носом ОТ корабля): ял на ДВУХ наклонных
-  //     девицах у транца; фалы-тали — ДИНАМИЧЕСКИЕ линии (4 шт.),
-  //     удлиняются при спуске на воду (launch.ts). Ломаемая:
-  //     попадание рядом — разлетается щепой, clearDamage восстанавливает ---
+  // --- ШЛЮПКА ЗА КОРМОЙ НА ШЛЮПБАЛКАХ: ял на ДВУХ наклонных
+  //     девицах у транца; НОСОМ ВДОЛЬ КОРПУСА — к носу корабля
+  //     (по замечанию игрока Task 25 «разверни лодку вдоль корпуса»:
+  //     раньше висела антипараллельно, носом от корабля). Руля нет.
+  //     Фалы-тали — ДИНАМИЧЕСКИЕ линии (4 шт.), удлиняются при
+  //     спуске на воду (launch.ts). Ломаемая: попадание рядом —
+  //     разлетается щепой, clearDamage восстанавливает ---
   let boat: BoatVis | undefined;
   {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
     const bg = buildDeckBoat(bl);
-    bg.rotation.y = Math.PI;            // НОС ОТ КОРАБЛЯ (разворот по замечанию)
+    bg.rotation.y = 0;              // НОСОМ ВДОЛЬ КОРПУСА — к носу корабля
     const q = P.quarter ?? 0;
     const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
     const ttS = clamp2((sternZb + L / 2) / L, 0, 1);
@@ -2005,7 +1987,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     group.add(falls);
     const ud = bg.userData as {
       beam: number; gunY: number; gunX: number; hangZ: number; rowZ: number;
-      oars: THREE.Object3D[]; tiller: THREE.Object3D;
+      oars: THREE.Object3D[];
     };
     boat = {
       group: bg, len: bl, beam: ud.beam,
@@ -2014,9 +1996,9 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
         new THREE.Vector3(xb, headY - 0.04, headZ),
       ],
       stowPos: new THREE.Vector3(0, yB, zB),
-      stowRotY: Math.PI,
+      stowRotY: 0,
       gunY: ud.gunY, gunX: ud.gunX, hangZ: ud.hangZ,
-      falls, oars: ud.oars, rowZ: ud.rowZ, tiller: ud.tiller,
+      falls, oars: ud.oars, rowZ: ud.rowZ,
     };
     updateBoatFalls(boat);
   }

@@ -1560,6 +1560,9 @@ export class Game {
   // ---------- погода ----------
   /** Сглаженная амплитуда волн (море набирает волну с запаздыванием) */
   private seaAmpSmooth = 1;
+  /** последнее значение счётчика зелёной воды игрока (для сообщений) */
+  private lastGreenWater = 0;
+  private lastGreenWaterMsgT = -99;
   /** последний визуал погоды (облачность/солнце/туман/дождь) */
   private weatherVis = { cloudiness: 0.35, sunDim: 1, fogMul: 1, rainI: 0 };
   private updateWeather(dt: number) {
@@ -1702,6 +1705,17 @@ export class Game {
       steps++;
     }
 
+    // «зелёная вода» (Task 25): слишком большая волна накрыла палубу —
+    // сообщить игроку (не чаще раза в 12 с)
+    if (this.player.greenWater > this.lastGreenWater) {
+      if (this.time - this.lastGreenWaterMsgT > 12
+        && this.player.greenWaterT > this.lastGreenWaterMsgT) {
+        this.pushMessage('Волна накрыла палубу!');
+        this.lastGreenWaterMsgT = this.time;
+      }
+      this.lastGreenWater = this.player.greenWater;
+    }
+
     // телеметрия для отладки/E2E: window.__sea
     const dbg = window as unknown as { __sea: Record<string, unknown> };
     const sailsV = this.player.visual.sails.sails;
@@ -1742,6 +1756,8 @@ export class Game {
       furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
       sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
+      // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
+      greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
       // погода (e2e/диагностика): режим, дождь, туман, молнии
       weather: {
         mode: this.weather.mode,

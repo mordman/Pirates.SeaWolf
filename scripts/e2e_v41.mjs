@@ -1,7 +1,8 @@
-// E2E Task 24 — по замечаниям игрока:
-//  (A) ШЛЮПКА РАЗВЁРНУТА (носом ОТ корабля) и геометрия — настоящий
-//      гребной ял: L/B≈3.6, острый нос/транец, планширь-лента, ≥3 банки,
-//      2 вёсла на планширях лопастями к носу, руль с румпелем,
+// E2E Task 24 — по замечаниям игрока (ОБНОВЛЕНО Task 25):
+//  (A) ШЛЮПКА РАЗВЁРНУТА НОСОМ ВДОЛЬ КОРПУСА (к носу корабля) и
+//      геометрия — настоящий гребной ял: L/B≈3.6, острый нос/транец,
+//      планширь-лента, ≥3 банки, 2 вёсла на планширях лопастями
+//      к носу, БЕЗ руля («палочка сзади» — убрана по замечанию),
 //      динамические фалы (4 линии к планширю)
 //  (B) ЭКИПАЖ НЕ СТОИТ: капитан расхаживает, боцман вращает шпиль,
 //      канониры таскают ядра (челнок + наклон), вахтенные патрулируют
@@ -97,8 +98,8 @@ for (const model of ['frigate', 'cog', 'sloop']) {
     });
   })()`));
   log(`A[${model}]:`, JSON.stringify(r));
-  check(`A: ${model} — РАЗВЕРНУТА (rotY ≈ π, нос от корабля)`,
-    r.ok && Math.abs(r.rotY - Math.PI) < 0.1, `rotY=${r.rotY}`);
+  check(`A: ${model} — НОСОМ ВДОЛЬ КОРПУСА (rotY ≈ 0, к носу корабля)`,
+    r.ok && (r.rotY < 0.1 || r.rotY > Math.PI * 2 - 0.1), `rotY=${r.rotY}`);
   check(`A: ${model} — пропорции яла (L/B 3.3..4.0)`,
     r.ok && r.ratio > 3.3 && r.ratio < 4.0, `L/B=${r.ratio}`);
   check(`A: ${model} — за транцем, киль над кормой`,
@@ -106,8 +107,8 @@ for (const model of ['frigate', 'cog', 'sloop']) {
     `z=${r.z} y=${r.y}`);
   check(`A: ${model} — корпус подробный (вершин > 900, шпангоуты+планширь)`,
     r.ok && r.verts > 900, `verts=${r.verts}`);
-  check(`A: ${model} — банки ≥ 3, вёсла 2 (лежат, лопастью к носу), руль`,
-    r.ok && r.thwarts >= 3 && r.oars === 2 && r.oarStowed === 2 && r.tiller,
+  check(`A: ${model} — банки ≥ 3, вёсла 2 (лежат, лопастью к носу), БЕЗ руля`,
+    r.ok && r.thwarts >= 3 && r.oars === 2 && r.oarStowed === 2 && !r.tiller,
     `банки=${r.thwarts} вёсла=${r.oars}/${r.oarStowed} руль=${r.tiller}`);
   check(`A: ${model} — фалы динамические (8 точек) + 2 шлюпбалки + гребцы скрыты`,
     r.ok && r.fallsPts === 8 && r.davitHeads === 2 && r.rowersHidden === 2,
@@ -329,7 +330,7 @@ check('C4: подъём принят (у кормы)', hoist.ok === null && hois
 check('C4: подтяжка прошла (stage 1 после 2.8 с)', hoist.stageMid === 1, `stage=${hoist.stageMid}`);
 check('C4: фаза stowed — шлюпка НА ШЛЮПБАЛКАХ', hoist.phase === 'stowed');
 check('C4: возвращена в группу деталей корабля', hoist.backInDetail === true);
-check('C4: точно на месте (stowPos, rotY ≈ π)', hoist.posOk && Math.abs(hoist.rotY - Math.PI) < 0.1,
+check('C4: точно на месте (stowPos, rotY ≈ 0)', hoist.posOk && (hoist.rotY < 0.1 || hoist.rotY > Math.PI * 2 - 0.1),
   `pos=${hoist.posOk} rotY=${hoist.rotY}`);
 check('C4: гребцы скрыты, вёсла уложены на планширь',
   hoist.rowersHidden === 2 && hoist.oarStowed === 2,

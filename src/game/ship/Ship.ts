@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole } from './buildShip';
+import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
-import { waterHeightAt, waterNormalAt, waveEnvelope } from '../water/waves';
+import { waterHeightAt } from '../water/waves';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
 import type { GibPool } from '../fx/gibs';
@@ -10,7 +10,8 @@ import { clamp, mod2pi, smoothstep } from '../core/rng';
 
 // ============================================================
 // Корабль как сущность: 6DOF-физика (surge/sway/heave/roll/
-// pitch/yaw), buoyancy probes по секциям, ветер на парусах,
+// pitch/yaw), ГИДРОСТАТИКА ПО ТОЧКАМ КОРПУСА (Архимед — Task 25:
+// Gerstner-волны + rigid body + buoyancy), ветер на парусах,
 // руль, якорь, повреждения, течь, пожар, затопление.
 // ============================================================
 
@@ -24,7 +25,13 @@ export interface DamageInput {
   hitPoint?: THREE.Vector3; // мировая точка
 }
 
-interface Probe { off: THREE.Vector3; k: number; c: number; }
+interface BuoyCol {
+  x: number; z: number;   // точка колонны на ватерлинии (локально)
+  keelY: number;          // низ — киль (локально, < 0)
+  topY: number;           // верх — планширь: запас плавучести борта
+  A: number;              // площадь ватерлинии колонны, м²
+  c: number;              // вертикальный демпфер качки, кг/с
+}
 
 /** Опции создания корабля (настройки игры) */
 export interface ShipOpts {
@@ -33,6 +40,7 @@ export interface ShipOpts {
 }
 
 const G = 9.81;
+const RHO = 1025;   // плотность морской воды, кг/м³
 
 export class Ship {
   /** общие куски дерева/тел (заполняет game.ts) — для повреждений */
@@ -49,8 +57,12 @@ export class Ship {
   angular = new THREE.Vector3(); // мировая угловая скорость
   mass: number;
   inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
-  private probes: Probe[] = [];
-  private reserve: Probe[] = [];   // запас плавучести надводного борта
+  private cols: BuoyCol[] = [];   // гидростатические колонны корпуса
+  /** счётчик накрытий палубы волной («зелёная вода», Task 25) — HUD/E2E */
+  greenWater = 0;
+  /** время последнего накрытия палубы (для затухающих сообщений) */
+  greenWaterT = 0;
+  private cutT = 0;                // кулдаун эмиссии брызг резания/зелёной воды
   private force = new THREE.Vector3();
   private torque = new THREE.Vector3();
   private _f = new THREE.Vector3();
@@ -68,9 +80,7 @@ export class Ship {
   private _zAxis = new THREE.Vector3(0, 0, 1);
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
-  private _e2 = new THREE.Euler();   // разбор кватерниона для посадки на волну
-  private _st = [-0.46, -0.23, 0, 0.23, 0.46]; // доли полудлины станций корпуса
-  private _hs = new Float64Array(5);  // высоты воды на станциях
+  private _e2 = new THREE.Euler();   // разбор кватерниона (качка/подъём шлюпки)
 
   // --- управление ---
   sailTarget = 0;          // 0..3
@@ -168,7 +178,6 @@ export class Ship {
   // --- вода/след ---
   foam: WaterlineFoam;
   wake = new WakeTrail();
-  private lastStern = new THREE.Vector3();
   private rollSmooth = 0;
 
   // --- события колбэки ---
@@ -197,56 +206,65 @@ export class Ship {
     this.mass = this.preset.mass;
 
     const { length: L, beam: B, draft: D, freeboard: F } = this.preset;
-    // моменты инерции (связные оси: x — крен? нет: x=право, y=верх, z=нос)
-    // крен — вокруг z, дифферент — вокруг x, рыскание — вокруг y
+    // моменты инерции (связные оси: x=право, y=верх, z=нос).
+    // Радиусы инерции реальные (Task 25 — чистая гидростатика):
+    // дифферент k≈0.27·L (масса сосредоточена в середине корпуса),
+    // крен k≈0.37·B; рыскание — БЕЗ изменений (не ломаем настройку
+    // руления, на которой сидит вся игра)
     this.inertia.set(
-      this.mass * (B * B + F * F) / 12 * 1.5,   // pitch (x)
-      this.mass * (L * L + B * B) / 12 * 1.2,   // yaw (y)
-      this.mass * (B * B + F * F) / 12 * 1.5,   // roll (z)
+      this.mass * Math.pow(0.27 * L, 2),          // pitch (x)
+      this.mass * (L * L + B * B) / 12 * 1.2,     // yaw (y)
+      this.mass * Math.pow(0.37 * B, 2),          // roll (z)
     );
 
-    // зонды плавучести: 9 шпангоутов × 3 точки (ниже ватерлинии),
-    // вплоть до носа/кормы (±0.47 полудлины). Пружины жёсткие
-    // (нейтраль 0.38 осадки, запас ×1.35) и демпфер ζ≈0.62 — корпус
-    // БЫСТРО всходит на гребень и не проваливается внутрь волны.
-    const NZ = 9;
-    let n = 0;
-    for (let i = 0; i < NZ; i++) {
-      const t = i / (NZ - 1);
-      const z = THREE.MathUtils.lerp(-L * 0.47, L * 0.47, t);
-      const prof = this.halfWidthAt(z);
-      const offs = [0, -prof * 0.75, prof * 0.75];
-      for (const x of offs) {
-        this.probes.push({ off: new THREE.Vector3(x, -D * 0.38, z), k: 0, c: 0 });
-        n++;
+    // ============================================================
+    // ГИДРОСТАТИКА ПО ТОЧКАМ КОРПУСА (замечание игрока Task 25:
+    // «Gerstner-волны + rigid body + buoyancy — Архимед по точкам
+    // корпуса»): 13 шпангоутов × 5 колонн по ширине. Каждая колонна —
+    // вертикальный «столб» корпуса от киля до планширя со своей
+    // площадью ватерлинии: погруженная часть выталкивается силой
+    // ρ·g·A·d (вес вытесненной воды), моменты от плеч r×F дают
+    // ЕСТЕСТВЕННОЕ восстановление по крену и дифференту. Корпус
+    // РЕЖЕТ волны (никакой кинематической «посадки на гребень»),
+    // и только слишком большая волна накрывает палубу — запас
+    // плавучести надводного борта (колонны до планширя) возвращает
+    // корабль вверх. Заменила пружинные зонды + кинематический
+    // подъём из Task 12–21: те «приклеивали» корпус к поверхности.
+    // ============================================================
+    {
+      const NZ = 13;
+      const XF = [-0.78, -0.39, 0, 0.39, 0.78];   // доли полуширины станции
+      const z0 = -L * 0.48, z1 = L * 0.48;
+      const dz = (z1 - z0) / (NZ - 1);
+      for (let i = 0; i < NZ; i++) {
+        const z = z0 + dz * i;
+        const t = clamp((z + L / 2) / L, 0, 1);
+        const prof = hullProfile(t, this.preset);
+        const w = Math.max(0.3, prof.w);
+        for (const xf of XF) {
+          this.cols.push({
+            x: xf * w, z,
+            keelY: -prof.draft, topY: prof.bulwark,
+            A: (2 * w * dz) / XF.length, c: 0,
+          });
+        }
       }
-    }
-    const neutral = D * 0.38;
-    const kTotal = this.mass * G / neutral * 1.35;
-    for (const p of this.probes) {
-      p.k = kTotal / n;
-      p.c = 2 * Math.sqrt(p.k * (this.mass / n)) * 0.62; // демпфер качки
-    }
-    // Резервные зонды по скулам борта чуть выше спокойной ватерлинии:
-    // моделируют запас плавучести корпуса до планширя — гребень, накрывший
-    // палубу, встречает сильное сопротивление и кренящий момент вправку,
-    // «полностью по борт» корабль больше не погружается.
-    let rn = 0;
-    for (let i = 0; i < NZ; i++) {
-      const t = i / (NZ - 1);
-      const z = THREE.MathUtils.lerp(-L * 0.44, L * 0.44, t);
-      const prof = this.halfWidthAt(z) * 0.85;
-      for (const x of [-prof, prof]) {
-        this.reserve.push({ off: new THREE.Vector3(x, F * 0.34, z), k: 0, c: 0 });
-        rn++;
+      // КАЛИБРОВКА: объём под проектной ватерлинией (y=0) = массе/ρ —
+      // в штиле корабль сидит ровно по проектную осадку D
+      let v0 = 0;
+      for (const c of this.cols) {
+        v0 += c.A * Math.min(Math.max(-c.keelY, 0), c.topY - c.keelY);
       }
-    }
-    // жёстче прежнего: полный вес запаса уже на 15 см погружения борта —
-    // волна не может накрыть палубу, корпус «всплывает» на гребень
-    const rkTotal = this.mass * G / 0.15;
-    for (const p of this.reserve) {
-      p.k = rkTotal / rn;
-      p.c = 2 * Math.sqrt(p.k * (this.mass / rn)) * 1.3;
+      const scale = (this.mass / RHO) / Math.max(1e-6, v0);
+      let aSum = 0;
+      for (const c of this.cols) { c.A *= scale; aSum += c.A; }
+      // демпферы качки: ζ≈0.42 на собственной частоте вертикальной
+      // качки ω=√(ρg·A_wl/m) — корпус гасит качку, но живо всходит
+      // на гребень (волновое демпфирование обнулять нельзя —
+      // раскачает до опрокидывания)
+      const omega = Math.sqrt(RHO * G * aSum / this.mass);
+      const cTot = 2 * 0.42 * this.mass * omega;
+      for (const c of this.cols) c.c = cTot * (c.A / aSum);
     }
 
     this.foam = new WaterlineFoam(this.visual.outline);
@@ -336,38 +354,27 @@ export class Ship {
     // --- гравитация ---
     this.force.y -= m * G;
 
-    // --- плавучесть по зондам (τ = r × F, F = (0, fl, 0)) ---
-    for (const p of this.probes) {
-      const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
+    // --- ПЛАВУЧЕСТЬ: АРХИМЕД ПО ТОЧКАМ КОРПУСА (Task 25) ---
+    // Колонна погружена на глубину d (вдоль местной вертикали) →
+    // выталкивающая сила ρ·g·A·d + демпфер качки; моменты от плеч
+    // r×F дают естественное восстановление крена/дифферента.
+    // Гребень выше планширя просто заливает колонны борта — корабль
+    // жёстко выскакивает вверх (зелёная вода уже отработана визуально)
+    for (const p of this.cols) {
+      const wp = this._t1.set(p.x, 0, p.z).applyQuaternion(this.quaternion).add(this.position);
       const wy = waterHeightAt(wp.x, wp.z, time);
-      const depth = wy - wp.y;
-      if (depth > 0) {
-        const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
-        // вертикальная скорость точки: v = ω × r → vy = ωz*rx − ωx*rz
-        const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
-        let fl = p.k * Math.min(depth, 6) - p.c * vy;
-        if (fl < 0) fl = 0;
-        this.force.y += fl;
-        this.torque.x += -rz * fl;
-        this.torque.z += rx * fl;
-      }
-    }
-    // --- запас плавучести бортов (пока не тонем) ---
-    if (!this.sinking) {
-      for (const p of this.reserve) {
-        const wp = this._t1.copy(p.off).applyQuaternion(this.quaternion).add(this.position);
-        const wy = waterHeightAt(wp.x, wp.z, time);
-        const depth = wy - wp.y;
-        if (depth > 0) {
-          const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
-          const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
-          let fl = p.k * Math.min(depth, 2.5) - p.c * vy;
-          if (fl < 0) fl = 0;
-          this.force.y += fl;
-          this.torque.x += -rz * fl;
-          this.torque.z += rx * fl;
-        }
-      }
+      // вода над началом колонны (проектная ватерлиния), локальная вертикаль
+      const s = wy - wp.y;
+      const d = Math.min(Math.max(s - p.keelY, 0), p.topY - p.keelY);
+      if (d <= 0) continue;
+      const rx = wp.x - this.position.x, rz = wp.z - this.position.z;
+      // вертикальная скорость точки: v = ω × r → vy = ωz·rx − ωx·rz
+      const vy = this.velocity.y + (this.angular.z * rx - this.angular.x * rz);
+      let fl = RHO * G * p.A * d - p.c * vy;
+      if (fl < 0) fl = 0;                     // вода не притягивает
+      this.force.y += fl;
+      this.torque.x += -rz * fl;
+      this.torque.z += rx * fl;
     }
 
     // --- ветер на парусах ---
@@ -448,12 +455,13 @@ export class Ship {
     ab.z *= Math.exp(-1.1 * dt);  // крен
     this.angular.copy(ab.applyQuaternion(this.quaternion));
 
-    // --- ограничение крена/дифферента (мягкие стопы) ---
-    // дифферент 0.30 рад (17°) — нос всходит на передний склон
-    // штормового гребня, а не прорезает его;
+    // --- ограничение крена/дифферента (мягкие СТОПЫ-ПРЕДОХРАНИТЕЛИ) ---
+    // Дифферент 0.42 рад (24°) — корабль РЕЖЕТ волны: нос врезается
+    // в передний склон гребня и прорезает его (Task 25; раньше 0.30 —
+    // корпус искусственно всходил на гребень);
     // крен 0.36 рад (20°) — подветренный борт остаётся над водой
     const roll = e.z, pitch = e.x;
-    const rollLim = 0.36, pitchLim = 0.30;
+    const rollLim = 0.36, pitchLim = 0.42;
     if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
     if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
     // затопление кренит корабль в сторону пробоин
@@ -480,68 +488,11 @@ export class Ship {
       this.quaternion.w + this.dq.w * qs
     ).normalize();
 
-    // === КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ (плывёт ПОВЕРХНОСТЬЮ, без парения) ===
-    // Итог четырёх итераций:
-    //  1) среднее 4 точек — гребень проходил СКВОЗЬ корпус (жалоба);
-    //  2) жёсткая огибающая (max по станциям) — корабль «повис над водой»;
-    //  3) среднее + подъём ≤ 0.45D — в шторм гребень выше осадки, корпус
-    //     снова резал волну (жалоба «уходит внутрь волны»);
-    //  4) текущий баланс:
-    //   - ВЕРТИКАЛЬ — средневзвешенный по ширине уровень + МЯГКАЯ
-    //     огибающая с потолком 0.45D + 0.7·огибающая_волнения: на большом
-    //     гребне потолок растёт вместе с волной — корпус ВЗХОДИТ на гребень;
-    //     в штиле волны ниже 0.25D — подъём не включается вовсе (нет парения);
-    //   - ДИФФЕРЕНТ — МНК-наклон поверхности (вес по ширине): нос задирается
-    //     заранее, на переднем склоне приближающегося гребня.
-    // Крен остаётся живым (ветер/течь/поворот) — пружины бортов.
-    if (!this.sinking && !this.sunk && !this.grounded) {
-      const L = this.preset.length, D = this.preset.draft;
-      const FR = this._st;
-      const sinP = Math.sin(e.x);
-      const halfB = Math.max(0.5, this.preset.beam * 0.5);
-      // проход 1: высоты воды и веса станций (ширина корпуса в точке)
-      let wSum = 0, whSum = 0, whzSum = 0, wz2Sum = 0;
-      for (let i = 0; i < FR.length; i++) {
-        const zz = FR[i] * L;
-        const h = waterHeightAt(this.position.x + f.x * zz, this.position.z + f.z * zz, time);
-        // вес 0.25..1: оконечности узкие — их гребни корпус не поднимают всем весом
-        const w = Math.max(0.25, this.halfWidthAt(zz) / halfB);
-        this._hs[i] = h;
-        wSum += w;
-        whSum += w * h;
-        whzSum += w * h * zz;
-        wz2Sum += w * zz * zz;
-      }
-      // спокойная посадка: центр на 0.10·D над средневзвешенным уровнем;
-      // затопленный трюм садит корпус ниже (до 30 см)
-      const sink = clamp(this.water / Math.max(1, this.holdCap), 0, 1) * 0.30;
-      const meanY = whSum / wSum + D * 0.10 - sink;
-      // проход 2: мягкая огибающая против зарывания оконечностей.
-      // Заглубление киля станции при среднем уровне: dig = h + z·sinP + 0.9D − meanY;
-      // нормальная осадка даёт dig ≈ 0.8D — лишнее свыше 1.15D выталкиваем,
-      // потолок подъёма растёт с волнением (шторм = корпус идёт по гребню)
-      let lift = 0;
-      for (let i = 0; i < FR.length; i++) {
-        const zz = FR[i] * L;
-        const dig = this._hs[i] + zz * sinP + 0.9 * D - meanY;
-        const l = dig - 1.15 * D;
-        if (l > lift) lift = l;
-      }
-      const liftCap = 0.45 * D + 0.70 * waveEnvelope();
-      const targetY = meanY + clamp(lift, 0, liftCap);
-      const kY = 1 - Math.exp(-dt * 6.0);
-      const corrY = clamp((targetY - this.position.y) * kY, -17 * dt, 17 * dt);
-      this.position.y += corrY;
-      // согласованное затухание вертикальной скорости — пружины
-      // не раскачивают корпус вокруг кинематической посадки
-      this.velocity.y *= Math.exp(-dt * 3.0);
-      // дифферент: МНК-наклон поверхности вдоль ДП (вода выше у носа → нос вверх)
-      const wPitch = -Math.atan2(whzSum, wz2Sum);
-      const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
-      const kP = 1 - Math.exp(-dt * 5.0);
-      e2.x += clamp((wPitch - e2.x) * kP, -1.2 * dt, 1.2 * dt);
-      this.quaternion.setFromEuler(e2);
-    }
+    // КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ УДАЛЕНА (Task 25): корпус ведёт
+    // себя как честное твёрдое тело — Архимед по точкам корпуса сам
+    // поднимает/кренит/дифферентит его на Gerstner-волнах. Корабль
+    // РЕЖЕТ волны, а не скользит по их поверхности; зелёная вода
+    // (слишком большая волна) отработана в updateVisual.
 
     // --- посадка на мель / столкновение с землёй ---
     this.checkGrounding(dt);
@@ -1461,20 +1412,69 @@ export class Ship {
     }
     this.wake.update(time);
 
-    // носовой бурун: брызги при ударе носа о волну
+    // === Task 25: КОРАБЛЬ РЕЖЕТ ВОЛНЫ ===
+    // Нос врезается в передний склон гребня → бурун: вода расходится
+    // ВЕЕРОМ по бортам (обтекание корпуса), брызги летят вверх/вбок.
+    // Гребень ВЫШЕ планширя (волна слишком большая) → ЗЕЛЁНАЯ ВОДА:
+    // вал накрывает палубу, поток рушится с носа и стелется в корму.
     if (!this.sunk) {
-      const bowW = this.tmpV2.set(0, -this.preset.draft * 0.3, this.preset.length * 0.46)
-        .applyQuaternion(this.quaternion).add(this.position);
-      const waveY = waterHeightAt(bowW.x, bowW.z, time);
-      const relV = this.velocity.y - (waveY - this.lastStern.y) * 0; // грубая оценка
-      const impact = (waveY - bowW.y) * (0.3 + spdFrac);
-      if (impact > 0.55 && Math.random() < 0.6) {
-        particles.splash(bowW.x, waveY, bowW.z, 0.5 + spdFrac * 0.9);
-      }
-      if (spdFrac > 0.35 && Math.random() < spdFrac * 0.5) {
-        particles.spawn(bowW.x + (Math.random() - 0.5) * 2, waveY + 0.1, bowW.z + (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 2, 1.5 + Math.random() * 2.5 * spdFrac, (Math.random() - 0.5) * 2,
-          0.5, 0.3 + Math.random() * 0.35, 0, 0.4, 10);
+      this.cutT = Math.max(0, this.cutT - dt);
+      const f2 = this.forward;
+      const perpX = -f2.z, perpZ = f2.x;       // перпендикуляр к ДП (вправо)
+      const spd = this.speed();
+      for (const fr of [0.44, 0.32]) {          // форштевень + носовая часть
+        const lz = fr * this.preset.length;
+        const lx = this.halfWidthAt(lz);
+        // точка КРОМКИ ПАЛУБЫ (планширь) — локальная высота борта,
+        // повёрнутая кватернионом: дифферент/крен реально топят её
+        this.tmpV2.set(0, this.preset.freeboard * 0.82, lz)
+          .applyQuaternion(this.quaternion).add(this.position);
+        const wy = waterHeightAt(this.tmpV2.x, this.tmpV2.z, time);
+        const over = wy - this.tmpV2.y;         // вода над кромкой палубы
+        if (over > 0.06) {
+          // ---- ЗЕЛЁНАЯ ВОДА: волна падает на корабль ----
+          this.greenWater++;
+          this.greenWaterT = time;
+          const amt = Math.min(2.6, 0.8 + over * 1.7);
+          particles.splash(this.tmpV2.x, this.tmpV2.y, this.tmpV2.z, amt);
+          if (this.cutT <= 0) {
+            this.cutT = 0.55;                   // поток: не спамим каждые кадр
+            // вал с носа: стена воды рушится на палубу и стелется к корме
+            for (let i = 0; i < 14; i++) {
+              const side = i % 2 === 0 ? 1 : -1;
+              const off = Math.random();
+              particles.spawn(
+                this.tmpV2.x + perpX * side * lx * off,
+                this.tmpV2.y + 0.25 + Math.random() * 0.7,
+                this.tmpV2.z + perpZ * side * lx * off,
+                -perpX * side * (1.2 + Math.random() * 2.4) - f2.x * (2.5 + Math.random() * 3.5),
+                -1.2 - Math.random() * 2.2,
+                -perpZ * side * (1.2 + Math.random() * 2.4) - f2.z * (2.5 + Math.random() * 3.5),
+                1.1 + Math.random() * 0.8, 0.24 + Math.random() * 0.22, 1, 0.9, 6.5);
+            }
+            // принятая вода чуть гасит ход
+            this.velocity.x *= 0.988; this.velocity.z *= 0.988;
+          }
+        } else if (over > -this.preset.freeboard * 0.5 && spd > 2.2 && this.cutT <= 0) {
+          // ---- РЕЗАНИЕ: носовой бурун, вода обтекает корпус ----
+          const plunge = clamp((over + this.preset.freeboard * 0.5) /
+            (this.preset.freeboard * 0.5), 0, 1);   // 0..1 — насколько нос у воды
+          const p2 = 0.35 + spdFrac * 0.9 + plunge * 0.8;
+          this.cutT = 0.10;
+          for (let i = 0; i < 6; i++) {
+            const side = i % 2 === 0 ? 1 : -1;
+            // брызги веером от форштевня: вверх и НАРУЖУ по борту
+            particles.spawn(
+              this.tmpV2.x + perpX * side * lx * 0.7,
+              wy - 0.1,
+              this.tmpV2.z + perpZ * side * lx * 0.7,
+              perpX * side * (2.2 + Math.random() * 3.2) + f2.x * spd * 0.25,
+              1.6 + Math.random() * 3.4 * p2,
+              perpZ * side * (2.2 + Math.random() * 3.2) + f2.z * spd * 0.25,
+              0.5, 0.3 + Math.random() * 0.3, 0, 0.5, 10);
+          }
+          particles.splash(this.tmpV2.x, wy, this.tmpV2.z, 0.4 + p2 * 0.4);
+        }
       }
       // крен: всплески у борта
       const roll = this.euler.z;
