@@ -55,7 +55,7 @@ export type KillMode = 'grape' | 'ball';
 export interface CrewFigure {
   group: THREE.Group;
   role: CrewRole;
-  legL?: THREE.Mesh;          // только у ходоков (анимация шага)
+  legL?: THREE.Mesh;          // у ходоков и «работяг» (анимация шага)
   legR?: THREE.Mesh;
   seed: number;
   // ходьба: путь туда-обратно по палубе
@@ -68,6 +68,13 @@ export interface CrewFigure {
   driftPeriod?: number;       // период дрейфа, сек
   xPath?: number;
   phase: number;              // фаза покачивания
+  /** «Полезная работа» (по замечанию игрока: экипаж не стоит на
+   *  месте — все ходят и чем-то заняты): капитан расхаживает у
+   *  штурвала, боцман наваливается на шпиль, канониры таскают
+   *  ядра от кучи к орудию, вахтенные ходят вдоль планширя и
+   *  вглядываются в море. Рулевой остаётся у штурвала (это его
+   *  работа), гребцы гребут, ходоки гуляют. */
+  work?: WorkPath;
   baseScaleY: number;         // исходный рост (гребцы «сидят» — 0.78)
   // --- смерть ---
   dead: boolean;
@@ -79,6 +86,29 @@ export interface CrewFigure {
   // цвета/протезы — для кусков при разрыве
   skin: number; shirt: number; pants: number;
   hasHook: boolean; hasPeg: boolean;
+}
+
+/** Маршрут полезной работы фигуры (локальные координаты корабля):
+ *  pace    — расхаживание между двумя точками (a→b) с паузами;
+ *  circle  — хождение по кругу (шпиль);
+ *  shuttle — челнок: а→b, на концах НАКЛОН (взять/положить). */
+export interface WorkPath {
+  kind: 'pace' | 'circle' | 'shuttle';
+  a?: THREE.Vector3;            // конец маршрута A (pace/shuttle)
+  b?: THREE.Vector3;            // конец маршрута B
+  faceA?: number;               // куда смотрит на паузе в A (рад, yaw)
+  faceB?: number;               // куда смотрит на паузе в B
+  leanA?: number;               // глубина наклона на паузе в A (рад)
+  leanB?: number;               // наклон в B (взять ядро / зарядить)
+  hullFollow?: number;          // pace: x = k·halfW(z) — вдоль борта по кривизне
+  cx?: number; cz?: number; r?: number;  // circle: центр/радиус
+  ang?: number; angSpd?: number;         // circle: угол/скорость
+  pauseDur: number;             // длительность паузы на конце, с
+  pause: number;                // остаток паузы, с
+  pauseAt: 'a' | 'b';           // где сейчас пауза
+  t: number;                    // 0..1 по маршруту
+  dir: number;                  // ±1 направление
+  speed: number;                // м/с
 }
 
 export function mulberry32(seed: number) {
@@ -157,8 +187,12 @@ export const CREW_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, rou
 
 /** Собрать фигурку (экспорт для островных пиратов islandFolk.ts).
  *  feetY задаётся позиционированием группы: фигура ~1.6 м.
- *  Оси: +Z — лицо (по умолчанию к носу корабля), +X — порт. */
-export function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewFigure {
+ *  Оси: +Z — лицо (по умолчанию к носу корабля), +X — порт.
+ *  movable — отдельные ноги (анимация шага): ходоки и «работяги»
+ *  (капитан/боцман/канониры/вахтенные ходят по палубе); статичные
+ *  роли (рулевой, гребцы) — ноги в общем мешу. */
+export function buildFigure(role: CrewRole, traits: Traits, seed: number,
+  movable = role === 'walker'): CrewFigure {
   const rnd = mulberry32(seed);
   const group = new THREE.Group();
   const t: { pos: number[]; col: number[] } = { pos: [], col: [] };
@@ -286,7 +320,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number): CrewF
     return m;
   };
 
-  if (role === 'walker') {
+  if (movable) {
     const legL = mkLeg(-1, traits.pegLeg === -1);
     const legR = mkLeg(1, traits.pegLeg === 1);
     group.add(legL, legR);
@@ -436,17 +470,60 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
     ? Array.from({ length: oarN }, (_, i) =>
         THREE.MathUtils.lerp(-L * 0.26, L * 0.30, oarN === 1 ? 0.5 : i / (oarN - 1)))
     : [];
+  // === ПОЛЕЗНАЯ РАБОТА (замечание игрока: «экипаж не должен стоять
+  // на месте — должны постоянно ходить и что-то делать полезное»):
+  // маршруты в границах ОДНОЙ палубы (без шага через квартердек
+  // посреди пути). Шпиль — как в buildShip: перед квартердеком. ===
+  const capstanZ = P.quarter
+    ? quarterFrontZ(P) + Math.max(1.2, L * 0.05)
+    : -L * 0.16;
+  // интервалы палуб по z: квартердек [QD] и главная палуба [MD]
+  const QD: number[] | null = qFront > -Infinity
+    ? [-L / 2 + 0.85, qFront - 0.55] : null;
+  const MD: number[] = [
+    Math.max(-L * 0.36, qFront > -Infinity ? qFront + 0.75 : -L * 0.36), L * 0.30];
+  const laneZ = (za: number, zb: number, iv: number[] | null): [number, number] | null => {
+    if (!iv) return null;
+    const a = Math.min(Math.max(za, iv[0]), iv[1]);
+    const b = Math.min(Math.max(zb, iv[0]), iv[1]);
+    if (Math.abs(b - a) >= 1.15) return [a, b];
+    // слишком коротко — минимальный маршрут от za
+    const a2 = Math.min(Math.max(za, iv[0]), Math.max(iv[0], iv[1] - 1.15));
+    const b2 = a2 + 1.15;
+    return b2 <= iv[1] + 1e-6 ? [a2, b2] : null;
+  };
   for (const role of plan) {
-    const f = buildFigure(role, rollTraits(rot, role), nextSeed());
+    // капитан/боцман/канониры/вахтенные — «работяги»: отдельные
+    // ноги (шагают), маршруты задаются ниже
+    const busy = role === 'captain' || role === 'boatswain'
+      || role === 'gunner' || role === 'watch';
+    const f = buildFigure(role, rollTraits(rot, role), nextSeed(), busy || role === 'walker');
     if (role === 'captain') {
-      // капитан — на квартердеке (если есть), у штурвала
+      // капитан — РАСХАЖИВАЕТ по квартердеку за спиной рулевого
+      // (замирает и смотрит на горизонт)
       place(f, 0.55, wheelZ - 1.6, 0.3);
+      const lane = laneZ(wheelZ - 2.5, wheelZ - 1.1, QD ?? MD);
+      if (lane) f.work = {
+        kind: 'pace',
+        a: new THREE.Vector3(0.74, 0, lane[0]),
+        b: new THREE.Vector3(-0.66, 0, lane[1]),
+        faceA: 0.3, faceB: -0.35, leanA: 0.05, leanB: 0.05,
+        pauseDur: 1.4 + rot() * 1.6, pause: 0, pauseAt: 'a',
+        t: rot(), dir: rot() < 0.5 ? 1 : -1, speed: 0.52,
+      };
     } else if (role === 'helmsman') {
       // рулевой — за штурвалом (руки на ободе), лицом к носу
       place(f, 0, wheelZ - 0.52, 0);
     } else if (role === 'boatswain') {
-      // боцман — у шпиля (шпиль перед квартердеком), лицом к носу-борту
-      place(f, -0.75, wheelZ + 2.4, 0.5);
+      // боцман — ВРАЩАЕТ ШПИЛЬ: ходит по кругу, наваливаясь на бар
+      place(f, -0.75, capstanZ + 1.0, 0.5);
+      f.work = {
+        kind: 'circle', cx: 0, cz: capstanZ,
+        r: Math.max(0.85, 0.95 + (rot() - 0.5) * 0.2),
+        ang: rot() * Math.PI * 2,
+        angSpd: (rot() < 0.5 ? -1 : 1) * (0.42 + rot() * 0.22),
+        pauseDur: 0, pause: 0, pauseAt: 'a', t: 0, dir: 1, speed: 0.6,
+      };
     } else if (role === 'rower') {
       // гребец — на банке у своего весла, лицом к корме (сидя)
       const z = oarZ.length ? oarZ[(ri * 2) % oarZ.length] : L * 0.1;
@@ -458,20 +535,44 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       f.group.scale.y = 0.78;
       f.baseScaleY = 0.78;
     } else if (role === 'gunner') {
-      // канонир — за ПАЛУБНЫМ орудием (через одно), борт чередуется;
-      // при 16 канонирах — лёгкий разброс вдоль ствола (без слипаний)
+      // канонир — ОБСЛУЖИВАЕТ орудие: челнок орудие↔пороховая яма,
+      // у ствола наклоняется (заряжает), у кучи — берёт ядро
       const z = deckGuns[Math.floor(gi / 2) % Math.max(1, deckGuns.length)];
       const side = gi % 2 === 0 ? -1 : 1;
       gi++;
       const w = halfW(z);
       const jz = (rot() - 0.5) * 1.3;
       place(f, side * (w * 0.56), z + 0.55 + jz, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+      const lane = laneZ(z + 0.55 + jz, z - 0.5 + jz * 0.5, MD);
+      if (lane) f.work = {
+        kind: 'shuttle',
+        a: new THREE.Vector3(side * (w * 0.56), 0, lane[0]),   // у орудия
+        b: new THREE.Vector3(side * (w * 0.2), 0, lane[1]),     // яма с ядрами
+        faceA: side * Math.PI / 2, faceB: side * Math.PI / 2,
+        leanA: 0.4, leanB: 0.5,
+        pauseDur: 1.1 + rot() * 0.9, pause: 0, pauseAt: 'a',
+        t: rot(), dir: rot() < 0.5 ? 1 : -1, speed: 0.6,
+      };
     } else if (role === 'watch') {
-      // вахтенный — у мачты, борт чередуется
+      // вахтенный — ПАТРУЛИРУЕТ вдоль планширя у своей мачты,
+      // на концах замирает и вглядывается в море (лёгкий наклон)
       const mz = mastZ[wi % mastZ.length];
       const side = wi % 2 === 0 ? -1 : 1;
+      const toBow = wi % 4 < 2;   // кто-то к носу, кто-то к корме
       wi++;
       place(f, side * Math.max(0.7, halfW(mz) * 0.42), mz + 0.9, side * (Math.PI / 2));
+      const onQ = !!(QD && mz < qFront);
+      const lane = laneZ(mz + 0.9, toBow ? mz + 4.2 : mz - 3.0, onQ ? QD : MD);
+      if (lane) f.work = {
+        kind: 'pace',
+        a: new THREE.Vector3(side * 0.5, 0, lane[0]),
+        b: new THREE.Vector3(side * 0.5, 0, lane[1]),
+        faceA: side * Math.PI / 2, faceB: side * Math.PI / 2,   // лицом в море
+        leanA: 0.13, leanB: 0.13,
+        hullFollow: side * 0.78,                                // вдоль борта по кривизне
+        pauseDur: 1.6 + rot() * 1.8, pause: 0, pauseAt: 'a',
+        t: rot(), dir: rot() < 0.5 ? 1 : -1, speed: 0.42 + rot() * 0.22,
+      };
     } else {
       // ходок — гуляет по палубе туда-обратно; полосы движения +
       // живой дрейф поперёк (каждый со своим периодом), паузы у
@@ -674,14 +775,74 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
             }
             f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
           }
+        } else if (f.work) {
+          // === ПОЛЕЗНАЯ РАБОТА: фигура НЕ стоит на месте ===
+          const w = f.work;
+          const legs = (spd: number) => {
+            const step = time * spd * 7;
+            if (f.legL && f.legR) {
+              f.legL.rotation.x = Math.sin(step) * 0.55;
+              f.legR.rotation.x = -Math.sin(step) * 0.55;
+            }
+            return step;
+          };
+          if (w.kind === 'circle' && w.cx !== undefined && w.cz !== undefined && w.r !== undefined) {
+            // шпиль: по кругу, навалившись на бар
+            w.ang = (w.ang ?? 0) + (w.angSpd ?? 0.5) * dt;
+            const ang = w.ang;
+            const x = w.cx + Math.sin(ang) * w.r;
+            const z = w.cz + Math.cos(ang) * w.r;
+            f.group.position.set(x, deckYAt(z), z);
+            // лицом по касательной (в сторону движения)
+            const s = Math.sign(w.angSpd ?? 1);
+            f.group.rotation.y = Math.atan2(Math.cos(ang) * s, -Math.sin(ang) * s);
+            f.group.rotation.z = Math.sin(time * 2.1 + f.phase) * 0.045;
+            f.group.rotation.x = 0.12; // наваливается на бар
+            const step = legs(Math.abs(w.angSpd ?? 0.5) * w.r * 1.35);
+            f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
+          } else if (w.pause > 0) {
+            // пауза на конце маршрута: наклониться (работа) и обратно
+            w.pause -= dt;
+            const atA = w.pauseAt === 'a';
+            const face = atA ? (w.faceA ?? 0) : (w.faceB ?? 0);
+            // плавный доворот к цели работы
+            let dy = face - f.group.rotation.y;
+            dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+            f.group.rotation.y += dy * Math.min(1, dt * 4);
+            const k = 1 - Math.max(0, w.pause) / Math.max(0.2, w.pauseDur);
+            const lean = atA ? (w.leanA ?? 0) : (w.leanB ?? 0);
+            f.group.rotation.x = Math.sin(Math.min(1, Math.max(0, k)) * Math.PI) * lean;
+            f.group.rotation.z = Math.sin(time * 1.3 + f.phase) * 0.03;
+            if (f.legL && f.legR) { f.legL.rotation.x *= 0.8; f.legR.rotation.x *= 0.8; }
+            if (w.pause <= 0) {
+              f.group.rotation.x = 0;
+              w.dir = -w.dir;
+            }
+          } else {
+            // движение по маршруту a→b
+            const A = w.a!, B = w.b!;
+            const span = Math.max(0.5, A.distanceTo(B));
+            w.t += (w.dir * w.speed * dt) / span;
+            if (w.t >= 1) { w.t = 1; w.pause = w.pauseDur; w.pauseAt = 'b'; }
+            else if (w.t <= 0) { w.t = 0; w.pause = w.pauseDur; w.pauseAt = 'a'; }
+            const z = THREE.MathUtils.lerp(A.z, B.z, w.t);
+            let x = THREE.MathUtils.lerp(A.x, B.x, w.t);
+            if (w.hullFollow !== undefined) x = w.hullFollow * halfW(z);
+            f.group.position.set(x, deckYAt(z), z);
+            const dx = (B.x - A.x) * w.dir, dz = (B.z - A.z) * w.dir;
+            f.group.rotation.y = Math.atan2(dx, dz);
+            f.group.rotation.x = 0;
+            f.group.rotation.z = 0;
+            const step = legs(w.speed);
+            f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
+          }
         } else {
-          // idle: лёгкое покачивание, боцман «осматривается»
+          // idle: лёгкое покачивание (рулевой держит штурвал)
           const sway = Math.sin(time * 1.3 + f.phase) * 0.035;
           f.group.rotation.z = sway;
-          if (f.role === 'boatswain') {
-            f.group.rotation.y = 0.5 + Math.sin(time * 0.4 + f.phase) * 0.8;
-          } else if (f.role === 'gunner') {
-            f.group.rotation.z = sway * 0.5;
+          if (f.role === 'helmsman') {
+            // рулевой слегка налегает на штурвал по курсу
+            f.group.rotation.x = 0.06 + Math.sin(time * 0.9 + f.phase) * 0.02;
           }
         }
       }

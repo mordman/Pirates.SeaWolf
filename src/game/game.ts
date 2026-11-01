@@ -16,6 +16,7 @@ import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
 import { setCrewFx, deckCrewFor } from './ship/crew';
+import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
@@ -104,6 +105,8 @@ export interface HudState {
   dayF: number;
   proving: boolean;
   target: TargetReport | null;
+  /** шлюпка за кормой: фаза спуска, ход, расстояние до кормы */
+  boat: { phase: string; t: number; dist: number; speed: number; row: number } | null;
 }
 
 // ---------- товары (рынок в порту) ----------
@@ -190,6 +193,8 @@ export class Game {
   player!: Ship;
   aiShips: AIShip[] = [];
   combat!: CombatSystem;
+  /** спуск/подъём шлюпки и управление ею на воде (клавиша B) */
+  boatLaunch: BoatLaunch | null = null;
 
   worldGroup = new THREE.Group();
   private shift = new THREE.Vector3();     // worldGroup.position
@@ -307,7 +312,7 @@ export class Game {
   private preventCodes(): Set<string> {
     const c = this.settings.controls;
     return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
-      c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help, c.oars,
+      c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help, c.oars, c.boat,
       ...c.ammo, 'Tab', 'Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
   }
 
@@ -429,6 +434,14 @@ export class Game {
     this.worldGroup.add(this.player.visual.group);
     this.worldGroup.add(this.player.foam.mesh);
     this.worldGroup.add(this.player.wake.mesh);
+
+    // шлюпка за кормой: спуск на воду и управление (клавиша B)
+    this.boatLaunch = new BoatLaunch({
+      ship: this.player, worldGroup: this.worldGroup, particles: this.particles,
+      islands: () => this.world.islands,
+      msg: (t) => this.pushMessage(t),
+      onSplash: () => this.audio.splash(0),
+    });
 
     // торговцы (спавн в проверенно глубокой воде)
     const routes: THREE.Vector3[][] = [
@@ -822,6 +835,8 @@ export class Game {
     if (!PRESETS[presetId]) return 'Судно не найдено на верфи';
     if (presetId === this.player.preset.id) return 'Вы уже на этом корабле';
     const old = this.player;
+    // шлюпку вернуть на шлюпбалки до пересборки корабля
+    this.boatLaunch?.abort();
     // сохранить состояние игрока
     const pos = old.position.clone();
     const quat = old.quaternion.clone();
@@ -878,6 +893,13 @@ export class Game {
     this.applySkins(np);
     this.player = np;
     this.combat.player = np;
+    // шлюпка нового корабля — свой контроллер спуска
+    this.boatLaunch = new BoatLaunch({
+      ship: np, worldGroup: this.worldGroup, particles: this.particles,
+      islands: () => this.world.islands,
+      msg: (t) => this.pushMessage(t),
+      onSplash: () => this.audio.splash(0),
+    });
     this.combat.resizeReloads(np.visual.gunsPort.length + np.visual.gunsStarboard.length);
     this.combat.aim.active = false;
     this.combat.aim.target = null;
@@ -1203,6 +1225,29 @@ export class Game {
     if (!this.started || this.dead || this.uiOpen) { inp.endFrame(); return; }
     const p = this.player;
     const c = this.settings.controls;
+    const bl = this.boatLaunch;
+
+    // === В ШЛЮПКЕ (спущена/спускается/поднимается): управление
+    //     кораблём отключено — только вёсла/румпель и камера ===
+    if (bl && bl.phase !== 'stowed') {
+      bl.steer = (inp.isDown(c.steerRight) ? 1 : 0) - (inp.isDown(c.steerLeft) ? 1 : 0);
+      if (c.invertRudder) bl.steer = -bl.steer;
+      bl.row = (inp.isDown(c.sailsUp) ? 1 : 0) - (inp.isDown(c.sailsDown) ? 1 : 0);
+      if (inp.pressed(c.camera)) {
+        this.rig.cycleMode();
+        this.pushMessage(`Камера: ${CAMERA_LABEL[this.rig.mode]}`);
+      }
+      if (inp.pressed(c.boat)) {
+        if (bl.phase === 'afloat') {
+          const err = bl.tryHoist();
+          if (err) this.pushMessage(err);
+          else this.pushMessage('Команда на талях — шлюпка поднимается…');
+        }
+      }
+      p.rudderTarget = 0;
+      inp.endFrame();
+      return;
+    }
 
     // паруса / вёсла: W/S — паруса; на гребных судах Alt+W/S — гребля
     // вперёд/назад (вёсла достаются автоматически); O — вывалить/убрать
@@ -1280,6 +1325,23 @@ export class Game {
         p.anchored = !p.anchored;
         this.audio.bell();
         this.pushMessage(p.anchored ? 'Якорь отдан' : 'Якорь поднят');
+      }
+    }
+
+    // шлюпка: B — спустить на воду (замечание игрока: управлять
+    // шлюпкой, пока не вернёшься на борт; спуск/подъём — анимация)
+    if (inp.pressed(c.boat)) {
+      if (bl) {
+        const err = bl.tryLaunch(this.docked);
+        if (err) this.pushMessage(err);
+        else {
+          this.pushMessage('Шлюпка на талях — спуск на воду…');
+          this.audio.bell();
+          p.rudderTarget = 0;
+          p.rowing = 0;
+        }
+      } else {
+        this.pushMessage('На этом судне нет шлюпки');
       }
     }
 
@@ -1387,7 +1449,7 @@ export class Game {
       portInfo: null, oars: null, gunPorts: null, figureOn: 'figure.stock', decoOn: 'deco.none',
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
-      proving: false, target: null,
+      proving: false, target: null, boat: null,
     };
   }
 
@@ -1465,6 +1527,12 @@ export class Game {
     h.fps = Math.round(this.fpsSmooth);
     // полигон: отчёт о мишени
     h.proving = this.proving;
+    h.boat = this.boatLaunch
+      ? { phase: this.boatLaunch.phase, t: +this.boatLaunch.t.toFixed(2),
+          dist: +this.boatLaunch.distToStern().toFixed(0),
+          speed: +(Math.abs(this.boatLaunch.vel) * 1.944).toFixed(1),
+          row: this.boatLaunch.row }
+      : null;
     if (this.proving && this.pgTarget) {
       const t = this.pgTarget.ship;
       h.target = {
@@ -1727,13 +1795,15 @@ export class Game {
             lidsOpen: p.visual.gunPorts.filter(gp => gp.open > 0.85).length,
             gunsOut: p.visual.gunPorts.filter(gp => gp.gun.position.x * Math.sign(gp.gun.userData.baseX) > Math.abs(gp.gun.userData.baseX) + 0.2).length }
         : null,
-      // шлюпка на палубе (Task 22): поперёк, видимость, разлёт
+      // шлюпка за кормой (Task 22-24): разворот, видимость, спуск
       boat: p.visual.boat
         ? {
-            ok: true, visible: p.visual.boat.visible,
-            rotY: +p.visual.boat.rotation.y.toFixed(2),
-            len: +(p.visual.boat.userData.boatLen as number).toFixed(2),
-            x: +p.visual.boat.position.x.toFixed(1), z: +p.visual.boat.position.z.toFixed(1),
+            ok: true, visible: p.visual.boat.group.visible,
+            rotY: +p.visual.boat.group.rotation.y.toFixed(2),
+            len: +p.visual.boat.len.toFixed(2),
+            x: +p.visual.boat.group.position.x.toFixed(1),
+            z: +p.visual.boat.group.position.z.toFixed(1),
+            phase: this.boatLaunch ? this.boatLaunch.phase : 'stowed',
           }
         : { ok: false },
       // якоря игрока: отдача (F) — анимация 0..1 + буй на воде
@@ -1796,6 +1866,7 @@ export class Game {
     // sinking игрока
     if (this.player.sinking && !this.dead && this.player.sinkT > 5) {
       this.dead = true;
+      this.boatLaunch?.abort();
       this.pushMessage('Корабль затонул...');
     }
 
@@ -1813,6 +1884,9 @@ export class Game {
     this.player.updateVisual(this.time, dt, this.particles, this.negShift);
     for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles, this.negShift);
     if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles, this.negShift);
+
+    // шлюпка: спуск/подъём/гребля — после визуала корабля
+    this.boatLaunch?.update(dt, this.time);
 
     // мелкие детали кораблей — только когда камера рядом (LOD)
     const camPos = this.rig.camera.position;
@@ -1883,12 +1957,26 @@ export class Game {
     }
 
     // камера
+    let camTarget = playerScene;
+    let camHeading = this.player.heading;
+    let camRoll = this.player.euler.z;
+    let camPitch = this.player.euler.x;
+    let camSpeedFrac = clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1);
+    if (this.boatLaunch && this.boatLaunch.phase === 'afloat') {
+      // камера — за шлюпкой, пока игрок в ней (замечание игрока:
+      // управлять шлюпкой, пока не вернёшься на борт)
+      camTarget = this._v3.copy(this.boatLaunch.pos).add(this.shift);
+      camHeading = this.boatLaunch.heading;
+      camRoll = this.boatLaunch.roll;
+      camPitch = this.boatLaunch.pitch;
+      camSpeedFrac = clamp(Math.abs(this.boatLaunch.vel) / 2, 0, 1);
+    }
     const shipInfo = {
-      scenePos: playerScene,
-      heading: this.player.heading,
-      roll: this.player.euler.z,
-      pitch: this.player.euler.x,
-      speedFrac: clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1),
+      scenePos: camTarget,
+      heading: camHeading,
+      roll: camRoll,
+      pitch: camPitch,
+      speedFrac: camSpeedFrac,
     };
     const aimDir = this.combat.aim.active ? this.combat.aimDirection(this._v2) : null;
     // стрелки — вращение камеры (в свободном режиме напрямую,
@@ -1953,6 +2041,7 @@ export class Game {
 
   respawn() {
     if (this.proving) this.exitProving();
+    this.boatLaunch?.abort();
     const p = this.player;
     p.hullHP = p.hullMax;
     p.sailHP = p.sailMax;

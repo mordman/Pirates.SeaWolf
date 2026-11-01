@@ -68,8 +68,9 @@ const boatA = jparse(ev(`(() => {
   g.changeShip('frigate', true);
   const p = g.player;
   const v = p.visual;
-  const b = v.boat;
-  if (!b) return JSON.stringify({ ok: false });
+  const bvis = v.boat;
+  if (!bvis) return JSON.stringify({ ok: false });
+  const b = bvis.group;
   const T = window.__THREE;
   const box = new T.Box3().setFromObject(b);
   const size = new T.Vector3(); box.getSize(size);
@@ -124,7 +125,7 @@ const boatBreak = jparse(ev(`(() => {
   const g = window.__game;
   const p = g.player;
   const v = p.visual;
-  const b = v.boat;
+  const b = v.boat.group;
   const lp = b.position.clone();
   lp.y += 0.4;
   const broke = p.damageProp(lp, 12);

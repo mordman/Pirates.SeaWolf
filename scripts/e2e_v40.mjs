@@ -58,8 +58,9 @@ for (const model of ['frigate', 'cog', 'sloop']) {
     g.changeShip('${model}', true);
     const p = g.player;
     const v = p.visual;
-    const b = v.boat;
-    if (!b) return JSON.stringify({ ok: false });
+    const bvis = v.boat;
+    if (!bvis) return JSON.stringify({ ok: false });
+    const b = bvis.group;
     const T = window.__THREE;
     const box = new T.Box3().setFromObject(b);
     const size = new T.Vector3(); box.getSize(size);

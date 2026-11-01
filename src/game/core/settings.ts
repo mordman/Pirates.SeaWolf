@@ -53,6 +53,7 @@ export interface ControlsSettings {
   help: string;
   oars: string;           // вёсла: вывалить/убрать (гребные суда)
   gunports: string;       // пушечные порты: открыть/закрыть (батареи)
+  boat: string;           // шлюпка: спустить на воду / поднять на борт
   ammo: [string, string, string, string];
 }
 
@@ -103,6 +104,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     help: 'KeyH',
     oars: 'KeyO',
     gunports: 'KeyP',
+    boat: 'KeyB',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
   },
   audio: { volume: 0.55 },
@@ -267,6 +269,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   help: 'Помощь',
   oars: 'Вёсла: вывалить/убрать',
   gunports: 'Пушечные порты: открыть/закрыть',
+  boat: 'Шлюпка: спустить/поднять (на воде — вёсла/руль)',
   ammo: 'Боеприпасы 1–4',
 };
 

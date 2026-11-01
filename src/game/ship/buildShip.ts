@@ -408,8 +408,9 @@ export interface ShipVisual {
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   /** материал обшивки (для покупки украшений бортов) */
   hullMat: THREE.MeshStandardMaterial;
-  /** Шлюпка за кормой на шлюпбалках (круглодонная, вдоль) — ломаемая */
-  boat?: THREE.Group;
+  /** Шлюпка-ял за кормой на шлюпбалках (носом от корабля) — ломаемая;
+   *  спускается на воду и управляется (launch.ts, клавиша B) */
+  boat?: BoatVis;
   /** Якоря у скул: убраны — лежат ВДОЛЬ борта; отдача (Ship.anchored)
    *  вываливает якорь и опускает его под воду на цепи */
   anchors?: AnchorVis[];
@@ -1629,39 +1630,58 @@ export interface AnchorVis {
   buoyFloat: THREE.Vector3;   // буй отдан: на воде над якорем
 }
 
-/** Шлюпка: КРУГЛОДОННОЕ корыто по шпангоутам — острая
- *  носовая оконечность, транцевая корма, развал бортов, точёный
- *  планширь, банки, киль и форштевень. Подвешена ЗА КОРМОЙ на
- *  шлюпбалках, длина ВДОЛЬ корабля (по замечанию игрока — не капсула
- *  вверх дном и не поперёк палубы).
- *  Возвращает группу; киль по y=0, длина по оси Z (нос +Z). */
+/** ШЛЮПКА-ЯЛ по реальным прототипам (поиск по запросу игрока:
+ *  корабельная гребная шлюпка — ял/катер эпохи паруса, см. Вики
+ *  «Ship's boat»/«Cutter (boat)» и устройство ЯЛ-6, Воениздат 1971):
+ *  — острая носовая оконечность с НАКЛОННЫМ форштевнем (fine entry),
+ *    транцевая корма с ахтерштевнем; наибольшая ширина ~48% длины
+ *    от транца; L/B ≈ 3.6 (1:3.5..1:4 — boatdesign.net);
+ *  — седанатый борт: планширь поднимается к носу и транцу;
+ *  — сечение: плоское дно с округлой скулой и РАЗВАЛОМ бортов;
+ *  — точёный планширь ГЛАДКОЙ лентой по всей кромке обоих бортов;
+ *  — банки (3) + кормовое сиденье с заспинной доской;
+ *  — подуключины с нагелями, ДВА вёсла уложены на планширях
+ *    ЛОПАСТЯМИ К НОСУ (как на яле: «вёсла укладываются на банки
+ *    по бортам лопастями на нос»);
+ *  — руль на транце с румпелем.
+ *  Киль по y=0, длина по оси Z (нос +Z). В userData — всё для
+ *  спуска на воду (launch.ts): точки подвеса, вёсла, румпель. */
 function buildDeckBoat(len: number): THREE.Group {
   const group = new THREE.Group();
-  const beam = len * 0.3, depth = len * 0.18;
+  const beam = len * 0.275, halfBeam = beam / 2, depth = len * 0.155;
   const t: BakedTarget = { pos: [], col: [], uv: [] };
   const cHull = new THREE.Color(0x8a6a44);
   const cHullD = new THREE.Color(0x5a422c);
   const cGun = new THREE.Color(0x9d7c50);
-  // форма по длине (s: 0 = транец, 1 = острый нос)
+  const cPaint = new THREE.Color(0x3d5a66); // окрашенная корма-панель
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  // --- обводы по длине (s: 0 = транец … 1 = нос) ---
   const halfW = (s: number) => {
-    const bow = 1 - Math.pow(clamp2((s - 0.55) / 0.45, 0, 1), 1.5);
-    const stern = 0.66 + 0.34 * Math.sin(clamp2(s / 0.24, 0, 1) * Math.PI / 2);
-    return (beam / 2) * bow * stern;
+    // нос: длинное плавное сведение (fine entry) с 55% длины
+    const bow = 1 - Math.pow(clamp01((s - 0.55) / 0.45), 1.25);
+    // транец: 55% наибольшей ширины, максимум к 28%
+    const stern = 0.55 + 0.45 * Math.sin(clamp01(s / 0.28) * Math.PI / 2);
+    return halfBeam * bow * stern;
   };
-  const depthAt = (s: number) =>
-    depth * (0.36 + 0.64 * Math.sin(clamp2((s + 0.06) / 0.94, 0, 1) * Math.PI));
-  const lift = (s: number) => depth * (0.24 * Math.pow(s, 2.3) + 0.1 * Math.pow(1 - s, 2.3));
-  // шпангоут: полукруглое сечение с развалом (0 = киль, 1 = планширь)
-  const ST = 10, K = 5;
+  // планширь (верхняя кромка): минимален у миделя, поднимается к концам
+  const sheer = (s: number) =>
+    depth * (0.92 + 0.55 * Math.pow(Math.abs(s - 0.47) * 1.9, 1.7));
+  // киль (нижняя кромка): рокер — дно поднимается к транцу и носу
+  const keel = (s: number) =>
+    depth * (0.06 + 0.34 * Math.pow(s, 2.6) + 0.22 * Math.pow(1 - s, 2.6));
+  // сечение: u 0=киль … 1=планширь; плоское дно → круглая скула → развал
+  const ST = 14, K = 5;
   const station = (s: number) => {
     const z = (s - 0.5) * len;
-    const w = halfW(s), d = depthAt(s) + lift(s);
+    const w = Math.max(halfBeam * 0.035, halfW(s));
+    const kY = keel(s), gY = sheer(s);
     const pts: THREE.Vector3[] = [];
-    for (let k = K; k >= -K; k--) {
-      const u = Math.abs(k) / K;
+    for (let kk = K; kk >= -K; kk--) {
+      const u = Math.abs(kk) / K;
+      const ang = u * Math.PI / 2;
       pts.push(new THREE.Vector3(
-        Math.sign(k) * w * Math.pow(Math.max(u, 0.001), 0.62),
-        d * Math.pow(u, 1.12), z));
+        Math.sign(kk) * w * Math.pow(Math.sin(ang), 0.62),
+        kY + (gY - kY) * Math.pow(1 - Math.cos(ang), 1.45), z));
     }
     return pts;
   };
@@ -1669,52 +1689,218 @@ function buildDeckBoat(len: number): THREE.Group {
     t.pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
     for (let i = 0; i < 3; i++) { t.col.push(col.r, col.g, col.b); t.uv.push(0, 0); }
   };
-  const rings = [station(0)];
+  const rings: THREE.Vector3[][] = [];
+  for (let i = 0; i <= ST; i++) rings.push(station(i / ST));
   for (let i = 0; i < ST; i++) {
-    const r0 = rings[i], r1 = station((i + 1) / ST);
-    rings.push(r1);
+    const r0 = rings[i], r1 = rings[i + 1];
     for (let j = 0; j < r0.length - 1; j++) {
-      // наружная обшивка (нормали наружу при обходе по часовой?)
       tri(r0[j], r0[j + 1], r1[j + 1], cHull);
       tri(r0[j], r1[j + 1], r1[j], cHull);
     }
   }
-  // транец кормы — плоская доска (веером от центра)
+  // транец — плоская доска с лёгким наклоном (веером от центра)
   {
     const r = rings[0];
-    const c = new THREE.Vector3(0, depthAt(0) * 0.55, -len / 2 - 0.015);
+    const c = new THREE.Vector3(0, (keel(0) + sheer(0)) * 0.5, -len / 2 - 0.02);
     for (let j = 0; j < r.length - 1; j++) tri(c, r[j], r[j + 1], cHullD);
+    // окрашенная панель поверх транца (борт яла красили в тон кораблю)
+    bakeInto(t, new THREE.BoxGeometry(halfW(0) * 1.9, depth * 0.42, 0.03), cPaint,
+      0, keel(0) + depth * 0.18, -len / 2 - 0.03, new THREE.Euler(0.1, 0, 0));
+    // ахтерштевень
+    bakeInto(t, new THREE.BoxGeometry(0.07, depth * 0.85, 0.08), cHullD,
+      0, (keel(0) + sheer(0)) * 0.5, -len / 2 - 0.01);
   }
-  // нос — острая точка (шпангоуты сходятся) + форштевень
+  // нос: сход шпангоутов + НАКЛОННЫЙ форштевень (продолжение киля вверх)
   {
     const r = rings[ST];
-    const c = new THREE.Vector3(0, depthAt(1) * 0.5 + lift(1) * 0.5, len / 2 + 0.02);
+    const c = new THREE.Vector3(0, (keel(1) + sheer(1)) * 0.5 + 0.02, len / 2 + 0.015);
     for (let j = 0; j < r.length - 1; j++) tri(c, r[j + 1], r[j], cHull);
-    bakeInto(t, new THREE.BoxGeometry(0.07, depth * 0.9, 0.09), cHullD, 0, depth * 0.55, len / 2 - 0.02,
-      new THREE.Euler(-0.35, 0, 0));
+    const dy = sheer(1) - keel(1);
+    const dz = depth * 0.34; // наклон вперёд
+    bakeInto(t, new THREE.BoxGeometry(0.07, Math.hypot(dy, dz) * 0.98, 0.09), cHullD,
+      0, (keel(1) + sheer(1)) * 0.5, len / 2 + dz * 0.28,
+      new THREE.Euler(Math.atan2(dz, dy), 0, 0));
   }
-  // киль и фальшкиль
-  bakeInto(t, new THREE.BoxGeometry(0.06, 0.07, len * 0.86), cHullD, 0, 0.02, 0);
-  // банки (сиденья) — поперёк, по бортам до планширя
-  for (const s of [0.3, 0.62]) {
-    const w = halfW(s) * 0.92, y = (depthAt(s) + lift(s)) * 0.82;
-    bakeInto(t, new THREE.BoxGeometry(w * 2, 0.055, 0.24), cGun, 0, y, (s - 0.5) * len);
+  // киль + фальшкиль (рокер усреднён — прямые сегменты)
+  bakeInto(t, new THREE.BoxGeometry(0.055, 0.07, len * 0.55), cHullD, 0, keel(0.5) - 0.01, 0);
+  bakeInto(t, new THREE.BoxGeometry(0.055, 0.06, len * 0.2), cHullD,
+    0, (keel(0.5) + keel(0.78)) * 0.5 - 0.01, len * 0.14);
+  // ПЛАНШИРЬ — точёный привальный брус ГЛАДКОЙ лентой по кромке
+  // (внешняя точка кольца → внутренняя на 14% уже и чуть выше)
+  const gunStrips: { pts: THREE.Vector3[][]; col: THREE.Color }[] = [];
+  for (const sign of [-1, 1] as const) {
+    const outer: THREE.Vector3[] = [], inner: THREE.Vector3[] = [];
+    for (let i = 0; i <= ST; i++) {
+      const s = i / ST;
+      const w = Math.max(halfBeam * 0.035, halfW(s));
+      outer.push(new THREE.Vector3(sign * w, sheer(s), (s - 0.5) * len));
+      inner.push(new THREE.Vector3(sign * w * 0.84, sheer(s) + 0.035, (s - 0.5) * len));
+    }
+    gunStrips.push({ pts: [outer, inner], col: cGun });
   }
-  // планширь — точёный привальный брус вдоль верхней кромки обоих бортов
-  for (let i = 0; i < rings.length; i++) {
-    const r = rings[i];
-    const a = r[0], b = r[r.length - 1];
-    const seg = Math.max(0.1, len / ST * 1.3);
-    bakeInto(t, new THREE.BoxGeometry(0.07, 0.075, seg), cGun, a.x * 0.96, a.y + 0.03, a.z);
-    bakeInto(t, new THREE.BoxGeometry(0.07, 0.075, seg), cGun, b.x * 0.96, b.y + 0.03, b.z);
+  for (const g of gunStrips) {
+    const [o, ii] = g.pts;
+    for (let i = 0; i < ST; i++) {
+      tri(o[i], o[i + 1], ii[i + 1], g.col);
+      tri(o[i], ii[i + 1], ii[i], g.col);
+    }
   }
+  // банки (сиденья) + кормовое сиденье с заспинной доской
+  const thwarts: { z: number; y: number }[] = [];
+  for (const s of [0.30, 0.52, 0.73]) {
+    const w = halfW(s) * 0.9, y = sheer(s) - 0.235;
+    thwarts.push({ z: (s - 0.5) * len, y });
+    bakeInto(t, new THREE.BoxGeometry(w * 2, 0.05, len * 0.075), cGun, 0, y, (s - 0.5) * len);
+  }
+  {
+    const s = 0.13;
+    const w = halfW(s) * 0.92, y = sheer(s) - 0.27;
+    bakeInto(t, new THREE.BoxGeometry(w * 2, 0.05, len * 0.1), cGun, 0, y, (s - 0.5) * len);
+    // заспинная доска кормового сиденья
+    bakeInto(t, new THREE.BoxGeometry(w * 1.7, len * 0.055, 0.03), cGun,
+      0, y + 0.24, (s - 0.09 - 0.5) * len, new THREE.Euler(-0.12, 0, 0));
+  }
+  // подуключины (накладки на планшире у гребной банки) с нагелями
+  const rowS = 0.52;
+  const rowZ = (rowS - 0.5) * len;
+  const rowW = halfW(rowS);
+  for (const sign of [-1, 1] as const) {
+    bakeInto(t, new THREE.BoxGeometry(0.16, 0.06, len * 0.09), cHullD,
+      sign * (rowW + 0.03), sheer(rowS) + 0.01, rowZ);
+    bakeInto(t, new THREE.CylinderGeometry(0.016, 0.016, 0.1, 5), cHullD,
+      sign * (rowW + 0.03), sheer(rowS) + 0.08, rowZ - 0.05);
+  }
+  // носовой фалинь-рым на форштевне
+  bakeInto(t, new THREE.TorusGeometry(0.05, 0.014, 5, 10), cHullD,
+    0, sheer(1) - 0.06, len / 2 + 0.02);
   const hull = new THREE.Mesh(bakedGeo(t), new THREE.MeshStandardMaterial({
     vertexColors: true, metalness: 0.04, side: THREE.DoubleSide,
     normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
     normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
   }));
   group.add(hull);
+
+  // --- РУЛЬ на транце с РУМПЕЛЕМ (анимация в launch.ts) ---
+  const rudder = new THREE.Group();
+  {
+    const rt: BakedTarget = { pos: [], col: [], uv: [] };
+    // перо руля: от транца вниз, ниже киля
+    bakeInto(rt, new THREE.BoxGeometry(0.045, depth * 0.62, len * 0.16), cHullD,
+      0, -depth * 0.16, -len * 0.085);
+    // петли-стрепки к транцу
+    bakeInto(rt, new THREE.BoxGeometry(0.06, 0.05, len * 0.1), new THREE.Color(0x3a3f46),
+      0, -depth * 0.02, 0);
+    rudder.add(new THREE.Mesh(bakedGeo(rt), new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.9, side: THREE.DoubleSide,
+    })));
+    // румпель: от головы руля ВНУТРЬ шлюпки (по курсу +Z)
+    const tiller = new THREE.Mesh(
+      new THREE.BoxGeometry(0.035, 0.035, len * 0.22),
+      new THREE.MeshStandardMaterial({ color: 0x9d7c50, roughness: 0.85 }));
+    tiller.geometry.translate(0, 0, len * 0.11);
+    tiller.position.set(0, sheer(0) - 0.16, -len / 2 + 0.06);
+    tiller.userData.tiller = true;
+    rudder.add(tiller);
+    rudder.userData.tiller = tiller;
+    rudder.position.set(0, keel(0) + depth * 0.42, -len / 2 - 0.01);
+    group.add(rudder);
+  }
+
+  // --- ВЁСЛА (2 шт.): вальный стержень + лопасть; лежат на планширях
+  //     ЛОПАСТЯМИ К НОСУ (ял: «вёсла укладываются на банки по бортам
+  //     лопастями на нос»). Пивот — уключина; при спуске на воду
+  //     разворачиваются наружу и ГРЕБУТ (launch.ts). Весло ≈ 0.64·L
+  //     (ял-6: 3.9 м при длине 6.1 м) ---
+  const oars: THREE.Object3D[] = [];
+  const oarLen = len * 0.62;
+  for (const sign of [-1, 1] as const) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sign * (rowW + 0.02), sheer(rowS) + 0.02, rowZ);
+    const ot: BakedTarget = { pos: [], col: [], uv: [] };
+    const shaft = new THREE.CylinderGeometry(0.02, 0.028, oarLen, 6);
+    shaft.rotateZ(Math.PI / 2);            // вдоль X
+    shaft.translate((0.7 - 0.5) * oarLen, 0, 0); // валек 30% внутрь, 70% наружу
+    bakeInto(ot, shaft, cGun, 0, 0, 0);
+    // лопасть — плоская, на внешнем конце (сужение к воде)
+    bakeInto(ot, new THREE.BoxGeometry(oarLen * 0.26, 0.022, 0.068), cGun,
+      oarLen * 0.56, 0, 0);
+    bakeInto(ot, new THREE.BoxGeometry(oarLen * 0.06, 0.03, 0.045), cHullD,
+      oarLen * 0.31, 0, 0); // валёк-утолщение у рукояти
+    const oar = new THREE.Mesh(bakedGeo(ot), new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.85, side: THREE.DoubleSide,
+    }));
+    oar.scale.x = sign;                    // зеркалим на левый борт
+    pivot.add(oar);
+    // убрано: вдоль планширя, лопасть к НОСУ (+Z), чуть наклонено внутрь
+    const stowQ = new THREE.Quaternion()
+      .setFromEuler(new THREE.Euler(0, -sign * Math.PI / 2, 0))
+      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -sign * 0.06)));
+    pivot.quaternion.copy(stowQ);
+    pivot.userData.side = sign;
+    pivot.userData.stowQ = stowQ.clone();
+    group.add(pivot);
+    oars.push(pivot);
+  }
+
+  group.userData.deckBoat = true;
+  group.userData.boatLen = len;
+  group.userData.beam = beam;
+  group.userData.gunY = sheer(rowS);       // планширь над килем (точка подвеса)
+  group.userData.gunX = rowW;              // полуширина у гребной банки
+  group.userData.hangZ = len * 0.3;        // точки подвеса по длине
+  group.userData.rowZ = rowZ;              // гребная банка (z)
+  group.userData.thwartY = sheer(rowS) - 0.235;
+  group.userData.thwarts = thwarts;
+  group.userData.oars = oars;
+  group.userData.tiller = rudder.userData.tiller as THREE.Object3D;
   return group;
+}
+
+/** Шлюпка на шлюпбалках за кормой: группа + всё для спуска на воду
+ *  (launch.ts): точки подвеса талов, убранное положение, ДИНАМИЧЕСКИЕ
+ *  фалы (4 линии от голов девиц к планширю — удлиняются при спуске),
+ *  вёсла на уключинах и румпель. */
+export interface BoatVis {
+  group: THREE.Group;
+  len: number;
+  beam: number;
+  davitHeads: THREE.Vector3[];   // головы шлюпбалок (локально корабля), 2 шт.
+  stowPos: THREE.Vector3;        // убрана: позиция группы
+  stowRotY: number;              // убрана: поворот (нос ОТ корабля)
+  gunY: number;                  // планширь над килем шлюпки
+  gunX: number;                  // полуширина в точке подвеса
+  hangZ: number;                 // точки подвеса по длине шлюпки
+  falls: THREE.LineSegments;     // 4 динамические линии талов
+  oars: THREE.Object3D[];        // вёсла (пивоты у уключин)
+  rowZ: number;                  // z гребной банки (в локалах шлюпки)
+  tiller?: THREE.Object3D;       // румпель (поворачивается с рулём)
+}
+
+/** Обновить фалы-тали по ТЕКУЩЕМУ положению шлюпки (пока она в
+ *  группе мелких деталей): 4 линии от голов девиц к планширю
+ *  (нос/корма × оба борта). Вызывается каждый кадр при спуске/
+ *  подъёме (BoatLaunch) и один раз при постройке. */
+export function updateBoatFalls(b: BoatVis, stub = false) {
+  const attr = b.falls.geometry.getAttribute('position') as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+  let i = 0;
+  for (const head of b.davitHeads) {
+    for (const zo of [b.hangZ, -b.hangZ]) {
+      if (stub) {
+        // спущена: короткие хвосты талов свисают с девиц
+        v.set(head.x, head.y - 1.05, head.z);
+      } else {
+        // точка планширя шлюпки в локалах корабля
+        v.set(b.gunX, b.gunY, zo)
+          .applyEuler(new THREE.Euler(0, b.group.rotation.y, 0))
+          .add(b.group.position);
+      }
+      attr.setXYZ(i, head.x, head.y, head.z);
+      attr.setXYZ(i + 1, v.x, v.y, v.z);
+      i += 2;
+    }
+  }
+  attr.needsUpdate = true;
 }
 
 /** Мелкие детали, видимые только вблизи (LOD): выбленки на вантах,
@@ -1725,7 +1911,7 @@ function buildDeckBoat(len: number): THREE.Group {
 function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   group: THREE.Group;
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
-  boat?: THREE.Group;
+  boat?: BoatVis;
   anchors?: AnchorVis[];
 } {
   const L = P.length;
@@ -1776,16 +1962,15 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
   // --- ШЛЮПКА ЗА КОРМОЙ НА ШЛЮПБАЛКАХ (по замечанию игрока: прикреплена
-  //     ЛИБО СЗАНИ, либо вдоль борта — выбрана корма): круглодонное
-  //     корыто (buildDeckBoat) подвешено на ДВУХ наклонных девицах
-  //     у транца, длина ВДОЛЬ корабля, нос к носу; фалы-концы от
-  //     поперечины к планширю шлюпки. Ломаемая: попадание рядом —
-  //     разлетается щепой, clearDamage восстанавливает ---
-  let boat: THREE.Group | undefined;
+  //     сзади; РАЗВЕРНУТА носом ОТ корабля): ял на ДВУХ наклонных
+  //     девицах у транца; фалы-тали — ДИНАМИЧЕСКИЕ линии (4 шт.),
+  //     удлиняются при спуске на воду (launch.ts). Ломаемая:
+  //     попадание рядом — разлетается щепой, clearDamage восстанавливает ---
+  let boat: BoatVis | undefined;
   {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
-    boat = buildDeckBoat(bl);
-    boat.rotation.y = 0;               // длина шлюпки — ВДОЛЬ корабля
+    const bg = buildDeckBoat(bl);
+    bg.rotation.y = Math.PI;            // НОС ОТ КОРАБЛЯ (разворот по замечанию)
     const q = P.quarter ?? 0;
     const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
     const ttS = clamp2((sternZb + L / 2) / L, 0, 1);
@@ -1795,10 +1980,8 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
       : hullProfile(ttS, P).bulwark;
     const zB = sternZb - bl * 0.28;    // большая часть — ЗА транцем, над водой
     const yB = railTop + 0.3;          // киль шлюпки над планширем кормы
-    boat.position.set(0, yB, zB);
-    boat.userData.deckBoat = true;
-    boat.userData.boatLen = bl;
-    group.add(boat);
+    bg.position.set(0, yB, zB);
+    group.add(bg);
     // шлюпбалки-девицы: наклонные кранбалки от планширя за корму
     const xb = Math.max(0.55, P.beam * 0.17);
     const headY = railTop + 1.6, headZ = sternZb - 0.55;
@@ -1812,15 +1995,30 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     }
     // поперечина между головами девиц
     bakeInto(t, new THREE.BoxGeometry(xb * 2 + 0.2, 0.09, 0.09), cWoodD, 0, headY, headZ);
-    // фалы-тали: от голов поперечины вниз к планширю шлюпки (нос/корма)
-    const depth = bl * 0.18;
-    const gunY = yB + depth * 0.92;
-    for (const side of [-1, 1] as const) {
-      for (const zs of [zB + bl * 0.27, zB - bl * 0.27]) {
-        addLine(new THREE.Vector3(side * xb * 0.96, headY - 0.04, headZ),
-          new THREE.Vector3(side * bl * 0.13, gunY, zs));
-      }
-    }
+    // ФАЛЫ-ТАЛИ — ДИНАМИЧЕСКИЕ линии (4): от голов девиц к планширю
+    // шлюпки (нос/корма, оба борта); при спуске удлиняются, при
+    // поднятой шлюпке на воде — короткие свисающие хвосты
+    const fallGeo = new THREE.BufferGeometry();
+    fallGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(8 * 3), 3));
+    const falls = new THREE.LineSegments(fallGeo, ropeMat);
+    falls.frustumCulled = false;
+    group.add(falls);
+    const ud = bg.userData as {
+      beam: number; gunY: number; gunX: number; hangZ: number; rowZ: number;
+      oars: THREE.Object3D[]; tiller: THREE.Object3D;
+    };
+    boat = {
+      group: bg, len: bl, beam: ud.beam,
+      davitHeads: [
+        new THREE.Vector3(-xb, headY - 0.04, headZ),
+        new THREE.Vector3(xb, headY - 0.04, headZ),
+      ],
+      stowPos: new THREE.Vector3(0, yB, zB),
+      stowRotY: Math.PI,
+      gunY: ud.gunY, gunX: ud.gunX, hangZ: ud.hangZ,
+      falls, oars: ud.oars, rowZ: ud.rowZ, tiller: ud.tiller,
+    };
+    updateBoatFalls(boat);
   }
 
   // --- НАСТОЯЩИЕ ЯКОРЯ У СКУЛ: убраны — лежат ВДОЛЬ борта (по
@@ -2641,7 +2839,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // ломаемые детали палубы: срываются попаданиями / давлением воды;
   // шлюпка — тоже ломаемая: прямое попадание разлетается щепой
   const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figurehead, rudderMesh];
-  if (detailRes.boat) breakables.push(detailRes.boat);
+  if (detailRes.boat) breakables.push(detailRes.boat.group);
 
   // материалы дерева для скина «цвет корабля» (собираем ДО того, как
   // в группу добавится экипаж с общим CREW_MAT — его тонировать нельзя)
