@@ -859,7 +859,13 @@ export class Game {
     np.gold = gold;
     np.planks = planks;
     np.cargo = cargo;
-    np.crew = Math.min(crew, np.preset.maxCrew);
+    // экипаж: в порту команда переходит на новый корабль (в пределах
+    // штата), а на ПОЛИГОНЕ (бесплатная смена) — набирается под
+    // НОВЫЙ корабль по норме (по замечанию игрока: количество команды
+    // должно меняться вместе с судном)
+    np.crew = free
+      ? Math.round(np.preset.maxCrew * 0.8)
+      : Math.min(crew, np.preset.maxCrew);
     np.sailTarget = sailTarget;
     np.sailOverride = null;
     np.anchored = old.anchored;
@@ -880,7 +886,8 @@ export class Game {
     this.worldGroup.add(np.foam.mesh);
     this.worldGroup.add(np.wake.mesh);
     this.rig.snap();
-    this.pushMessage(`⚓ Новый корабль: ${np.preset.name} (${np.preset.shipClass})`);
+    this.pushMessage(`⚓ Новый корабль: ${np.preset.name} (${np.preset.shipClass})` +
+      (free ? ` — экипаж ${np.crew}/${np.preset.maxCrew}` : ''));
     return null;
   }
 

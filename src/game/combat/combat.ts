@@ -573,9 +573,10 @@ export class CombatSystem {
           } else if (hit.mast < 0 && pr.type === 'ball' && this.canPunch(pr, t)) {
             // изрешечённый борт не держит ядро: ПРОБИТИЕ НАСКВОЗЬ —
             // входная пробоина/урон уже нанесены, ядро теряет часть
-            // энергии и выходит с другой стороны (exitHull)
+            // энергии и ВЫЛЕТАЕТ с другой стороны (exitHull), не
+            // застревая и не оставаясь на экране
             pr.hullPierce = t;
-            pr.vel.multiplyScalar(0.5);
+            pr.vel.multiplyScalar(0.6);
             punchedThrough = true;
           }
           break;
@@ -757,33 +758,39 @@ export class CombatSystem {
     }
 
     // --- корпус (бокс в связных координатах) ---
+    // верхняя граница — уровень фальшборта/квартердека (+запас на перила):
+    // ВЫШЕ палуба открыта — снаряды летят НАД ней (такелаж/паруса — свои
+    // проверки); фантомной «стены» над палубой нет — ядра не «застревают»
+    // в воздухе и не заваливаются внутрь силуэта (по замечанию игрока)
+    const hullTop = t.preset.freeboard * 1.17 + (t.preset.quarter ?? 0) + 0.85;
     const L = t.preset.length, B = t.preset.beam;
     const c = this.lcur;
     if (Math.abs(c.z) < L * 0.52 && Math.abs(c.x) < B * 0.62
-      && c.y > -t.preset.draft * 0.8 && c.y < t.preset.freeboard + L * 0.35) {
+      && c.y > -t.preset.draft * 0.8 && c.y < hullTop) {
       return { mast: -1, lp: c.clone(), dir: this.hitDir.clone() };
     }
     return null;
   }
 
   /** Ядро ПРОБИВАЕТ корпус НАСКВОЗЬ, когда борт уже изрешечён
-   *  (прочность < 45%): разрушенная обшивка не держит удар — ядро
-   *  проходит насквозь и вылетает с другой стороны. Свежий борт
-   *  ядро принимает в себя (застревает). Картечь/книппель/
-   *  зажигательное не пробивают никогда. */
+   *  (прочность < 50% — «сильно повреждён»): разрушенная обшивка не
+   *  держит удар — ядро проходит насквозь и вылетает с другой
+   *  стороны, НЕ застревая в дереве. Свежий борт ядро принимает
+   *  в себя. Картечь/книппель/зажигательное не пробивают никогда. */
   private canPunch(pr: Projectile, t: Ship): boolean {
     if (pr.hullPierce) return false;
-    return t.hullHP / t.hullMax < 0.45;
+    return t.hullHP / t.hullMax < 0.5;
   }
 
-  /** Снаряд ещё внутри корпуса t? (тот же бокс, что в hitTest) */
+  /** Снаряд ещё внутри корпуса t? (тот же бокс, что в hitTest —
+   *  верх по фальшборту/квартердеку, над палубой «неба» нет) */
   private insideHull(pr: Projectile, t: Ship): boolean {
     this.invQ.copy(t.quaternion).invert();
     this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
     return Math.abs(this.lcur.z) < t.preset.length * 0.52
       && Math.abs(this.lcur.x) < t.preset.beam * 0.62
       && this.lcur.y > -t.preset.draft * 0.8
-      && this.lcur.y < t.preset.freeboard + t.preset.length * 0.35;
+      && this.lcur.y < t.preset.freeboard * 1.17 + (t.preset.quarter ?? 0) + 0.85;
   }
 
   /** Снаряд ВЫЛЕТЕЛ из пробитого корпуса: выходная пробоина с другой

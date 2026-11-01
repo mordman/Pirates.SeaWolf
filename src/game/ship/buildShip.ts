@@ -408,7 +408,7 @@ export interface ShipVisual {
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   /** материал обшивки (для покупки украшений бортов) */
   hullMat: THREE.MeshStandardMaterial;
-  /** Шлюпка на палубе (круглодонная, лежит поперёк) — ломаемая */
+  /** Шлюпка за кормой на шлюпбалках (круглодонная, вдоль) — ломаемая */
   boat?: THREE.Group;
   /** Якоря у скул: убраны — лежат ВДОЛЬ борта; отдача (Ship.anchored)
    *  вываливает якорь и опускает его под воду на цепи */
@@ -1212,10 +1212,9 @@ function buildQuarterdeck(
 
   // окраска — В ТОН КОРПУСА (просьба игрока): надстройка красится той
   // же краской, что и борт; поручни/планшири — отделка цветом trim
-  const cWall = new THREE.Color(P.colors.hull).lerp(new THREE.Color(0xffffff), 0.07);
+  const cWall = new THREE.Color(P.colors.hull);
   const cWallD = new THREE.Color(P.colors.trim);
   const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.92);
-  const cGold = new THREE.Color(0xc9a24a);
   const cCopper = new THREE.Color(0x9a6a3a);
   const cWoodPeg = new THREE.Color(0xb08a58);
   const t: BakedTarget = { pos: [], col: [], uv: [] };
@@ -1258,42 +1257,75 @@ function buildQuarterdeck(
   // торец бортового фальшборта у передней кромки — было −0.52)
   const stairX = Math.max(0.55, hullHalfWidthAt(P, ttStair, deckYAt(frontZ)) - 0.78);
 
-  // === БОРТА: невысокий сплошной фальшборт от главной палубы до
-  // бортика над настилом + ОТКРЫТЫЕ ПЕРИЛА со стойками (по замечанию
-  // игрока: не сплошные стены-«коробка» — квартердек открытый и лёгкий;
-  // под настилом обшивка сплошная, щелей и просветов нет) ===
-  const SW = 14;
+  // === БОРТА: ГЛАДКАЯ сплошная обшивка от главной палубы до бортика
+  // над настилом + ОТКРЫТЫЕ ПЕРИЛА со стойками (по замечанию игрока:
+  // не «коробка» и НЕ СТУПЕНЧАТАЯ «лесенка» из секций — боковинка
+  // гладкая, единая поверхность). ВАЖНО: вся конструкция — В ЦВЕТ
+  // КОРПУСА (просьба игрока), из отделки только тонкий планширь —
+  // как у фальшборта главной палубы ===
   const parapetH = 0.14;             // бортик над настилом
   const balH = railH - parapetH;     // высота открытых перил над бортиком
-  for (let s = 0; s < SW; s++) {
-    const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
-    const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
-    const zc = (z0 + z1) / 2;
-    const tt = clamp2((zc + L / 2) / L, 0, 1);
-    const yBase = deckYAt(zc);
-    const hw = Math.max(0.3, hullHalfWidthAt(P, tt, yBase)); // ширина на уровне палубы
-    const h = floorY(zc) + parapetH - yBase; // сплошная часть — до бортика
-    for (const side of [-1, 1]) {
-      bakeInto(t, new THREE.BoxGeometry(0.26, h, (z1 - z0) * 1.04), cWall,
-        side * (hw - 0.03), yBase + h / 2, zc);
-      // стойка перил на стыке сегментов
-      bakeInto(t, new THREE.BoxGeometry(0.11, balH, 0.11), cWallD,
-        side * (hw - 0.03), floorY(zc) + parapetH + balH / 2, z1);
+  const cWallX = new THREE.Color(P.colors.hull);                    // обшивка — точный цвет корпуса
+  const cPost = new THREE.Color(P.colors.hull).multiplyScalar(1.3); // стойки — чуть светлее
+  const cHand = new THREE.Color(P.colors.hull).multiplyScalar(1.55); // поручень/планширь — светлее корпуса
+  // гладкая «лента» вдоль кривой борта: непрерывная геометрия
+  // (внешняя+внутренняя грани, верх, низ, торцы) — без швов-ступеней
+  const smoothBand = (
+    n: number,
+    at: (f: number) => { x: number; z: number; y0: number; y1: number; hw: number },
+    color: THREE.Color,
+  ) => {
+    const pts: { x: number; z: number; y0: number; y1: number; hw: number }[] = [];
+    for (let i = 0; i <= n; i++) pts.push(at(i / n));
+    const quad = (a: number[], b: number[], c: number[], d: number[]) => {
+      t.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
+        a[0], a[1], a[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+      for (let k = 0; k < 6; k++) { t.col.push(color.r, color.g, color.b); t.uv.push(0, 0); }
+    };
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[i + 1];
+      quad([a.x + a.hw, a.y0, a.z], [b.x + b.hw, b.y0, b.z], [b.x + b.hw, b.y1, b.z], [a.x + a.hw, a.y1, a.z]);
+      quad([a.x - a.hw, a.y0, a.z], [b.x - b.hw, b.y0, b.z], [b.x - b.hw, b.y1, b.z], [a.x - a.hw, a.y1, a.z]);
+      quad([a.x - a.hw, a.y1, a.z], [b.x - b.hw, b.y1, b.z], [b.x + b.hw, b.y1, b.z], [a.x + a.hw, a.y1, a.z]);
+      quad([a.x - a.hw, a.y0, a.z], [b.x - b.hw, b.y0, b.z], [b.x + b.hw, b.y0, b.z], [a.x + a.hw, a.y0, b.z]);
+      if (i === 0) quad([a.x - a.hw, a.y0, a.z], [a.x + a.hw, a.y0, a.z], [a.x + a.hw, a.y1, a.z], [a.x - a.hw, a.y1, a.z]);
+      if (i === n - 1) quad([b.x - b.hw, b.y0, b.z], [b.x + b.hw, b.y0, b.z], [b.x + b.hw, b.y1, b.z], [b.x - b.hw, b.y1, b.z]);
     }
-  }
-  // поручень и средний прогон вдоль борта (по сегментам — повторяют кривизну)
-  for (const side of [-1, 1]) {
-    for (const [ry, rh] of [[parapetH + balH + 0.045, 0.1], [parapetH + balH * 0.5, 0.06]] as [number, number][]) {
-      for (let s = 0; s < SW; s++) {
-        const z0 = THREE.MathUtils.lerp(sternZ, frontZ, s / SW);
-        const z1 = THREE.MathUtils.lerp(sternZ, frontZ, (s + 1) / SW);
-        const zc = (z0 + z1) / 2;
-        const tt = clamp2((zc + L / 2) / L, 0, 1);
-        const hw = Math.max(0.3, hullHalfWidthAt(P, tt, deckYAt(zc)));
-        bakeInto(t, new THREE.BoxGeometry(0.3, rh, (z1 - z0) * 1.05),
-          rh > 0.08 ? new THREE.Color(P.colors.trim).multiplyScalar(1.35) : cWallD,
-          side * (hw - 0.03), floorY(zc) + ry, zc);
-      }
+  };
+  const SW = 26;
+  for (const side of [-1, 1] as const) {
+    // ширина на ВЫСОТЕ настила — обшивка встаёт вплотную к кромке
+    // фальшборта (продолжение линии борта вверх, без «западания»)
+    const hwAt = (z: number) => {
+      const tt = clamp2((z + L / 2) / L, 0, 1);
+      return Math.max(0.3, hullHalfWidthAt(P, tt, floorY(z)));
+    };
+    // сплошная обшивка: главная палуба -> бортик над настилом
+    smoothBand(SW, f => {
+      const z = THREE.MathUtils.lerp(sternZ, frontZ, f);
+      return { x: side * (hwAt(z) - 0.02), z, y0: deckYAt(z), y1: floorY(z) + parapetH, hw: 0.13 };
+    }, cWallX);
+    // тонкий планширь по верхней кромке обшивки (в тон корпуса — по
+    // замечанию игрока вся наружная часть красится корпусом)
+    smoothBand(SW, f => {
+      const z = THREE.MathUtils.lerp(sternZ, frontZ, f);
+      return { x: side * (hwAt(z) - 0.02), z, y0: floorY(z) + parapetH - 0.02, y1: floorY(z) + parapetH + 0.09, hw: 0.17 };
+    }, cHand);
+    // поручень и средний прогон — ГЛАДКИЕ ленты по кривизне палубы
+    smoothBand(SW, f => {
+      const z = THREE.MathUtils.lerp(sternZ, frontZ, f);
+      return { x: side * (hwAt(z) - 0.02), z, y0: floorY(z) + parapetH + balH, y1: floorY(z) + parapetH + balH + 0.1, hw: 0.15 };
+    }, cHand);
+    smoothBand(SW, f => {
+      const z = THREE.MathUtils.lerp(sternZ, frontZ, f);
+      return { x: side * (hwAt(z) - 0.02), z, y0: floorY(z) + parapetH + balH * 0.5 - 0.03, y1: floorY(z) + parapetH + balH * 0.5 + 0.03, hw: 0.06 };
+    }, cPost);
+    // стойки перил на бортике — в цвет корпуса
+    const nPosts = Math.max(3, Math.round((frontZ - sternZ) / 0.55));
+    for (let k = 0; k <= nPosts; k++) {
+      const z = THREE.MathUtils.lerp(sternZ, frontZ, k / nPosts);
+      bakeInto(t, new THREE.BoxGeometry(0.11, balH, 0.11), cPost,
+        side * (hwAt(z) - 0.02), floorY(z) + parapetH + balH / 2, z);
     }
   }
 
@@ -1305,9 +1337,9 @@ function buildQuarterdeck(
     const yBotS = deckYAt(sternZ) + 0.25;
     const hS = floorY(sternZ) + railH - yBotS;
     if (hS > 0.1) {
-      bakeInto(t, new THREE.BoxGeometry(hwS * 2, hS, 0.24), cWall, 0, yBotS + hS / 2, sternZ + 0.1);
+      bakeInto(t, new THREE.BoxGeometry(hwS * 2, hS, 0.24), cWallX, 0, yBotS + hS / 2, sternZ + 0.1);
       bakeInto(t, new THREE.BoxGeometry(hwS * 2 + 0.3, 0.11, 0.34),
-        new THREE.Color(P.colors.trim).multiplyScalar(1.35), 0, floorY(sternZ) + railH + 0.05, sternZ + 0.1);
+        cHand, 0, floorY(sternZ) + railH + 0.05, sternZ + 0.1);
     }
   }
 
@@ -1337,9 +1369,9 @@ function buildQuarterdeck(
         bakeInto(t, new THREE.CylinderGeometry(0.028, 0.04, balH - 0.24, 5), cWall, x, y0 + balH / 2, frontZ - 0.08);
         bakeInto(t, new THREE.SphereGeometry(0.05, 5, 4), cWall, x, y0 + balH * 0.52, frontZ - 0.08);
       }
-      // поручень-отделка сегмента (вровень с бортовыми)
+      // поручень сегмента (вровень с бортовыми, в тон корпуса)
       bakeInto(t, new THREE.BoxGeometry(wSeg + 0.18, 0.1, 0.2),
-        new THREE.Color(P.colors.trim).multiplyScalar(1.35), xc, y0 + balH + 0.04, frontZ - 0.08);
+        cHand, xc, y0 + balH + 0.04, frontZ - 0.08);
     }
   }
 
@@ -1354,7 +1386,9 @@ function buildQuarterdeck(
       const y = deckYAt(z) + (q * (i + 1)) / nSteps;
       bakeInto(t, new THREE.BoxGeometry(0.86, 0.07, 0.36), cFloor, xStair, y - 0.035, z);
     }
-    // перила: от центра нижней ступени до центра верхней — без выноса
+    // перила: от центра нижней ступени до центра верхней — без выноса;
+    // ПОРУЧЕНЬ ПОД УГЛОМ, ВДОЛЬ СТУПЕНЕЙ (по замечанию игрока: не
+    // прямой) — наклон вокруг ОСИ X (длина трапа вдоль Z), а не вокруг Z
     const yTop = floorY(zTopStep) + parapetH + balH * 0.85;
     const yBot = deckYAt(zBotStep) + 0.92;
     const xRail = xStair - side * 0.42; // внутренняя сторона
@@ -1362,16 +1396,16 @@ function buildQuarterdeck(
       const f = k / 2;
       const z = THREE.MathUtils.lerp(zBotStep, zTopStep, f);
       const y = THREE.MathUtils.lerp(yBot, yTop, f);
-      bakeInto(t, new THREE.BoxGeometry(0.09, 0.95, 0.09), cWallD, xRail, y - 0.42, z);
+      bakeInto(t, new THREE.BoxGeometry(0.09, 0.95, 0.09), cPost, xRail, y - 0.42, z);
     }
     const railLen = Math.hypot(zTopStep - zBotStep, yTop - yBot);
-    const railAng = Math.atan2(yTop - yBot, -(zTopStep - zBotStep));
+    const railAng = Math.atan2(yTop - yBot, -(zTopStep - zBotStep)); // угол подъёма
     const rail = new THREE.BoxGeometry(0.08, 0.08, railLen);
-    bakeInto(t, rail, cGold, xRail, (yTop + yBot) / 2, (zTopStep + zBotStep) / 2,
-      new THREE.Euler(0, 0, railAng));
+    bakeInto(t, rail, cHand, xRail, (yTop + yBot) / 2, (zTopStep + zBotStep) / 2,
+      new THREE.Euler(railAng, 0, 0)); // наклон ВДОЛЬ трапа (вокруг X)
     const railMid = new THREE.BoxGeometry(0.05, 0.05, railLen);
-    bakeInto(t, railMid, cWallD, xRail, (yTop + yBot) / 2 - 0.32, (zTopStep + zBotStep) / 2,
-      new THREE.Euler(0, 0, railAng));
+    bakeInto(t, railMid, cPost, xRail, (yTop + yBot) / 2 - 0.32, (zTopStep + zBotStep) / 2,
+      new THREE.Euler(railAng, 0, 0));
   }
 
   // === НАКТОУЗ (компас): тумба перед штурвалом, лампа под стеклом,
@@ -1440,16 +1474,28 @@ function buildQuarterdeck(
   const pinZ0 = sternZ + L * 0.05, pinZ1 = mastZ - 0.9;
   const nPegs = Math.max(2, Math.floor((pinZ1 - pinZ0) / 0.6));
   for (const side of [-1, 1]) {
-    const zc = (pinZ0 + pinZ1) / 2;
-    const tt = clamp2((zc + L / 2) / L, 0, 1);
-    const xPin = Math.max(0.4, hullHalfWidthAt(P, tt, floorY(zc) + 0.5) - 0.34) * side;
-    bakeInto(t, new THREE.BoxGeometry(0.14, 0.12, pinZ1 - pinZ0), cWallD, xPin, floorY(zc) + 0.5, zc);
+    // планка следует КРИВИЗНЕ борта (у кормы корпус уже — один прямой
+    // брус на постоянном x торчал сквозь обшивку квартердека):
+    // сегменты между колышками + колышки на своей ширине
+    const pegZ: number[] = [];
     for (let i = 0; i < nPegs; i++) {
-      const z = THREE.MathUtils.lerp(pinZ0, pinZ1, nPegs === 1 ? 0.5 : i / (nPegs - 1));
-      bakeInto(t, new THREE.CylinderGeometry(0.03, 0.035, 0.2, 5), cWoodPeg, xPin, floorY(z) + 0.64, z);
+      pegZ.push(THREE.MathUtils.lerp(pinZ0, pinZ1, nPegs === 1 ? 0.5 : i / (nPegs - 1)));
+    }
+    const xAt = (z: number) => {
+      const tt = clamp2((z + L / 2) / L, 0, 1);
+      return Math.max(0.4, hullHalfWidthAt(P, tt, floorY(z) + 0.5) - 0.38) * side;
+    };
+    for (let i = 0; i < pegZ.length - 1; i++) {
+      const za = pegZ[i], zb = pegZ[i + 1], zc = (za + zb) / 2;
+      bakeInto(t, new THREE.BoxGeometry(0.14, 0.12, (zb - za) * 1.06), cWallD,
+        xAt(zc), (floorY(za) + floorY(zb)) / 2 + 0.5, zc);
+    }
+    for (let i = 0; i < nPegs; i++) {
+      const z = pegZ[i];
+      bakeInto(t, new THREE.CylinderGeometry(0.03, 0.035, 0.2, 5), cWoodPeg, xAt(z), floorY(z) + 0.64, z);
       if (i % 2 === 0 && pinRopeEnds.length < 8) {
         pinRopeEnds.push({
-          a: new THREE.Vector3(xPin, floorY(z) + 0.72, z),
+          a: new THREE.Vector3(xAt(z), floorY(z) + 0.72, z),
           b: new THREE.Vector3(0, 2.2, mastZ), // до пяты бизани
         });
       }
@@ -1583,10 +1629,11 @@ export interface AnchorVis {
   buoyFloat: THREE.Vector3;   // буй отдан: на воде над якорем
 }
 
-/** Шлюпка на палубе: КРУГЛОДОННОЕ корыто по шпангоутам — острая
+/** Шлюпка: КРУГЛОДОННОЕ корыто по шпангоутам — острая
  *  носовая оконечность, транцевая корма, развал бортов, точёный
- *  планширь, банки, киль и форштевень. Лежит ПОПЕРЁК палубы
- *  на кильблоках (по замечанию игрока — не капсула вверх дном).
+ *  планширь, банки, киль и форштевень. Подвешена ЗА КОРМОЙ на
+ *  шлюпбалках, длина ВДОЛЬ корабля (по замечанию игрока — не капсула
+ *  вверх дном и не поперёк палубы).
  *  Возвращает группу; киль по y=0, длина по оси Z (нос +Z). */
 function buildDeckBoat(len: number): THREE.Group {
   const group = new THREE.Group();
@@ -1671,7 +1718,7 @@ function buildDeckBoat(len: number): THREE.Group {
 }
 
 /** Мелкие детали, видимые только вблизи (LOD): выбленки на вантах,
- *  шлюпка на палубе (поперёк), якоря вдоль бортов у скул, крышки
+ *  шлюпка за кормой на шлюпбалках, якоря вдоль бортов у скул, крышки
  *  пушечных портов, камбуз с трубой, кранцы, стол экипажа, блоки у
  *  мачт. Ванты с выбленками — ОТДЕЛЬНЫМИ линиями на мачту (detailRigs):
  *  вместе с мачтой они ОБРЫВАЮТСЯ (Ship.snapRigging прячет свою пару) */
@@ -1728,23 +1775,51 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   const tm: BakedTarget = { pos: [], col: [], uv: [] };
   const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
-  // --- ШЛЮПКА НА ПАЛУБЕ: КРУГЛОДОННОЕ корыто (buildDeckBoat), лежит
-  //     ПОПЕРЁК палубы на кильблоках между фок-мачтой и носом —
-  //     по замечанию игрока: настоящая форма, а не капсула вверх дном.
-  //     Ломаемая: попадание рядом — и она разлетается щепой ---
+  // --- ШЛЮПКА ЗА КОРМОЙ НА ШЛЮПБАЛКАХ (по замечанию игрока: прикреплена
+  //     ЛИБО СЗАНИ, либо вдоль борта — выбрана корма): круглодонное
+  //     корыто (buildDeckBoat) подвешено на ДВУХ наклонных девицах
+  //     у транца, длина ВДОЛЬ корабля, нос к носу; фалы-концы от
+  //     поперечины к планширю шлюпки. Ломаемая: попадание рядом —
+  //     разлетается щепой, clearDamage восстанавливает ---
   let boat: THREE.Group | undefined;
   {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
     boat = buildDeckBoat(bl);
-    boat.rotation.y = Math.PI / 2;      // длина шлюпки — ПОПЕРЁК корабля
-    const zB = L * 0.235, yB = deckYAt(0.735) + 0.1;
+    boat.rotation.y = 0;               // длина шлюпки — ВДОЛЬ корабля
+    const q = P.quarter ?? 0;
+    const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
+    const ttS = clamp2((sternZb + L / 2) / L, 0, 1);
+    // верхняя кромка ограждения у транца (квартердек/фальшборт)
+    const railTop = q > 0
+      ? deckYAt(ttS) + q + THREE.MathUtils.clamp(q * 0.55, 0.62, 1.05) + 0.05
+      : hullProfile(ttS, P).bulwark;
+    const zB = sternZb - bl * 0.28;    // большая часть — ЗА транцем, над водой
+    const yB = railTop + 0.3;          // киль шлюпки над планширем кормы
     boat.position.set(0, yB, zB);
     boat.userData.deckBoat = true;
     boat.userData.boatLen = bl;
     group.add(boat);
-    // кильблоки-подушки под нос и корму шлюпки
-    for (const sx of [-1, 1]) {
-      bakeInto(t, new THREE.BoxGeometry(0.34, 0.12, 0.62), cWoodD, sx * bl * 0.26, yB + 0.03, zB);
+    // шлюпбалки-девицы: наклонные кранбалки от планширя за корму
+    const xb = Math.max(0.55, P.beam * 0.17);
+    const headY = railTop + 1.6, headZ = sternZb - 0.55;
+    const baseY = railTop - 0.15, baseZ = sternZb + 0.38;
+    const dvDy = headY - baseY, dvDz = headZ - baseZ;   // dz < 0 — наклон в корму
+    const dvLen = Math.hypot(dvDy, dvDz);
+    for (const side of [-1, 1] as const) {
+      bakeInto(t, new THREE.BoxGeometry(0.16, dvLen, 0.16), cWoodD,
+        side * xb, (baseY + headY) / 2, (baseZ + headZ) / 2,
+        new THREE.Euler(Math.atan2(dvDz, dvDy), 0, 0));
+    }
+    // поперечина между головами девиц
+    bakeInto(t, new THREE.BoxGeometry(xb * 2 + 0.2, 0.09, 0.09), cWoodD, 0, headY, headZ);
+    // фалы-тали: от голов поперечины вниз к планширю шлюпки (нос/корма)
+    const depth = bl * 0.18;
+    const gunY = yB + depth * 0.92;
+    for (const side of [-1, 1] as const) {
+      for (const zs of [zB + bl * 0.27, zB - bl * 0.27]) {
+        addLine(new THREE.Vector3(side * xb * 0.96, headY - 0.04, headZ),
+          new THREE.Vector3(side * bl * 0.13, gunY, zs));
+      }
     }
   }
 

@@ -1,8 +1,9 @@
 // E2E Task 22 — по замечаниям игрока (после потери незакоммиченной
 // работы — весь пакет пере-реализован):
-//  (A) ШЛЮПКА: КРУГЛОДОННОЕ корыто лежит ПОПЕРЁК палубы (габарит по X
-//      больше, чем по Z), стоит на палубе килем вниз; ломаемая —
-//      попадание рядом срывает её с щепой, clearDamage восстанавливает
+//  (A) ШЛЮПКА: КРУГЛОДОННОЕ корыто подвешено ЗА КОРМОЙ на шлюпбалках
+//      (длина ВДОЛЬ корабля, нос к носу — обновлено по замечанию
+//      игрока в Task 23: прикреплена сзади); ломаемая — попадание
+//      рядом срывает её с щепой, clearDamage восстанавливает
 //  (B) ЯКОРЯ: два, убраны — лежат ВДОЛЬ бортов (не вертикально);
 //      отдача (anchored) — якорь по дуге уходит ПОД ВОДУ на цепи,
 //      жёлтый буй всплывает у цепи; подъём возвращает на место
@@ -61,7 +62,7 @@ log('старт:', clickBtn('Поднять флаг'));
 await sleep(2500);
 
 // ================= A: шлюпка =================
-log('=== A: шлюпка — поперёк, круглодонная, ломается ===');
+log('=== A: шлюпка — за кормой на шлюпбалках, вдоль, ломается ===');
 const boatA = jparse(ev(`(() => {
   const g = window.__game;
   g.changeShip('frigate', true);
@@ -98,16 +99,23 @@ const boatA = jparse(ev(`(() => {
     hullLenLocal: +(maxZ - minZ).toFixed(2),
     boatLen: +(b.userData.boatLen ?? 0).toFixed(2),
     rotY: +b.rotation.y.toFixed(2),
-    deckY: +(b.position.y).toFixed(2),
+    z: +(b.position.z).toFixed(2),
+    y: +(b.position.y).toFixed(2),
+    L: p.preset.length,
+    freeboard: p.preset.freeboard,
     inBreakables,
     gibs: window.__game.gibs ? window.__game.gibs.alive : -1,
   });
 })()`));
 log('A:', JSON.stringify(boatA));
 check('A: шлюпка построена (вершин > 400 — loft-шпангоуты)', boatA.ok && boatA.verts > 400, `verts=${boatA.verts}`);
-check('A: лежит ПОПЕРЁК (габарит по X больше, чем по Z)', boatA.ok && boatA.extX > boatA.extZ * 1.6,
+check('A: висит ВДОЛЬ корабля (габарит по Z больше, чем по X)', boatA.ok && boatA.extZ > boatA.extX * 1.6,
   `extX=${boatA.extX} extZ=${boatA.extZ}`);
-check('A: килем вниз на палубе (не вверх дном)', boatA.ok && boatA.minY < 0.25 && boatA.maxY > 0.5,
+check('A: прикреплена СЗАДИ — за транцем (z < -L/2)', boatA.ok && boatA.z < -boatA.L * 0.5 && boatA.z > -boatA.L * 0.9,
+  `z=${boatA.z} L=${boatA.L}`);
+check('A: киль над планширем кормы (не в воде)', boatA.ok && boatA.y > boatA.freeboard * 0.95,
+  `y=${boatA.y} freeboard=${boatA.freeboard}`);
+check('A: килем вниз (не вверх дном)', boatA.ok && boatA.minY < 0.25 && boatA.maxY > 0.5,
   `minY=${boatA.minY} maxY=${boatA.maxY}`);
 check('A: шлюпка в ломаемых деталях', boatA.ok && boatA.inBreakables === true);
 
