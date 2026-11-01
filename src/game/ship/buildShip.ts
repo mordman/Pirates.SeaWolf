@@ -1802,14 +1802,18 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
       chain.frustumCulled = false;
       group.add(chain);
       // жёлтый буй-кольцо: убран — у планширя, отдан — плавает у цепи
+      // (заметный: крупное кольцо + фал с жёлким вымпелом)
       const buoy = new THREE.Group();
-      const bRing = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.09, 7, 14), buoyMat);
+      const bRing = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.11, 7, 14), buoyMat);
       bRing.rotation.x = Math.PI / 2;
       buoy.add(bRing);
-      const bStick = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.34, 5),
+      const bStick = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.62, 5),
         new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.9 }));
-      bStick.position.y = 0.14;
+      bStick.position.y = 0.26;
       buoy.add(bStick);
+      const bFlag = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.14, 0.3), buoyMat);
+      bFlag.position.set(0, 0.52, 0.14);
+      buoy.add(bFlag);
       group.add(buoy);
       anchors.push({
         side, anchor: a, chain, buoy,
