@@ -114,9 +114,9 @@ const wake = jparse(ev(`(() => {
     velMax = Math.max(velMax, Math.abs(bl.vel));
   }
   const st1 = bl.state();
-  // стоим 12 с — след тает
+  // стоим 17 с — след тает (lifetime ленты 14 с)
   bl.row = 0;
-  for (let i = 0; i < 720; i++) { t += 1/60; bl.update(1/60, t); }
+  for (let i = 0; i < 1020; i++) { t += 1/60; bl.update(1/60, t); }
   return JSON.stringify({
     phase: st1.phase, wakeMax, velMax: +velMax.toFixed(2),
     wakeAtRow: st1.wakePts, wakeAfter: bl.wake.count(),
