@@ -100,7 +100,9 @@ const boatA = jparse(ev(`(() => {
     hullLenLocal: +(maxZ - minZ).toFixed(2),
     boatLen: +(b.userData.boatLen ?? 0).toFixed(2),
     rotY: +b.rotation.y.toFixed(2),
+    x: +(b.position.x).toFixed(2),
     z: +(b.position.z).toFixed(2),
+    hullW: +(window.__game.player.halfWidthAt(b.position.z)).toFixed(2),
     y: +(b.position.y).toFixed(2),
     L: p.preset.length,
     freeboard: p.preset.freeboard,
@@ -112,8 +114,9 @@ log('A:', JSON.stringify(boatA));
 check('A: шлюпка построена (вершин > 400 — loft-шпангоуты)', boatA.ok && boatA.verts > 400, `verts=${boatA.verts}`);
 check('A: висит ВДОЛЬ корабля (габарит по Z больше, чем по X)', boatA.ok && boatA.extZ > boatA.extX * 1.6,
   `extX=${boatA.extX} extZ=${boatA.extZ}`);
-check('A: прикреплена СЗАДИ — за транцем (z < -L/2)', boatA.ok && boatA.z < -boatA.L * 0.5 && boatA.z > -boatA.L * 0.9,
-  `z=${boatA.z} L=${boatA.L}`);
+check('A: прикреплена БОРТОМ К БОРТУ — у борта за скулой (Task 26)',
+  boatA.ok && boatA.x > boatA.hullW && boatA.z > -boatA.L * 0.55 && boatA.z < -boatA.L * 0.2,
+  `x=${boatA.x} (борт ${boatA.hullW}) z=${boatA.z} L=${boatA.L}`);
 check('A: киль над планширем кормы (не в воде)', boatA.ok && boatA.y > boatA.freeboard * 0.95,
   `y=${boatA.y} freeboard=${boatA.freeboard}`);
 check('A: килем вниз (не вверх дном)', boatA.ok && boatA.minY < 0.25 && boatA.maxY > 0.5,

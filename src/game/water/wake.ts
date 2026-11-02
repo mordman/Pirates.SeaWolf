@@ -20,14 +20,34 @@ export class WakeTrail {
   private alphaAttr: THREE.BufferAttribute;
   private mat: THREE.ShaderMaterial;
   private lifetime = 16;
+  // параметры ленты (масштабируются под судно: корабль vs шлюпка)
+  private spacing = 3.0;      // шаг точек по дистанции, м
+  private width0 = 0.5;       // полуширина дорожки на стоянке
+  private widthSpd = 0.9;     // прибавка на полном ходу
+  private alpha0 = 0.18;
+  private alphaSpd = 0.62;
+  private yOff = 0.14;        // подъём ленты над водой (пена толщиной)
+  private widen = 4.5;        // расширение клина со временем
   private waterHeight: (x: number, z: number, t: number) => number = () => 0;
 
-  /** Функция высоты волны — чтобы лента лежала НА воде, а не под ней */
-  setWaterHeight(fn: (x: number, z: number, t: number) => number) {
-    this.waterHeight = fn;
-  }
-
-  constructor() {
+  /** Настройка ленты под размер судна (Task 26: след от ШЛЮПКИ —
+   *  узкая короткая дорожка пены за транцем яла, корабль — широкая) */
+  constructor(opts?: {
+    spacing?: number; lifetime?: number; maxPts?: number;
+    width0?: number; widthSpd?: number; alpha0?: number; alphaSpd?: number;
+    yOff?: number; widen?: number;
+  }) {
+    if (opts) {
+      if (opts.spacing !== undefined) this.spacing = opts.spacing;
+      if (opts.lifetime !== undefined) this.lifetime = opts.lifetime;
+      if (opts.maxPts !== undefined) this.maxPts = opts.maxPts;
+      if (opts.width0 !== undefined) this.width0 = opts.width0;
+      if (opts.widthSpd !== undefined) this.widthSpd = opts.widthSpd;
+      if (opts.alpha0 !== undefined) this.alpha0 = opts.alpha0;
+      if (opts.alphaSpd !== undefined) this.alphaSpd = opts.alphaSpd;
+      if (opts.yOff !== undefined) this.yOff = opts.yOff;
+      if (opts.widen !== undefined) this.widen = opts.widen;
+    }
     this.geometry = new THREE.BufferGeometry();
     const verts = (this.maxPts) * 2;
     this.posAttr = new THREE.BufferAttribute(new Float32Array(verts * 3), 3);
@@ -72,21 +92,28 @@ export class WakeTrail {
     this.mesh.renderOrder = 4;
   }
 
+  /** Функция высоты волны — чтобы лента лежала НА воде, а не под ней */
+  setWaterHeight(fn: (x: number, z: number, t: number) => number) {
+    this.waterHeight = fn;
+  }
+
   /** Добавить точку следа (мировые координаты) */
   push(p: THREE.Vector3, speedFrac: number, dt: number, accumulate: number) {
-    const spacing = 3.0;
     const last = this.pts[this.pts.length - 1];
-    if (!last || last.distanceTo(p) > spacing) {
+    if (!last || last.distanceTo(p) > this.spacing) {
       this.pts.push(p.clone());
       this.times.push(accumulate);
-      this.widths.push(0.5 + speedFrac * 0.9); // ширина дорожки от скорости
-      this.alphas.push(Math.min(1, 0.18 + speedFrac * 0.62));
+      this.widths.push(this.width0 + speedFrac * this.widthSpd); // ширина дорожки от скорости
+      this.alphas.push(Math.min(1, this.alpha0 + speedFrac * this.alphaSpd));
       if (this.pts.length > this.maxPts) {
         this.pts.shift(); this.times.shift(); this.widths.shift(); this.alphas.shift();
       }
     }
     this.mat.uniforms.uTime.value = accumulate;
   }
+
+  /** число живых точек ленты (телеметрия/E2E) */
+  count(): number { return this.pts.length; }
 
   update(now: number) {
     // убрать старые точки
@@ -109,10 +136,10 @@ export class WakeTrail {
       const tx = -side.z, tz = side.x;
       const age = (now - this.times[i]) / this.lifetime;
       // расширение дорожки со временем (турбулентный клин)
-      const w = this.widths[i] * (1 + age * 4.5);
+      const w = this.widths[i] * (1 + age * this.widen);
       const fade = (1 - age) * this.alphas[i];
       // высота волны в точке — лента лежит на поверхности
-      const wy = this.waterHeight(p.x, p.z, now) + 0.14;
+      const wy = this.waterHeight(p.x, p.z, now) + this.yOff;
       const i6 = i * 6;
       pos[i6] = p.x - tx * w; pos[i6 + 1] = wy; pos[i6 + 2] = p.z - tz * w;
       pos[i6 + 3] = p.x + tx * w; pos[i6 + 4] = wy; pos[i6 + 5] = p.z + tz * w;

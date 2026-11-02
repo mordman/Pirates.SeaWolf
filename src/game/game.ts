@@ -893,7 +893,9 @@ export class Game {
     this.applySkins(np);
     this.player = np;
     this.combat.player = np;
-    // шлюпка нового корабля — свой контроллер спуска
+    // шлюпка нового корабля — свой контроллер спуска (след пены
+    // старой шлюпки снимается со сцены)
+    this.boatLaunch?.dispose();
     this.boatLaunch = new BoatLaunch({
       ship: np, worldGroup: this.worldGroup, particles: this.particles,
       islands: () => this.world.islands,
@@ -1529,7 +1531,7 @@ export class Game {
     h.proving = this.proving;
     h.boat = this.boatLaunch
       ? { phase: this.boatLaunch.phase, t: +this.boatLaunch.t.toFixed(2),
-          dist: +this.boatLaunch.distToStern().toFixed(0),
+          dist: +this.boatLaunch.distToHoist().toFixed(0),
           speed: +(Math.abs(this.boatLaunch.vel) * 1.944).toFixed(1),
           row: this.boatLaunch.row }
       : null;
@@ -1980,12 +1982,17 @@ export class Game {
     let camSpeedFrac = clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1);
     if (this.boatLaunch && this.boatLaunch.phase === 'afloat') {
       // камера — за шлюпкой, пока игрок в ней (замечание игрока:
-      // управлять шлюпкой, пока не вернёшься на борт)
+      // управлять шлюпкой, пока не вернёшься на борт); ял в 6 раз
+      // короче корабля — камера ПРИБЛИЖАЕТСЯ (дистанция × 0.35),
+      // иначе с корабельной дистанции шлюпку и её след не разглядеть
+      this.rig.distScale = 0.35;
       camTarget = this._v3.copy(this.boatLaunch.pos).add(this.shift);
       camHeading = this.boatLaunch.heading;
       camRoll = this.boatLaunch.roll;
       camPitch = this.boatLaunch.pitch;
       camSpeedFrac = clamp(Math.abs(this.boatLaunch.vel) / 2, 0, 1);
+    } else {
+      this.rig.distScale = 1;
     }
     const shipInfo = {
       scenePos: camTarget,

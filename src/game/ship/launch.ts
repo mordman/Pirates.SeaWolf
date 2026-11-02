@@ -4,6 +4,7 @@ import { updateBoatFalls, type BoatVis } from './buildShip';
 import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
 import type { Particles } from '../fx/particles';
+import { WakeTrail } from '../water/wake';
 
 // ============================================================
 // СПУСК ШЛЮПКИ НА ВОДУ (по замечанию игрока: «можно спустить
@@ -11,23 +12,24 @@ import type { Particles } from '../fx/particles';
 // борт корабля; добавь анимацию спуска и подъёма»).
 //
 // Фазы:
-//   stowed  — ял висит на шлюпбалках за транцем НОСОМ ВДОЛЬ
-//             корпуса — к носу корабля (Task 25)
-//   lowering— ФАЛЫ ТРАВЯТСЯ: шлюпка опускается с шлюпбалок к воде
-//             (лёгкое покачивание на талях, дрейф за транец)
+//   stowed  — ял висит на БОРТОВЫХ шлюпбалках ВДОЛЬ борта —
+//             БОРТОМ К БОРТУ с корпусом, носом к носу корабля (Task 26)
+//   lowering— ФАЛЫ ТРАВЯТСЯ: шлюпка опускается за борт к воде
+//             (лёгкое покачивание на талях, дрейф от обшивки)
 //   afloat  — на воде: отдельная сущность в мире; W/S — вёсла
 //             (гребки синхронные, импульс в рабочей фазе),
 //             A/D — поворот вёслами (руля нет); качка на волнах
 //             Gerstner, вёсла развёрнуты на воду, гребцы качаются
-//             в такт
+//             в такт; за транцем — пенный след
 //   raising — подъём: подтяжка под шлюпбалки (мир) → репарент →
 //             выборка талов до исходного положения. Доворот курса —
 //             ВСЕГДА по кратчайшей дуге с гашением крена/дифферента:
 //             старый slerp на ~180° ПЕРЕВОРАЧИВАЛ шлюпку через борт
 //             (замечание игрока Task 25).
 //
-// Управление шлюпкой — ПОКА игрок не вернётся на борт (B у кормы).
-// Условие спуска: малый ход/якорь, шлюпка цела, есть экипаж.
+// Управление шлюпкой — ПОКА игрок не вернётся на борт (B у борта
+// у шлюпбалок). Условие спуска: малый ход/якорь, шлюпка цела, есть
+// экипаж.
 // ============================================================
 
 export type BoatPhase = 'stowed' | 'lowering' | 'afloat' | 'raising';
@@ -83,10 +85,20 @@ export class BoatLaunch {
 
   // гребцы в шлюпке (видны только на воде)
   rowers: THREE.Group[] = [];
+  // СЛЕД ОТ ШЛЮПКИ (Task 26: «сделай след от лодки»): узкая пенная
+  // дорожка за транцем яла на ходу под вёслами — та же лента, что и
+  // кильватер корабля, но в масштабе шлюпки; пена Заметная (широкая
+  // полоса с турбулентным клином — как след от вёсел на воде)
+  readonly wake = new WakeTrail({
+    spacing: 0.8, lifetime: 14, maxPts: 140,
+    width0: 0.34, widthSpd: 0.5, alpha0: 0.36, alphaSpd: 0.6,
+    yOff: 0.12, widen: 3.6,
+  });
   // подтяжка: откуда стартует шлюпка (мир)
   private pullFrom = new THREE.Vector3();
   private pullQuat = new THREE.Quaternion();
   private pullY = 0;          // локальная высота начала выборки талов
+  private pullPos = new THREE.Vector3();   // старт выборки талов (локалы корабля)
   private splashed = false;
   private groundCd = 0;       // кулдаун сообщения об отмели
 
@@ -105,6 +117,9 @@ export class BoatLaunch {
     this.msg = d.msg;
     this.onSplash = d.onSplash;
     this.vis = d.ship.visual.boat ?? null;
+    // след пены за шлюпкой — в контейнер мира (координаты те же, что pos)
+    this.wake.setWaterHeight(waterHeightAt);
+    this.worldGroup.add(this.wake.mesh);
     if (this.vis) {
       // два гребца на банке (появляются при спуске): сидят лицом
       // к корме, качаются в такт гребков
@@ -126,11 +141,17 @@ export class BoatLaunch {
   /** игрок в шлюпке (управление кораблём отключено)? */
   inBoat(): boolean { return this.phase !== 'stowed'; }
 
-  /** расстояние от шлюпки до кормы корабля (для HUD/подъёма) */
-  distToStern(): number {
+  /** убрать за собой: след пены снимается со сцены (смена корабля) */
+  dispose() {
+    this.wake.clear();
+    this.wake.mesh.parent?.remove(this.wake.mesh);
+  }
+
+  /** расстояние от шлюпки до шлюпбалок борта (для HUD/подъёма) */
+  distToHoist(): number {
     if (!this.vis) return Infinity;
     if (this.phase === 'afloat') {
-      this._v.set(0, 0, -this.ship.preset.length / 2)
+      this._v.copy(this.vis.stowPos)
         .applyQuaternion(this.ship.quaternion).add(this.ship.position);
       return Math.hypot(this.pos.x - this._v.x, this.pos.z - this._v.z);
     }
@@ -159,8 +180,8 @@ export class BoatLaunch {
   tryHoist(): string | null {
     if (this.phase !== 'afloat' || !this.vis) return null;
     if (this.ship.sunk) return 'Корабль ушёл под воду — подниматься некуда…';
-    const d = this.distToStern();
-    if (d > 15) return `Далеко от корабля (${Math.round(d)} м) — подойдите к корме`;
+    const d = this.distToHoist();
+    if (d > 15) return `Далеко от шлюпбалок (${Math.round(d)} м) — подойдите к борту`;
     if (Math.abs(this.vel) > 1.25) return 'Замрите ход перед подъёмом';
     // старт подтяжки
     this.pullFrom.copy(this.vis.group.position);
@@ -229,8 +250,9 @@ export class BoatLaunch {
         const wy = waterHeightAt(this._v.x, this._v.z, time);
         const targetY = this.vis.stowPos.y + (wy + 0.12 - this._v.y);
         b.position.y = THREE.MathUtils.lerp(this.vis.stowPos.y, targetY, k);
-        b.position.z = THREE.MathUtils.lerp(this.vis.stowPos.z, this.vis.stowPos.z - 0.9, k);
-        b.rotation.z = Math.sin(k * Math.PI) * 0.055;   // покачивание на талях
+        // лёгкий дрейф ОТ обшивки — чистый спуск за борт
+        b.position.x = THREE.MathUtils.lerp(this.vis.stowPos.x, this.vis.stowPos.x + Math.sign(this.vis.stowPos.x || 1) * 0.35, k);
+        b.rotation.z = Math.sin(k * Math.PI) * 0.05;   // покачивание на талях
         updateBoatFalls(this.vis);
         if (this.t >= 1) this.detachToWater(time);
         break;
@@ -241,10 +263,10 @@ export class BoatLaunch {
       }
       case 'raising': {
         if (this.raiseStage === 0) {
-          // подтяжка: шлюпка в МИРЕ подтягивается под шлюпбалки
+          // подтяжка: шлюпка в МИРЕ подтягивается под шлюпбалки борта
           this.t += dt / PULL_DUR;
           const k = sm(this.t);
-          this._v.set(0, this.vis.stowPos.y * 0.55, this.vis.stowPos.z - 0.9)
+          this._v.set(this.vis.stowPos.x * 0.8, this.vis.stowPos.y * 0.55, this.vis.stowPos.z)
             .applyQuaternion(this.ship.quaternion).add(this.ship.position);
           this._v.y = Math.max(this._v.y, waterHeightAt(this._v.x, this._v.z, time) + 0.9);
           b.position.lerpVectors(this.pullFrom, this._v, k);
@@ -262,14 +284,14 @@ export class BoatLaunch {
             this.raiseStage = 1;
             this.t = 0;
             this.pullY = b.position.y;
+            this.pullPos.copy(b.position);
             this.setRowersVisible(false);
           }
         } else {
-          // выборка талов: подъём с воды до шлюпбалок
+          // выборка талов: подъём от борта до шлюпбалок
           this.t += dt / LOWER_DUR;
           const k = sm(this.t);
-          b.position.y = THREE.MathUtils.lerp(this.pullY, this.vis.stowPos.y, k);
-          b.position.z = THREE.MathUtils.lerp(this.vis.stowPos.z - 0.9, this.vis.stowPos.z, k);
+          b.position.lerpVectors(this.pullPos, this.vis.stowPos, k);
           b.rotation.z = Math.sin(k * Math.PI) * 0.05;
           // курс — к stowRotY по кратчайшей дуге, качка гаснет
           this._e.setFromQuaternion(b.quaternion, 'YXZ');
@@ -295,10 +317,13 @@ export class BoatLaunch {
         break;
       }
     }
+    // лента следа живёт всегда: точки стареют и тают и после подъёма
+    this.wake.update(time);
   }
 
   /** фалы к шлюпке в МИРЕ (подтяжка): концы — позиция шлюпки,
-   *  пересчитанная в локальные координаты корабля */
+   *  пересчитанная в локальные координаты корабля. Носовая балка —
+   *  к планширю НОСА, кормовая — к планширю кормы (±gunX) */
   private fallsToBoat() {
     if (!this.vis) return;
     const b = this.vis.group;
@@ -306,14 +331,16 @@ export class BoatLaunch {
     this._qi.copy(this.ship.quaternion).invert();
     // центр шлюпки в локалах корабля
     const c = this._v2.copy(b.position).sub(this.ship.position).applyQuaternion(this._qi);
-    const rotY = this.vis.stowRotY;   // шлюпка выровнена носом вдоль корпуса
+    const rotY = this.vis.stowRotY;   // шлюпка выровнена вдоль борта
     const cos = Math.cos(rotY), sin = Math.sin(rotY);
     let i = 0;
-    for (const head of this.vis.davitHeads) {
-      for (const zo of [this.vis.hangZ, -this.vis.hangZ]) {
-        // точка планширя шлюпки (±gunX, gunY, ±hangZ), поворот на rotY
-        const px = -this.vis.gunX * cos + zo * sin;
-        const pz = this.vis.gunX * sin + zo * cos;
+    for (let hi = 0; hi < this.vis.davitHeads.length; hi++) {
+      const head = this.vis.davitHeads[hi];
+      const zo = (hi === 0 ? 1 : -1) * this.vis.hangZ;
+      for (const xs of [this.vis.gunX, -this.vis.gunX]) {
+        // точка планширя шлюпки (xs, gunY, zo), поворот на rotY
+        const px = xs * cos + zo * sin;
+        const pz = -xs * sin + zo * cos;
         attr.setXYZ(i, head.x, head.y, head.z);
         attr.setXYZ(i + 1, c.x + px, c.y + this.vis.gunY, c.z + pz);
         i += 2;
@@ -337,8 +364,8 @@ export class BoatLaunch {
     this.phase = 'afloat';
     this.splashed = false;
     this.setRowersVisible(true);
-    updateBoatFalls(this.vis, true);   // хвосты талов у девиц
-    this.msg?.('Шлюпка на воде! W/S — вёсла, A/D — поворот вёслами. B у кормы — подняться на борт');
+    updateBoatFalls(this.vis, true);   // хвосты талов у шлюпбалок
+    this.msg?.('Шлюпка на воде! W/S — вёсла, A/D — поворот вёслами. B у борта — подняться на борт');
   }
 
   /** жизнь на воде: гребля, руль, качка, коллизии */
@@ -378,18 +405,23 @@ export class BoatLaunch {
         }
       }
     }
-    // --- корабль: отталкивание от корпуса ---
+    // --- корабль: отталкивание от корпуса (по ОБВОДАМ — борт
+    //     следует кривизне корпуса: шлюпка скользит вдоль обшивки
+    //     «бортом к борту», не отскакивая коробкой) ---
     {
       this._qi.copy(this.ship.quaternion).invert();
       this._v.copy(this.pos).sub(this.ship.position).applyQuaternion(this._qi);
       const L = this.ship.preset.length;
-      if (Math.abs(this._v.x) < this.ship.preset.beam * 0.72 && Math.abs(this._v.z) < L * 0.55) {
-        // вытолкнуть поперёк к ближайшему борту
-        const push = this.ship.preset.beam * 0.72 + 0.6 - Math.abs(this._v.x);
-        this._v.x += Math.sign(this._v.x || 1) * push;
-        this._v.applyQuaternion(this.ship.quaternion).add(this.ship.position);
-        this.pos.x = this._v.x; this.pos.z = this._v.z;
-        this.vel *= 0.4;
+      if (Math.abs(this._v.z) < L * 0.55) {
+        const hw = this.ship.halfWidthAt(this._v.z) + 0.75;  // борт + полуширина яла + зазор
+        if (Math.abs(this._v.x) < hw) {
+          // вытолкнуть поперёк к ближайшему борту
+          const push = hw - Math.abs(this._v.x) + 0.05;
+          this._v.x += Math.sign(this._v.x || 1) * push;
+          this._v.applyQuaternion(this.ship.quaternion).add(this.ship.position);
+          this.pos.x = this._v.x; this.pos.z = this._v.z;
+          this.vel *= 0.4;
+        }
       }
     }
 
@@ -421,6 +453,15 @@ export class BoatLaunch {
         + Math.sin(time * 1.2 + i * 2.1) * 0.02;
       r.rotation.z = Math.sin(time * 1.6 + i) * 0.025;
     }
+    // --- СЛЕД ОТ ШЛЮПКИ: пена за транцем при ходе (Task 26) ---
+    if (Math.abs(this.vel) > 0.12) {
+      const spdFrac = Math.min(1, Math.abs(this.vel) / MAX_FWD);
+      this._v2.set(
+        this.pos.x - Math.sin(this.heading) * this.vis.len * 0.48,
+        0,
+        this.pos.z - Math.cos(this.heading) * this.vis.len * 0.48);
+      this.wake.push(this._v2, spdFrac, dt, time);
+    }
     // --- румпеля нет: курс держат вёсла ---
   }
 
@@ -449,9 +490,10 @@ export class BoatLaunch {
       x: +this.pos.x.toFixed(1), y: +this.pos.y.toFixed(1), z: +this.pos.z.toFixed(1),
       heading: +this.heading.toFixed(2), vel: +this.vel.toFixed(2),
       row: this.row, steer: this.steer,
-      dist: +this.distToStern().toFixed(1),
+      dist: +this.distToHoist().toFixed(1),
       oarDeploy: +this.oarDeploy.toFixed(2),
       rowersVisible: this.rowers.length > 0 && this.rowers[0].visible,
+      wakePts: this.wake.count(),
     };
   }
 }

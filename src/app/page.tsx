@@ -1133,7 +1133,7 @@ export default function Home() {
               <div><b className="text-amber-200">Alt+W / Alt+S</b> — вёсла вперёд/назад (гребные суда)</div>
               <div><b className="text-amber-200">P</b> — открыть/закрыть пушечные порты (закрытые батареи молчат — стреляют только палубные орудия)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить/поднять шлюпку: на воде W/S — вёсла, A/D — румпель, {keyLabel(settings.controls.boat)} у кормы — на борт</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить/поднять шлюпку: на воде W/S — вёсла, A/D — поворот вёслами, {keyLabel(settings.controls.boat)} у борта — на борт</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>

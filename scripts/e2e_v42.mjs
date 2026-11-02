@@ -81,7 +81,10 @@ for (const model of ['frigate', 'cog', 'sloop']) {
       children: b.children.length,
       tillerVis: !!bv.tiller, tillerUd: !!b.userData.tiller,
       minZ: +minZ.toFixed(2), len: +bv.len.toFixed(2),
-      z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      x: +b.position.x.toFixed(2), z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      stowX: +bv.stowPos.x.toFixed(2),
+      hullW: +p.halfWidthAt(b.position.z).toFixed(2),
+      beam: +bv.beam.toFixed(2),
       L: p.preset.length, freeboard: p.preset.freeboard,
       fallsPts: bv.falls.geometry.getAttribute('position').count,
       davitHeads: bv.davitHeads.length,
@@ -95,10 +98,12 @@ for (const model of ['frigate', 'cog', 'sloop']) {
   check(`A: ${model} — НОСОМ ВДОЛЬ КОРПУСА (нос к носу корабля)`,
     r.ok && (r.rotY < 0.1 || r.rotY > Math.PI * 2 - 0.1) && r.dot > 0.9,
     `rotY=${r.rotY} dot=${r.dot}`);
-  check(`A: ${model} — за транцем на шлюпбалках, фалы целы`,
-    r.ok && r.z < -r.L * 0.5 && r.z > -r.L * 0.9 && r.y > r.freeboard * 0.95
+  check(`A: ${model} — БОРТОМ К БОРТУ на шлюпбалках (зазор < 1.2 м), фалы целы`,
+    r.ok && Math.abs(r.x - r.stowX) < 0.05
+      && r.x > r.hullW && r.x - r.beam / 2 - r.hullW < 1.2
+      && r.z > -r.L * 0.55 && r.z < -r.L * 0.1 && r.y > r.freeboard * 0.95
       && r.fallsPts === 8 && r.davitHeads === 2,
-    `z=${r.z} y=${r.y} фалы=${r.fallsPts}`);
+    `x=${r.x} (борт ${r.hullW}) зазор=${+(r.x - r.beam / 2 - r.hullW).toFixed(2)} y=${r.y} фалы=${r.fallsPts}`);
 }
 
 // ================= B: подъём без опрокидывания =================
@@ -136,7 +141,8 @@ const hoist180 = jparse(ev(`(() => {
   const p = g.player;
   const bl = g.boatLaunch;
   bl.heading = p.heading + Math.PI;   // подошли кормой
-  bl.pos.set(p.position.x - Math.sin(p.heading) * 7, 0, p.position.z - Math.cos(p.heading) * 7);
+  const sp = bl.vis.stowPos.clone().applyQuaternion(p.quaternion).add(p.position);
+  bl.pos.set(sp.x + Math.sign(bl.vis.stowPos.x || 1) * 3, 0, sp.z);   // у борта, у шлюпбалок
   const err = bl.tryHoist();
   if (err) return JSON.stringify({ err });
   let t = g.time;
@@ -184,8 +190,9 @@ const launch2 = jparse(ev(`(() => {
   if (err) return JSON.stringify({ err });
   let t = g.time;
   for (let i = 0; i < 460; i++) { t += 1 / 60; bl.update(1 / 60, t); }
-  bl.heading = p.heading;   // подошли носом (как после обычной гребли к корме)
-  bl.pos.set(p.position.x - Math.sin(p.heading) * 7, 0, p.position.z - Math.cos(p.heading) * 7);
+  bl.heading = p.heading;   // подошли носом (как после обычной гребли к борту)
+  const sp2 = bl.vis.stowPos.clone().applyQuaternion(p.quaternion).add(p.position);
+  bl.pos.set(sp2.x + Math.sign(bl.vis.stowPos.x || 1) * 3, 0, sp2.z);
   const e2 = bl.tryHoist();
   if (e2) return JSON.stringify({ errHoist: e2 });
   let maxRoll = 0;
@@ -206,13 +213,19 @@ check('B3: подъём носом вперёд — без переворота,
 // ================= C: физика — Архимед по точкам корпуса =================
 log('=== C: физика (Gerstner + rigid body + Архимед) ===');
 // C1: штиль — посадка по проектную осадку, устойчивость, без NaN
-const calm = jparse(ev(`(() => {
+ev(`(() => {
   const g = window.__game;
-  const T = window.__THREE;
   g.debugSetWeather('clear', 3);
   g.seaAmpSmooth = 0.42;
   const p = g.player;
   p.anchored = true; p.velocity.set(0, 0, 0); p.sailTarget = 0;
+  return 'ok';
+})()`);
+await sleep(2000);   // кадры применят SEA.amplitude = 0.42
+const calm = jparse(ev(`(() => {
+  const g = window.__game;
+  const T = window.__THREE;
+  const p = g.player;
   let t = g.time;
   let nan = false, sumY = 0, n = 0, minY = 1e9, maxY = -1e9;
   let maxRoll = 0, maxPitch = 0;
@@ -248,13 +261,23 @@ check('C1: качка живая, но крен ограничен (< 0.45 ра�
   `pitch=${calm.maxPitch} roll=${calm.maxRoll}`);
 
 // C2: шторм — корабль РЕЖЕТ волны (дифферент), не тонет
-const storm = jparse(ev(`(() => {
+// Погода применяется КАДРАМИ игры (SEA.amplitude = seaAmpSmooth в
+// updateWeather) — ручной цикл fixedStep внутри eval кадров не даёт:
+// сначала ставим погоду и ЖДЁМ реальных кадров, потом шагаем
+log('C2: включаем шторм кадрами…');
+ev(`(() => {
   const g = window.__game;
   g.debugSetWeather('storm', 22);
   g.seaAmpSmooth = 1.8;
   const p = g.player;
   p.anchored = true; p.velocity.set(0, 0, 0); p.sailTarget = 0;
   p.greenWater = 0;
+  return 'ok';
+})()`);
+await sleep(2000);   // кадры игры поднимут SEA.amplitude до 1.8
+const storm = jparse(ev(`(() => {
+  const g = window.__game;
+  const p = g.player;
   let t = g.time;
   let nan = false, maxPitch = 0, maxRoll = 0, minY = 1e9;
   let fbSum = 0, fbN = 0, fbMin = 1e9;
@@ -289,7 +312,7 @@ check('C2: шторм — остаётся на плаву (средний бо�
   `fbMean=${storm.fbMean} fbMin=${storm.fbMin} minY=${storm.minY} roll=${storm.maxRoll}`);
 
 // C3: зелёная вода у шлюпа (малый надводный борт) — волна падает на палубу
-const gw = jparse(ev(`(() => {
+ev(`(() => {
   const g = window.__game;
   g.changeShip('sloop', true);
   const p = g.player;
@@ -297,6 +320,12 @@ const gw = jparse(ev(`(() => {
   g.debugSetWeather('storm', 24);
   g.seaAmpSmooth = 1.9;
   p.greenWater = 0;
+  return 'ok';
+})()`);
+await sleep(2000);   // кадры поднимут SEA.amplitude до 1.9
+const gw = jparse(ev(`(() => {
+  const g = window.__game;
+  const p = g.player;
   let t = g.time;
   let fbLast = 99, fbMin = 99;
   const T = window.__THREE;

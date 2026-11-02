@@ -91,7 +91,9 @@ for (const model of ['frigate', 'cog', 'sloop']) {
       fallsPts: bv.falls.geometry.getAttribute('position').count,
       davitHeads: bv.davitHeads.length,
       rowersHidden: g.boatLaunch ? g.boatLaunch.rowers.filter(r => !r.visible).length : -1,
-      z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      x: +b.position.x.toFixed(2), z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      stowX: +bv.stowPos.x.toFixed(2),
+      hullW: +p.halfWidthAt(b.position.z).toFixed(2),
       L, freeboard: p.preset.freeboard, visible: b.visible,
       extX: +size.x.toFixed(2), extZ: +size.z.toFixed(2),
       phase: g.boatLaunch ? g.boatLaunch.phase : 'none',
@@ -102,9 +104,11 @@ for (const model of ['frigate', 'cog', 'sloop']) {
     r.ok && (r.rotY < 0.1 || r.rotY > Math.PI * 2 - 0.1), `rotY=${r.rotY}`);
   check(`A: ${model} — пропорции яла (L/B 3.3..4.0)`,
     r.ok && r.ratio > 3.3 && r.ratio < 4.0, `L/B=${r.ratio}`);
-  check(`A: ${model} — за транцем, киль над кормой`,
-    r.ok && r.z < -r.L * 0.5 && r.z > -r.L * 0.9 && r.y > r.freeboard * 0.95,
-    `z=${r.z} y=${r.y}`);
+  check(`A: ${model} — БОРТОМ К БОРТУ (вдоль борта у кормы, зазор до обшивки < 1.2 м)`,
+    r.ok && Math.abs(r.x - r.stowX) < 0.05
+      && r.x > r.hullW && r.x - r.beam / 2 - r.hullW < 1.2
+      && r.z > -r.L * 0.55 && r.z < -r.L * 0.1 && r.y > r.freeboard * 0.95,
+    `x=${r.x} (борт ${r.hullW}) зазор=${+(r.x - r.beam / 2 - r.hullW).toFixed(2)} z=${r.z} y=${r.y}`);
   check(`A: ${model} — корпус подробный (вершин > 900, шпангоуты+планширь)`,
     r.ok && r.verts > 900, `verts=${r.verts}`);
   check(`A: ${model} — банки ≥ 3, вёсла 2 (лежат, лопастью к носу), БЕЗ руля`,

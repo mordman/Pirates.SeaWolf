@@ -1857,21 +1857,27 @@ export interface BoatVis {
 }
 
 /** Обновить фалы-тали по ТЕКУЩЕМУ положению шлюпки (пока она в
- *  группе мелких деталей): 4 линии от голов девиц к планширю
- *  (нос/корма × оба борта). Вызывается каждый кадр при спуске/
- *  подъёме (BoatLaunch) и один раз при постройке. */
+ *  группе мелких деталей): 4 линии — НОСОВАЯ шлюпбалка держит НОС
+ *  яла (две ветви: наружный и внутренний планширь), КОРМОВАЯ —
+ *  корму (Task 26: бортовые шлюпбалки; раньше кормовые девицы за
+ *  транцем тянули фалы крест-накрест к обоим концам). Вызывается
+ *  каждый кадр при спуске/подъёме (BoatLaunch) и один раз при
+ *  постройке. */
 export function updateBoatFalls(b: BoatVis, stub = false) {
   const attr = b.falls.geometry.getAttribute('position') as THREE.BufferAttribute;
   const v = new THREE.Vector3();
   let i = 0;
-  for (const head of b.davitHeads) {
-    for (const zo of [b.hangZ, -b.hangZ]) {
+  for (let hi = 0; hi < b.davitHeads.length; hi++) {
+    const head = b.davitHeads[hi];
+    // шлюпбалка hi=0 — НОСОВАЯ (+hangZ), hi=1 — кормовая (−hangZ)
+    const zo = (hi === 0 ? 1 : -1) * b.hangZ;
+    for (const xs of [b.gunX, -b.gunX]) {
       if (stub) {
-        // спущена: короткие хвосты талов свисают с девиц
+        // спущена: короткие хвосты талов свисают со шлюпбалок
         v.set(head.x, head.y - 1.05, head.z);
       } else {
         // точка планширя шлюпки в локалах корабля
-        v.set(b.gunX, b.gunY, zo)
+        v.set(xs, b.gunY, zo)
           .applyEuler(new THREE.Euler(0, b.group.rotation.y, 0))
           .add(b.group.position);
       }
@@ -1941,45 +1947,66 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   const tm: BakedTarget = { pos: [], col: [], uv: [] };
   const cAnchor = new THREE.Color(0x454a52); // светлый gunmetal (тёмный в metalness-пайплайне не бликует)
 
-  // --- ШЛЮПКА ЗА КОРМОЙ НА ШЛЮПБАЛКАХ: ял на ДВУХ наклонных
-  //     девицах у транца; НОСОМ ВДОЛЬ КОРПУСА — к носу корабля
-  //     (по замечанию игрока Task 25 «разверни лодку вдоль корпуса»:
-  //     раньше висела антипараллельно, носом от корабля). Руля нет.
-  //     Фалы-тали — ДИНАМИЧЕСКИЕ линии (4 шт.), удлиняются при
-  //     спуске на воду (launch.ts). Ломаемая: попадание рядом —
-  //     разлетается щепой, clearDamage восстанавливает ---
+  // --- ШЛЮПКА БОРТОМ К БОРТУ (Task 26: «разверни лодку так, чтобы
+  //     была бортом борту»): ял на БОРТОВЫХ шлюпбалках у кормового
+  //     среза — висит ВДОЛЬ борта параллельно корпусу (нос к носу
+  //     корабля), внутренний борт в ~20 см от обшивки. До Task 25
+  //     висел за транцем на кормовых девицах. Две наклонные
+  //     кранбалки у планширя, фалы-тали — к планширю носа и кормы
+  //     шлюпки. Спуск — вертикально за борт (launch.ts). Ломаемая:
+  //     попадание рядом — разлетается щепой, clearDamage
+  //     восстанавливает ---
   let boat: BoatVis | undefined;
   {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
     const bg = buildDeckBoat(bl);
-    bg.rotation.y = 0;              // НОСОМ ВДОЛЬ КОРПУСА — к носу корабля
-    const q = P.quarter ?? 0;
+    bg.rotation.y = 0;              // нос шлюпки — к носу корабля (вдоль борта)
+    const SIDE = 1;                 // штирборт: шлюпбалки правого борта
     const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
-    const ttS = clamp2((sternZb + L / 2) / L, 0, 1);
-    // верхняя кромка ограждения у транца (квартердек/фальшборт)
-    const railTop = q > 0
-      ? deckYAt(ttS) + q + THREE.MathUtils.clamp(q * 0.55, 0.62, 1.05) + 0.05
-      : hullProfile(ttS, P).bulwark;
-    const zB = sternZb - bl * 0.28;    // большая часть — ЗА транцем, над водой
-    const yB = railTop + 0.3;          // киль шлюпки над планширем кормы
-    bg.position.set(0, yB, zB);
-    group.add(bg);
-    // шлюпбалки-девицы: наклонные кранбалки от планширя за корму
-    const xb = Math.max(0.55, P.beam * 0.17);
-    const headY = railTop + 1.6, headZ = sternZb - 0.55;
-    const baseY = railTop - 0.15, baseZ = sternZb + 0.38;
-    const dvDy = headY - baseY, dvDz = headZ - baseZ;   // dz < 0 — наклон в корму
-    const dvLen = Math.hypot(dvDy, dvDz);
-    for (const side of [-1, 1] as const) {
-      bakeInto(t, new THREE.BoxGeometry(0.16, dvLen, 0.16), cWoodD,
-        side * xb, (baseY + headY) / 2, (baseZ + headZ) / 2,
-        new THREE.Euler(Math.atan2(dvDz, dvDy), 0, 0));
+    // транец яла — у кормового среза, нос идёт вперёд вдоль борта
+    const zB = sternZb + bl * 0.52 + 0.25;
+    const q = P.quarter ?? 0;
+    // верхняя кромка ограждения у борта (квартердек/фальшборт) в точке t
+    const railTopAt = (tt: number) => q > 0
+      ? deckYAt(tt) + q + THREE.MathUtils.clamp(q * 0.55, 0.62, 1.05) + 0.05
+      : hullProfile(tt, P).bulwark;
+    const tB = clamp2((zB + L / 2) / L, 0, 1);
+    const railTop = railTopAt(tB);
+    // самый широкий борт ПОД шлюпкой (по её длине) — зазор до обшивки
+    let maxW = 0;
+    for (let i = 0; i <= 4; i++) {
+      maxW = Math.max(maxW,
+        hullProfile(clamp2(tB + (i / 4 - 0.5) * (bl / L), 0, 1), P).w);
     }
-    // поперечина между головами девиц
-    bakeInto(t, new THREE.BoxGeometry(xb * 2 + 0.2, 0.09, 0.09), cWoodD, 0, headY, headZ);
-    // ФАЛЫ-ТАЛИ — ДИНАМИЧЕСКИЕ линии (4): от голов девиц к планширю
-    // шлюпки (нос/корма, оба борта); при спуске удлиняются, при
-    // поднятой шлюпке на воде — короткие свисающие хвосты
+    const beamBoat = bl * 0.275;
+    const xB = SIDE * (maxW + 0.2 + beamBoat / 2);  // борт яла ~20 см от обшивки
+    const yB = railTop + 0.3;                        // киль над планширем
+    bg.position.set(xB, yB, zB);
+    group.add(bg);
+    // ШЛЮПБАЛКИ: две наклонные кранбалки у планширя (носовая и
+    // кормовая), основания на планшире, головы — над серединой яла
+    const davitHeads: THREE.Vector3[] = [];
+    const hang = bl * 0.3;
+    for (const zo of [hang + 0.28, -(hang + 0.28)]) {
+      const tD = clamp2((zB + zo + L / 2) / L, 0, 1);
+      const railD = railTopAt(tD);
+      const profD = hullProfile(tD, P);
+      const baseX = SIDE * profD.w * 0.92, baseY = railD - 0.3, baseZ = zB + zo;
+      const headX = xB + SIDE * 0.12, headY = railD + Math.max(1.05, bl * 0.27);
+      const dX = headX - baseX, dY = headY - baseY;
+      const len = Math.hypot(dX, dY);
+      bakeInto(t, new THREE.BoxGeometry(0.15, len, 0.15), cWoodD,
+        (baseX + headX) / 2, (baseY + headY) / 2, baseZ,
+        new THREE.Euler(0, 0, -SIDE * Math.atan2(dX, dY)));
+      // подкос-плечо: короткий горизонт к точке подвеса над ялом
+      bakeInto(t, new THREE.BoxGeometry(Math.abs(dX) + 0.16, 0.1, 0.12), cWoodD,
+        (baseX + headX) / 2, headY - 0.04, baseZ);
+      davitHeads.push(new THREE.Vector3(headX, headY - 0.04, baseZ));
+    }
+    // ФАЛЫ-ТАЛИ — ДИНАМИЧЕСКИЕ линии (4): носовая балка держит НОС
+    // яла (две ветви — к наружному и внутреннему планширю), кормовая —
+    // корму; при спуске удлиняются, при поднятой шлюпке — короткие
+    // свисающие хвосты
     const fallGeo = new THREE.BufferGeometry();
     fallGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(8 * 3), 3));
     const falls = new THREE.LineSegments(fallGeo, ropeMat);
@@ -1991,11 +2018,8 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     };
     boat = {
       group: bg, len: bl, beam: ud.beam,
-      davitHeads: [
-        new THREE.Vector3(-xb, headY - 0.04, headZ),
-        new THREE.Vector3(xb, headY - 0.04, headZ),
-      ],
-      stowPos: new THREE.Vector3(0, yB, zB),
+      davitHeads,
+      stowPos: new THREE.Vector3(xB, yB, zB),
       stowRotY: 0,
       gunY: ud.gunY, gunX: ud.gunX, hangZ: ud.hangZ,
       falls, oars: ud.oars, rowZ: ud.rowZ,

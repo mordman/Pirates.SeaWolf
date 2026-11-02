@@ -65,10 +65,10 @@ for (const model of ['frigate', 'cog', 'sloop']) {
     const box = new T.Box3().setFromObject(b);
     const size = new T.Vector3(); box.getSize(size);
     const L = p.preset.length;
-    // шлюпбалки: вершины ДЕРЕВЯННОГО меша деталей у транца ВЫШЕ планширя
-    // (наклонные девицы + поперечина между головами)
+    // шлюпбалки: вершины ДЕРЕВЯННОГО меша деталей у БОРТА над планширем
+    // (Task 26: две наклонные кранбалки вдоль борта, носовая и кормовая)
     const q = p.preset.quarter ?? 0;
-    const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
+    const bz = b.position.z, bl = bvis.len;
     let davitVerts = 0;
     v.detail.traverse(o => {
       if (!o.isMesh || !o.material?.vertexColors) return;
@@ -76,15 +76,17 @@ for (const model of ['frigate', 'cog', 'sloop']) {
       if (!pos) return;
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-        if (z < sternZb + 0.7 && z > sternZb - 1.2 && Math.abs(x) < L * 0.3
-          && y > b.position.y - 1.2) davitVerts++;
+        const hw = p.halfWidthAt(z);
+        if (Math.abs(z - bz) < bl * 0.75 && Math.abs(x) > hw * 0.9
+          && Math.abs(x) < hw + 3.2 && y > b.position.y - 1.5) davitVerts++;
       }
     });
     return JSON.stringify({
       ok: true, model: '${model}',
       extX: +size.x.toFixed(2), extZ: +size.z.toFixed(2),
       rotY: +b.rotation.y.toFixed(2),
-      z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      x: +b.position.x.toFixed(2), z: +b.position.z.toFixed(2), y: +b.position.y.toFixed(2),
+      hullW: +p.halfWidthAt(b.position.z).toFixed(2),
       L, freeboard: p.preset.freeboard,
       quarter: q, castle: p.preset.castleH ?? 0,
       davitVerts, visible: b.visible,
@@ -92,9 +94,11 @@ for (const model of ['frigate', 'cog', 'sloop']) {
   })()`));
   log(`A[${model}]:`, JSON.stringify(r));
   check(`A: ${model} — вдоль (extZ > extX·1.6)`, r.ok && r.extZ > r.extX * 1.6, `extX=${r.extX} extZ=${r.extZ}`);
-  check(`A: ${model} — за транцем (-0.9L < z < -0.5L)`, r.ok && r.z < -r.L * 0.5 && r.z > -r.L * 0.9, `z=${r.z}`);
-  check(`A: ${model} — киль над кормой (y > 0.95·freeboard)`, r.ok && r.y > r.freeboard * 0.95, `y=${r.y}`);
-  check(`A: ${model} — шлюпбалки построены (вершин > 60)`, r.ok && r.davitVerts > 60, `verts=${r.davitVerts}`);
+  check(`A: ${model} — БОРТОМ К БОРТУ (за бортом у кормы, x > ширины корпуса)`,
+    r.ok && r.x > r.hullW && r.z > -r.L * 0.55 && r.z < -r.L * 0.2,
+    `x=${r.x} (борт ${r.hullW}) z=${r.z}`);
+  check(`A: ${model} — киль над палубой (y > 0.95·freeboard)`, r.ok && r.y > r.freeboard * 0.95, `y=${r.y}`);
+  check(`A: ${model} — шлюпбалки у борта построены (вершин > 60)`, r.ok && r.davitVerts > 60, `verts=${r.davitVerts}`);
 }
 
 // ================= B+C: квартердек — перила/гладкость/цвет =================

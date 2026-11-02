@@ -49,6 +49,13 @@ export class CameraRig {
   // соответствуют лево/право НА ЭКРАНЕ, инверсии при разных курсах нет
   private isoFollow = 1.6; // скорость доворота, рад/с
 
+  // масштаб дистанции: 1 — корабль; ~0.35 — игрок В ШЛЮПКЕ (ял в 6 раз
+  // короче корабля — с корабельной дистанции он муравей; камера
+  // приближается плавно, Task 26 «сделай след от лодки» — чтобы след
+  // и сам ял были видны)
+  distScale = 1;
+  private distScaleSmooth = 1;
+
   // сглаживание
   private pos = new THREE.Vector3(0, 60, 120);
   private look = new THREE.Vector3();
@@ -116,6 +123,10 @@ export class CameraRig {
     let target = this._t1;
     let lookTarget = this._t2;
 
+    // плавный зум к шлюпке/обратно к кораблю
+    this.distScaleSmooth += (this.distScale - this.distScaleSmooth) * Math.min(1, dt * 2.0);
+    const ds = this.distScaleSmooth;
+
     // изометрическая камера доворачивается за курсом корабля (кратчайшей дугой)
     {
       const azTarget = -ship.heading - Math.PI / 2 + 0.55; // сзади и чуть сбоку
@@ -137,7 +148,7 @@ export class CameraRig {
     } else {
       switch (this.mode) {
         case 'iso': {
-          const d = this.dist.iso;
+          const d = this.dist.iso * ds;
           const az = this.isoAzim + this.userAzim;
           const el = 0.62; // ~35°
           target.set(
@@ -149,7 +160,7 @@ export class CameraRig {
           break;
         }
         case 'rear': {
-          const d = this.dist.rear;
+          const d = this.dist.rear * ds;
           const az = ship.heading + Math.PI + this.userAzim; // сзади
           const el = 0.30 + 0.1 * ship.speedFrac;
           target.set(
@@ -161,7 +172,7 @@ export class CameraRig {
           break;
         }
         case 'side': {
-          const d = this.dist.side;
+          const d = this.dist.side * ds;
           const az = ship.heading + Math.PI / 2 + this.userAzim; // сбоку (правый борт)
           const el = 0.18;
           target.set(
