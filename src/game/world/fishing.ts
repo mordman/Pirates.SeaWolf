@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RNG } from '../core/rng';
 import { buildFigure, rollTraits, mulberry32 } from '../ship/crew';
-import type { PortDef } from './world';
+import type { PortDef, IslandDef } from './world';
 
 // ============================================================
 // Рыбацкие детали каждой гавани (по фидбеку: «причалы с лодками,
@@ -190,6 +190,62 @@ function getNetGeo(): THREE.BufferGeometry {
 
 const VILLAGE_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0.03 });
 
+// ---------- пенное кольцо по ватерлинии шлюпок (Task 28) ----------
+// Плоская полупрозрачная лента вокруг корпуса на уровне воды: без
+// неё плоскость океана ПРОРЕЗАЛА борта деревенских шлюпок линией
+// («вода режет лодку»). Кольцо общее для всех лодок — один буфер.
+let foamRingGeo: THREE.BufferGeometry | null = null;
+const FOAM_RING_MAT = new THREE.MeshBasicMaterial({
+  color: 0xe9f3f5, transparent: true, opacity: 0.5,
+  depthWrite: false, side: THREE.DoubleSide,
+});
+function getFoamRingGeo(): THREE.BufferGeometry {
+  if (foamRingGeo) return foamRingGeo;
+  // «стадион» — прямоугольник с полукруглыми оконечностями (как
+  // обвод шлюпки): внутренний контур у борта, внешний на 0.3 м
+  const inner = 0.10, outer = 0.34, y = 0.13;
+  const hw = 0.5, hl = 1.78, cap = hw;
+  const N = 28;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const Z = hl - cap;
+  // t 0..1 — обход контура: левый борт → нос → правый борт → корма
+  const stadium = (t: number, r: number): [number, number] => {
+    const q = t * 4;
+    if (q < 1) return [-(hw + r), -Z + q * 2 * Z];
+    if (q < 2) {
+      const a = -Math.PI / 2 + (q - 1) * Math.PI;
+      return [Math.sin(a) * (cap + r), Z + Math.cos(a) * (cap + r)];
+    }
+    if (q < 3) return [(hw + r), Z - (q - 2) * 2 * Z];
+    const a = Math.PI / 2 + (q - 3) * Math.PI;
+    return [Math.sin(a) * (cap + r), -Z + Math.cos(a) * (cap + r)];
+  };
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    const [ix, iz] = stadium(t, inner);
+    const [ox, oz] = stadium(t, outer);
+    pos.push(ix, y, iz, ox, y, oz);
+  }
+  for (let i = 0; i < N; i++) {
+    const a = i * 2, b = a + 1, c = ((i + 1) % N) * 2, d = c + 1;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  foamRingGeo = g;
+  return g;
+}
+/** Дочерняя пенная лента для шлюпки (деревни и береговой флот) */
+function makeFoamRing(): THREE.Mesh {
+  const m = new THREE.Mesh(getFoamRingGeo(), FOAM_RING_MAT);
+  m.renderOrder = 2;
+  m.castShadow = false;
+  m.receiveShadow = false;
+  return m;
+}
+
 /** Собрать рыбацкий декор гавани: лодки у пирса и на берегу,
  *  краболовки, вешала, сети, поплавки, рыбаки */
 export function buildFishingVillage(port: PortDef, rng: RNG, heightAt: (x: number, z: number) => number): FishingVillage {
@@ -209,6 +265,8 @@ export function buildFishingVillage(port: PortDef, rng: RNG, heightAt: (x: numbe
     // тени выкл: 79+ шлюпок по всему архипелагу — дорого в shadow-pass,
     // а мелкие тени у причалов не читаются
     mesh.castShadow = false;
+    // пенная лента по ватерлинии (Task 28): вода «обтекает» борта
+    if (floating) mesh.add(makeFoamRing());
     const baseY = floating ? 0 : Math.max(heightAt(x, z), 0.1) + 0.1;
     mesh.position.set(x, baseY, z);
     mesh.rotation.y = yaw;
@@ -332,13 +390,17 @@ export function buildFishingVillage(port: PortDef, rng: RNG, heightAt: (x: numbe
           b.mesh.position.y = b.baseY - k * 2.6 * b.scale;
           b.mesh.rotation.z += b.rollDir * dt * 0.22;
           b.mesh.rotation.x += dt * 0.1;
+          // пенная лента тонет вместе с лодкой — прячем сразу
+          for (const c of b.mesh.children) c.visible = false;
           if (b.sunkT >= 1) b.mesh.visible = false;
           continue;
         }
         if (b.floating) {
-          // шлюпка на воде: следует за волнами + лёгкая качка
+          // шлюпка на воде: следует за волнами + лёгкая качка.
+          // Task 28: сидит ПОВЫШЕ (0.03·масштаб вместо 0.1) —
+          // вода не «режет» борта, лента пены у самой воды
           const wy = waterHeight(b.x, b.z, time);
-          b.mesh.position.y = wy - 0.1 * b.scale;
+          b.mesh.position.y = wy - 0.03 * b.scale;
           b.mesh.rotation.z = Math.sin(time * 0.9 + b.phase) * 0.055;
           b.mesh.rotation.x = Math.sin(time * 0.68 + b.phase * 1.3) * 0.035;
         }
@@ -353,4 +415,203 @@ export function buildFishingVillage(port: PortDef, rng: RNG, heightAt: (x: numbe
     },
   };
   return vis;
+}
+
+// ============================================================
+// БЕРЕГОВОЙ РЫБАЦКИЙ ФЛОТ (Task 28: «добавь больше лодок с
+// рыбаками у островов»). Лодки с РЫБАКАМИ дрейфуют вдоль берегов
+// ВСЕХ островов архипелага — не только у пирсов гаваней:
+//  - в каждой лодке 1-2 рыбака (сидят на банках) с удилищами
+//    за бортом; изредка всплеск у поплавка — поклёвка;
+//  - лодки медленно дрейфуют по кругу острова у самой отмели,
+//    качаются на волнах (посадка ПОВЫШЕ + пенная лента —
+//    вода обтекает борта, Task 28);
+//  - разрыв снаряда рядом топит лодку вместе с рыбаком
+//    (combat → game.sinkBoatsAt → world.hitBoats).
+// Каждая лодка — ОДИН меш: корпус + фигуры + удилища запечены
+// в общую геометрию (6 вариантов переиспользуются) + дочерняя
+// пенная лента — 2 draw call на лодку, обновляются только
+// лодки в радиусе 3.6 км от игрока.
+// ============================================================
+
+/** Лодка берегового флота: дрейф в полярных координатах острова */
+export interface CoastBoat extends WorldBoat {
+  cx: number; cz: number;   // остров-хозяин
+  ang: number;              // угол у острова, рад
+  rad: number;              // радиус от центра острова, м
+  w: number;                // угловая скорость дрейфа, рад/с
+  /** кончики удилищ в ЛОКАЛЬНЫХ координатах (всплески поклёвки) */
+  rodTips: THREE.Vector3[];
+}
+
+export interface CoastFleet {
+  group: THREE.Group;
+  boats: CoastBoat[];
+  /** сколько рыбаков в лодках (телеметрия/E2E) */
+  fishermen: number;
+  /** привязать эффекты (всплески поклёвки) — game.ts после создания мира */
+  setFx(fn: (x: number, y: number, z: number, a: number) => void): void;
+  hitBoats(x: number, z: number, r: number): WorldBoat[];
+  update(time: number, dt: number, waterHeight: (x: number, z: number, t: number) => number,
+    playerPos: { x: number; z: number }): void;
+}
+
+// ---------- варианты лодок с рыбаками (запечённая геометрия) ----------
+const strip = (g: THREE.BufferGeometry) => {
+  if (g.getAttribute('uv')) g.deleteAttribute('uv');
+  return g;
+};
+let coastVariants: { geo: THREE.BufferGeometry; rodTips: THREE.Vector3[]; fishermen: number }[] | null = null;
+function getCoastVariants(): { geo: THREE.BufferGeometry; rodTips: THREE.Vector3[]; fishermen: number }[] {
+  if (coastVariants) return coastVariants;
+  coastVariants = [];
+  const rnd = mulberry32(88123);
+  for (let v = 0; v < 6; v++) {
+    const parts: THREE.BufferGeometry[] = [];
+    const rodTips: THREE.Vector3[] = [];
+    // корпус (общая геометрия шлюпки; uv долой — фигуры без uv)
+    parts.push(strip(getRowboatGeo().clone()));
+    const nFisher = v % 3 === 0 ? 1 : 2;
+    for (let f = 0; f < nFisher; f++) {
+      const side = f === 0 ? 1 : -1;
+      const z = v % 2 === 0 ? 0.65 : -0.75;          // носовая или кормовая банка
+      // рыбак: та же процедурная фигурка, что экипаж — сидит на банке
+      const fig = buildFigure('rower', rollTraits(rnd, 'rower'), Math.floor(rnd() * 99999), true);
+      fig.group.scale.set(0.92, 0.78, 0.92);
+      fig.group.position.set(side * 0.2, 0.12, z);
+      // лицом к борту с удочкой (чуть от кормы)
+      fig.group.rotation.y = Math.PI + side * 0.85;
+      fig.group.updateMatrixWorld(true);
+      fig.group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!(m as unknown as { isMesh?: boolean }).isMesh) return;
+        parts.push(strip(m.geometry.clone().applyMatrix4(m.matrixWorld)));
+      });
+      // УДИЛИЩЕ: бамбуковый хлыст через борт — от колен рыбака
+      // наружу и вперёд, кончик над водой (для всплесков поклёвки)
+      const rodLen = 1.7;
+      const rx = side * 0.35, ry = 0.62, rz = z - 0.1;
+      const tipX = side * 1.25, tipY = 0.55, tipZ = z + 0.75;
+      const dir = new THREE.Vector3(tipX - rx, tipY - ry, tipZ - rz);
+      const rod = new THREE.CylinderGeometry(0.012, 0.02, rodLen, 4);
+      // ось цилиндра Y → вдоль dir
+      const q = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+      rod.applyQuaternion(q);
+      rod.translate((rx + tipX) / 2, (ry + tipY) / 2, (rz + tipZ) / 2);
+      parts.push(strip(paint(rod, 0x6a4a28, 0.08)));
+      // леска не видна с расстояния — поплавок-кивок у кончика
+      parts.push(strip(paint(tf(new THREE.CylinderGeometry(0.02, 0.02, 0.14, 4), 0, 0.02, 0), 0xd94f2c)));
+      rodTips.push(new THREE.Vector3(tipX, 0.5, tipZ));
+      // садок с уловом у ног
+      parts.push(strip(paint(tf(new THREE.SphereGeometry(0.14, 5, 4), side * 0.45, 0.42, z - 0.3)
+        .scale(1, 0.6, 1.6) as THREE.BufferGeometry, FISH, 0.12)));
+    }
+    coastVariants.push({ geo: mergeGeometries(parts)!, rodTips, fishermen: nFisher });
+  }
+  return coastVariants;
+}
+
+/** Собрать береговой флот: лодки с рыбаками вдоль берегов всех островов */
+export function buildCoastFleet(
+  islands: IslandDef[],
+  heightAt: (x: number, z: number) => number,
+  seed = 20261102,
+): CoastFleet {
+  const group = new THREE.Group();
+  const boats: CoastBoat[] = [];
+  const variants = getCoastVariants();
+  const rng = new RNG(seed);
+  let fishermen = 0;
+
+  for (const isl of islands) {
+    // плотность: от 2 лодок у мелкой до 9 у большой
+    const n = Math.max(2, Math.min(9, Math.round(isl.r / 130)));
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * Math.PI * 2 + rng.range(-0.3, 0.3);
+      // ищем воду глубиной 1.5..12 м у кромки (не в отмели, не в глубине)
+      let rad = 0;
+      for (const rr of [isl.r * 1.0, isl.r * 1.07, isl.r * 1.15, isl.r * 1.28]) {
+        const h = heightAt(isl.cx + Math.cos(ang) * rr, isl.cz + Math.sin(ang) * rr);
+        if (h < -1.5 && h > -14) { rad = rr + rng.range(0, 16); break; }
+      }
+      if (!rad) continue;   // скала в море без пригодной кромки
+      const variant = variants[Math.floor(rng.next() * variants.length)];
+      const scale = rng.range(0.9, 1.06);
+      const mesh = new THREE.Mesh(variant.geo, VILLAGE_MAT);
+      mesh.castShadow = false;
+      mesh.add(makeFoamRing());
+      const x = isl.cx + Math.cos(ang) * rad;
+      const z = isl.cz + Math.sin(ang) * rad;
+      mesh.position.set(x, 0, z);
+      mesh.scale.setScalar(scale);
+      group.add(mesh);
+      boats.push({
+        mesh, x, z, yaw: 0, floating: true, baseY: 0,
+        sinking: false, sunkT: 0,
+        rollDir: rng.next() < 0.5 ? -1 : 1,
+        phase: rng.next() * 6.28, scale,
+        cx: isl.cx, cz: isl.cz, ang, rad,
+        w: (rng.next() < 0.5 ? -1 : 1) * rng.range(0.0012, 0.0034),
+        rodTips: variant.rodTips.map((t) => t.clone()),
+      });
+      fishermen += variant.fishermen;
+    }
+  }
+
+  let fx: ((x: number, y: number, z: number, a: number) => void) | null = null;
+  const fleet: CoastFleet = {
+    group, boats, fishermen,
+    setFx(fn) { fx = fn; },
+    hitBoats(x, z, r) {
+      const hit: WorldBoat[] = [];
+      for (const b of boats) {
+        if (b.sinking) continue;
+        if (Math.hypot(b.x - x, b.z - z) > r + 2.4) continue;
+        b.sinking = true;
+        b.sunkT = 0;
+        for (const c of b.mesh.children) c.visible = false;
+        hit.push(b);
+      }
+      return hit;
+    },
+    update(time, dt, waterHeight, playerPos) {
+      for (const b of boats) {
+        const dPl = Math.hypot(b.x - playerPos.x, b.z - playerPos.z);
+        if (b.sinking) {
+          b.sunkT = Math.min(1, b.sunkT + dt / 3.2);
+          const k = b.sunkT * b.sunkT;
+          b.mesh.position.y = b.baseY - k * 2.6 * b.scale;
+          b.mesh.rotation.z += b.rollDir * dt * 0.22;
+          b.mesh.rotation.x += dt * 0.1;
+          if (b.sunkT >= 1) b.mesh.visible = false;
+          continue;
+        }
+        // дальние лодки: не двигаем и не рисуем (LOD)
+        if (dPl > 3600) { b.mesh.visible = false; continue; }
+        b.mesh.visible = true;
+        // медленный дрейф вдоль берега по кругу острова
+        b.ang += b.w * dt;
+        b.x = b.cx + Math.cos(b.ang) * b.rad;
+        b.z = b.cz + Math.sin(b.ang) * b.rad;
+        const wy = waterHeight(b.x, b.z, time);
+        // посадка ПОВЫШЕ + лёгкая качка (как у деревенских шлюпок)
+        b.mesh.position.set(b.x, wy - 0.03 * b.scale, b.z);
+        const dirX = -Math.sin(b.ang) * Math.sign(b.w);
+        const dirZ = Math.cos(b.ang) * Math.sign(b.w);
+        b.mesh.rotation.y = Math.atan2(dirX, dirZ);
+        b.mesh.rotation.z = Math.sin(time * 0.9 + b.phase) * 0.055;
+        b.mesh.rotation.x = Math.sin(time * 0.68 + b.phase * 1.3) * 0.035;
+        // поклёвка: редкий всплеск у кончика удилища (только рядом)
+        if (fx && dPl < 650 && Math.random() < dt * 0.10) {
+          const tip = b.rodTips[Math.floor(Math.random() * b.rodTips.length)];
+          const ca = Math.cos(b.mesh.rotation.y), sa = Math.sin(b.mesh.rotation.y);
+          const wx = b.x + tip.x * ca + tip.z * sa;
+          const wz = b.z - tip.x * sa + tip.z * ca;
+          fx(wx, waterHeight(wx, wz, time) + 0.02, wz, 0.22);
+        }
+      }
+    },
+  };
+  return fleet;
 }

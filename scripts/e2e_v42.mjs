@@ -311,18 +311,21 @@ check('C2: шторм — остаётся на плаву (средний бо�
   storm && !storm.nan && storm.fbMean > -0.5 && storm.minY > -7 && storm.maxRoll < 0.5,
   `fbMean=${storm.fbMean} fbMin=${storm.fbMin} minY=${storm.minY} roll=${storm.maxRoll}`);
 
-// C3: зелёная вода у шлюпа (малый надводный борт) — волна падает на палубу
+// C3: зелёная вода — только АНОМАЛЬНЫЙ вал (Task 28: в игровом
+//     шторме до 2.0 корабль ДЕРЖИТСЯ НА ВОДЕ — развал бортов +
+//     запас плавучести над палубой; форс-мажор 2.6 — самый большой
+//     вал всё же накрывает палубу шлюпа, после — всплытие)
 ev(`(() => {
   const g = window.__game;
   g.changeShip('sloop', true);
   const p = g.player;
   p.anchored = true; p.velocity.set(0, 0, 0); p.sailTarget = 0;
   g.debugSetWeather('storm', 24);
-  g.seaAmpSmooth = 1.9;
+  g.seaAmpSmooth = 2.6;
   p.greenWater = 0;
   return 'ok';
 })()`);
-await sleep(2000);   // кадры поднимут SEA.amplitude до 1.9
+await sleep(2000);   // кадры поднимут SEA.amplitude до 2.6
 const gw = jparse(ev(`(() => {
   const g = window.__game;
   const p = g.player;
@@ -345,7 +348,7 @@ const gw = jparse(ev(`(() => {
   });
 })()`));
 log('C3:', JSON.stringify(gw));
-check('C3: зелёная вода — большая волна НАКРЫВАЕТ палубу шлюпа (greenWater > 0)',
+check('C3: зелёная вода — аномальный вал НАКРЫВАЕТ палубу шлюпа (greenWater > 0)',
   gw && !gw.nan && gw.greenWater > 0, `events=${gw.greenWater} fbMin=${gw.fbMin}`);
 check('C3: после накрытия корабль ВСПЛЫВАЕТ (борт в конце > −0.4)',
   gw && gw.fbEnd > -0.4, `fbEnd=${gw.fbEnd}`);

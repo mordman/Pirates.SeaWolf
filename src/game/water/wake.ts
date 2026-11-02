@@ -172,15 +172,20 @@ export class WakeTrail {
  *  Кольцо ЛЕЖИТ НА ВОЛНАХ: в вершинном шейдере — тот же Gerstner, что
  *  и у океана (высота в мировой точке), поэтому на гребне воротник
  *  поднимается вместе с водой, а в ложбине опускается — без «белой
- *  полосы», повисшей в воздухе у борта (жалоба VLM-проверки). */
+ *  полосы», повисшей в воздухе у борта (жалоба VLM-проверки).
+ *  opts.width — ширина пенной кромки (корабль 2.6 м, ял ~0.5 м);
+ *  opts.size — характерная длина корпуса для нормировки носового
+ *  буруна (пороговые константы шейдера — в масштабе корабля). */
 export class WaterlineFoam {
   mesh: THREE.Mesh;
   private mat: THREE.ShaderMaterial;
   private outline: THREE.Vector2[];
 
-  constructor(outline: THREE.Vector2[]) {
+  constructor(outline: THREE.Vector2[], opts?: { width?: number; size?: number }) {
     this.outline = outline;
-    // Строим кольцо: внутренний радиус = контур корпуса (масштаб 1), внешний = контур * 1.5 + шум в шейдере
+    const width = Math.max(0.15, opts?.width ?? 2.6);
+    const size = Math.max(4, opts?.size ?? 38);
+    // Строим кольцо: внутренний радиус = контур корпуса (масштаб 1), внешний = контур + width
     const N = outline.length;
     const verts = N * 2 + 2;
     const pos = new Float32Array(verts * 3);
@@ -196,7 +201,7 @@ export class WaterlineFoam {
       const len = Math.hypot(nx, ny) || 1;
       const ox = nx / len, oy = ny / len;
       pos[i * 6] = p.x; pos[i * 6 + 2] = p.y;
-      pos[i * 6 + 3] = p.x + ox * 2.6; pos[i * 6 + 4] = 0; pos[i * 6 + 5] = p.y + oy * 2.6;
+      pos[i * 6 + 3] = p.x + ox * width; pos[i * 6 + 4] = 0; pos[i * 6 + 5] = p.y + oy * width;
       inner[i * 2] = 1; inner[i * 2 + 1] = 0;
     }
     const g = new THREE.BufferGeometry();
@@ -212,6 +217,7 @@ export class WaterlineFoam {
         uTime: { value: 0 },
         uSpeed: { value: 0 },      // 0..1 доля скорости
         uRoll: { value: 0 },
+        uSize: { value: size },    // характерная длина корпуса (нормировка буруна)
         uAmp: { value: SEA.amplitude },   // погода (высота волн)
         uAmpLo: { value: SEA.amplitude }, // погодные множители (Task 27)
         uAmpHi: { value: SEA.amplitude },
@@ -243,7 +249,7 @@ export class WaterlineFoam {
       fragmentShader: /* glsl */`
         varying float vInner;
         varying vec2 vXY;
-        uniform float uTime, uSpeed, uRoll;
+        uniform float uTime, uSpeed, uRoll, uSize;
         float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
         float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
           return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
@@ -253,14 +259,16 @@ export class WaterlineFoam {
           // ОСИ: vXY.y — ВДОЛЬ корпуса (+ = нос), vXY.x — поперёк (борт).
           // (старый шейдер считал носом vXY.x и подсвечивал мидель —
           //  получалась сплошная одинаковая полоса вдоль всего борта)
-          float lon = vXY.y;
+          // uSize нормирует масштаб: константы заданы для корабля ~38 м,
+          // у шлюпки (6 м) носовой бурун сжимается к форштевню
+          float lon = vXY.y * (38.0 / uSize);
           // (1) крупная пятнистость ВДОЛЬ корпуса: пенные секции чередуются
           //     с «дырами» — воротник не сплошной
           float lane = fbm(vec2(lon * 0.24, vXY.x * 0.4) + vec2(uTime * 0.10, -uTime * 0.06));
           float laneM = 0.30 + 0.90 * smoothstep(0.28, 0.72, lane);
           // (2) рваная кромка — два масштаба с разными скоростями
-          float n1 = fbm(vXY * 1.6 + vec2(uTime * 0.7, uTime * -0.5));
-          float n2 = fbm(vXY * 0.5 - vec2(uTime * 0.25, uTime * 0.18) + 7.3);
+          float n1 = fbm(vXY * (38.0 / uSize) * 1.6 + vec2(uTime * 0.7, uTime * -0.5));
+          float n2 = fbm(vXY * (38.0 / uSize) * 0.5 - vec2(uTime * 0.25, uTime * 0.18) + 7.3);
           // (3) нос: бурун сильнее и РАСХОДИТСЯ клином на ходу; корма тише
           float bowNear = smoothstep(-2.0, 12.0, lon);
           float bowSpread = uSpeed * 1.3 * bowNear;          // шире у носа

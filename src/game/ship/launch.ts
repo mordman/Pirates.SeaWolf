@@ -4,7 +4,7 @@ import { updateBoatFalls, type BoatVis } from './buildShip';
 import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
 import type { Particles } from '../fx/particles';
-import { WakeTrail } from '../water/wake';
+import { WakeTrail, WaterlineFoam } from '../water/wake';
 
 // ============================================================
 // СПУСК ШЛЮПКИ НА ВОДУ (по замечанию игрока: «можно спустить
@@ -95,6 +95,11 @@ export class BoatLaunch {
     width0: 0.34, widthSpd: 0.5, alpha0: 0.36, alphaSpd: 0.6,
     yOff: 0.12, widen: 3.6,
   });
+  // ПЕННЫЙ ВОРОТНИК по ватерлинии яла (Task 28: «вода должна обтекать
+  // лодку, а не резать её»): та же кромка, что у корабля, в масштабе
+  // лодки — кольцо лежит на волнах (шейдерный Gerstner), у носа
+  // бурун на ходу; без него плоскость воды прорезала корпус линией
+  readonly foam: WaterlineFoam | null = null;
   // подтяжка: откуда стартует шлюпка (мир)
   private pullFrom = new THREE.Vector3();
   private pullQuat = new THREE.Quaternion();
@@ -102,6 +107,8 @@ export class BoatLaunch {
   private pullPos = new THREE.Vector3();   // старт выборки талов (локалы корабля)
   private splashed = false;
   private groundCd = 0;       // кулдаун сообщения об отмели
+  // floating origin: сцена → мир (для шейдера воротника)
+  private _negShift?: THREE.Vector3;
 
   private _v = new THREE.Vector3();
   private _v2 = new THREE.Vector3();
@@ -121,6 +128,15 @@ export class BoatLaunch {
     // след пены за шлюпкой — в контейнер мира (координаты те же, что pos)
     this.wake.setWaterHeight(waterHeightAt);
     this.worldGroup.add(this.wake.mesh);
+    // пенный воротник по ватерлинии (масштаб лодки)
+    if (this.vis) {
+      this.foam = new WaterlineFoam(this.vis.outline, {
+        width: Math.max(0.4, this.vis.beam * 0.34),
+        size: this.vis.len,
+      });
+      this.foam.mesh.visible = false;
+      this.worldGroup.add(this.foam.mesh);
+    }
     if (this.vis) {
       // два гребца на банке (появляются при спуске): сидят лицом
       // к корме, качаются в такт гребков
@@ -142,10 +158,11 @@ export class BoatLaunch {
   /** игрок в шлюпке (управление кораблём отключено)? */
   inBoat(): boolean { return this.phase !== 'stowed'; }
 
-  /** убрать за собой: след пены снимается со сцены (смена корабля) */
+  /** убрать за собой: след пены и воротник снимаются со сцены (смена корабля) */
   dispose() {
     this.wake.clear();
     this.wake.mesh.parent?.remove(this.wake.mesh);
+    if (this.foam) this.foam.mesh.parent?.remove(this.foam.mesh);
   }
 
   /** расстояние от шлюпки до шлюпбалок борта (для HUD/подъёма) */
@@ -228,7 +245,8 @@ export class BoatLaunch {
     }
   }
 
-  update(dt: number, time: number) {
+  update(dt: number, time: number, negShift?: THREE.Vector3) {
+    this._negShift = negShift;
     if (!this.vis) return;
     const b = this.vis.group;
     // шлюпку разбило прямо во время спуска/на воде — подобрать игрока
@@ -237,6 +255,8 @@ export class BoatLaunch {
       this.msg?.('Шлюпку разнесло щепой! Вас подобрали на борт');
       return;
     }
+    // воротник показывается ТОЛЬКО на воде (не на талях/шлюпбалках)
+    if (this.foam && this.phase !== 'afloat') this.foam.mesh.visible = false;
     switch (this.phase) {
       case 'stowed': {
         // фалы слегка тянутся от качки корабля
@@ -426,13 +446,13 @@ export class BoatLaunch {
       }
     }
 
-    // --- ПЛАВУЧЕСТЬ ЯЛА: 5 ТОЧЕК НА ВОЛНЕ (Task 27, как корабль в
-    //     режиме «волна-опора» из файла игрока): нос/корма/борта
-    //     замеряются на Gerstner-волнах, из наклона воды строится
-    //     посадка — лодка ДЕРЖИТСЯ НА ПОВЕРХНОСТИ (нос всходит на
-    //     гребень и скользит вниз), пружина держит осадку. До сих
-    //     пор замер одной точки + нормаль оставляли ял ПОД ВОДОЙ
-    //     на крутых волнах (жалоба «лодка плавает под водой») ---
+    // --- ПЛАВУЧЕСТЬ ЯЛА: 7 ТОЧЕК НА ВОЛНЕ (Task 27→28): нос/корма/
+    //     борта/мидель + ПОЛУНОС и ПОЛУКОРМА — между прежними 5
+    //     точками середина корпуса проваливалась ПОД гребень на
+    //     коротких волнах («вода режет лодку»); посадка по
+    //     средневзвешенной поверхности + БЫСТРОЕ сглаживание — ял
+    //     ДЕРЖИТСЯ ПОВЕРХНОСТИ (нос всходит на гребень и скользит
+    //     вниз), осадка мала — планширь всегда над водой ---
     const L = this.vis.len, B = this.vis.beam;
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
     const sx = fz, sz = -fx;                    // штирборт яла
@@ -441,6 +461,8 @@ export class BoatLaunch {
     const hStar = waterHeightAt(this.pos.x + sx * B * 0.5, this.pos.z + sz * B * 0.5, time);
     const hPort = waterHeightAt(this.pos.x - sx * B * 0.5, this.pos.z - sz * B * 0.5, time);
     const hMid = waterHeightAt(this.pos.x, this.pos.z, time);
+    const hBowM = waterHeightAt(this.pos.x + fx * L * 0.21, this.pos.z + fz * L * 0.21, time);
+    const hSternM = waterHeightAt(this.pos.x - fx * L * 0.21, this.pos.z - fz * L * 0.21, time);
     if (!this.splashed) {
       this.particles.splash(this.pos.x, hMid, this.pos.z, 1.5);
       this.onSplash?.();
@@ -449,10 +471,14 @@ export class BoatLaunch {
     // посадка: прямое следование СРЕДНЕВЗВЕШЕННОЙ ПОВЕРХНОСТИ (пружина
     // попадала в резонанс с волной и гонила ял в противофазе ±2.5 м —
     // «лодка плавает под водой/над водой»); быстрое экспоненциальное
-    // сглаживание гасит дрожь замеров, но не отстаёт от волны
-    const draft = L * 0.155 * 0.24;
-    const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 - draft;
-    this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 10.0);
+    // сглаживание гасит дрожь замеров, но не отстаёт от волны.
+    // Осадка мала (0.15·полной высоты борта — Task 28: ял ПОВЫШЕ
+    // на воде, привальный брус не подрезается водой)
+    const draft = L * 0.155 * 0.15;
+    const targetY = hMid * 0.30
+      + (hBow + hStern) * 0.11 + (hPort + hStar) * 0.095
+      + (hBowM + hSternM) * 0.145 - draft;
+    this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 13.0);
     b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
     // наклон по УКЛОНАМ воды между точками (нос-корма, борт-борт) +
     // лёгкая бортовая качка от гребков
@@ -490,6 +516,18 @@ export class BoatLaunch {
         this.pos.z - Math.cos(this.heading) * this.vis.len * 0.48);
       this.wake.push(this._v2, spdFrac, dt, time);
     }
+
+    // --- ПЕННЫЙ ВОРОТНИК ПО ВАТЕРЛИНИИ (Task 28): кольцо у самого
+    //     борта — вода «омывает» корпус вместо линии разреза;
+    //     высоту волны добавляет вершинный шейдер (как у корабля),
+    //     на CPU — привязка к лодке: позиция/курс/скорость/крен ---
+    if (this.foam) {
+      this.foam.mesh.visible = true;
+      this.foam.mesh.position.set(this.pos.x, this.pos.y + draft + 0.05, this.pos.z);
+      this.foam.mesh.rotation.y = this.heading;
+      const spdFrac = Math.min(1, Math.abs(this.vel) / MAX_FWD);
+      this.foam.update(time, spdFrac, this.roll, this._negShift);
+    }
     // --- румпеля нет: курс держат вёсла ---
   }
 
@@ -522,6 +560,8 @@ export class BoatLaunch {
       oarDeploy: +this.oarDeploy.toFixed(2),
       rowersVisible: this.rowers.length > 0 && this.rowers[0].visible,
       wakePts: this.wake.count(),
+      foamCollar: !!this.foam && this.foam.mesh.visible,
+      draft: this.vis ? +(this.vis.len * 0.155 * 0.15).toFixed(3) : 0,
     };
   }
 }

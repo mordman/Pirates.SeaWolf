@@ -1824,6 +1824,19 @@ function buildDeckBoat(len: number): THREE.Group {
     oars.push(pivot);
   }
 
+  // КОНТУР ВАТЕРЛИНИИ яла (Task 28: пенный воротник — «вода обтекает
+  // лодку»): обвод по шпангоутам, штирборт от транца к носу + порт
+  // обратно — замкнутое кольцо (как у корабля, масштаб лодки)
+  const outline: THREE.Vector2[] = [];
+  for (let i = 0; i <= ST; i += 2) {
+    const s = i / ST;
+    outline.push(new THREE.Vector2(Math.max(halfBeam * 0.09, halfW(s)), (s - 0.5) * len));
+  }
+  for (let i = ST; i >= 0; i -= 2) {
+    const s = i / ST;
+    outline.push(new THREE.Vector2(-Math.max(halfBeam * 0.09, halfW(s)), (s - 0.5) * len));
+  }
+
   group.userData.deckBoat = true;
   group.userData.boatLen = len;
   group.userData.beam = beam;
@@ -1834,6 +1847,7 @@ function buildDeckBoat(len: number): THREE.Group {
   group.userData.thwartY = sheer(rowS) - 0.235;
   group.userData.thwarts = thwarts;
   group.userData.oars = oars;
+  group.userData.outline = outline;        // ватерлиния (пенный воротник)
   return group;
 }
 
@@ -1854,6 +1868,7 @@ export interface BoatVis {
   falls: THREE.LineSegments;     // 4 динамические линии талов
   oars: THREE.Object3D[];        // вёсла (пивоты у уключин)
   rowZ: number;                  // z гребной банки (в локалах шлюпки)
+  outline: THREE.Vector2[];      // контур ватерлинии (пенный воротник, Task 28)
 }
 
 /** Обновить фалы-тали по ТЕКУЩЕМУ положению шлюпки (пока она в
@@ -2014,7 +2029,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     group.add(falls);
     const ud = bg.userData as {
       beam: number; gunY: number; gunX: number; hangZ: number; rowZ: number;
-      oars: THREE.Object3D[];
+      oars: THREE.Object3D[]; outline: THREE.Vector2[];
     };
     boat = {
       group: bg, len: bl, beam: ud.beam,
@@ -2023,6 +2038,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
       stowRotY: 0,
       gunY: ud.gunY, gunX: ud.gunX, hangZ: ud.hangZ,
       falls, oars: ud.oars, rowZ: ud.rowZ,
+      outline: ud.outline,
     };
     updateBoatFalls(boat);
   }

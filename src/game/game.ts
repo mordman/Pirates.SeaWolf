@@ -1938,7 +1938,7 @@ export class Game {
     if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles, this.negShift);
 
     // шлюпка: спуск/подъём/гребля — после визуала корабля
-    this.boatLaunch?.update(dt, this.time);
+    this.boatLaunch?.update(dt, this.time, this.negShift);
 
     // мелкие детали кораблей — только когда камера рядом (LOD)
     const camPos = this.rig.camera.position;
