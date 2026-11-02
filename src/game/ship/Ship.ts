@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
-import { waterHeightAt } from '../water/waves';
+import { waterHeightAt, SEA } from '../water/waves';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
 import type { GibPool } from '../fx/gibs';
@@ -352,6 +352,11 @@ export class Ship {
     // пружины плавучести уже не нужны, корпус ведёт себя как тело,
     // теряющее остойчивость
     if (this.sinking) { this.stepSinking(dt, time); return; }
+    // МОРЕ «ВОЛНА-ОПОРА» (Task 27, из файла игрока «ФРЕГАТ ПЕРУН»):
+    // корабль идёт ПОВЕРХНОСТЬЮ — 5 точек замера задают рамку наклона,
+    // пружина держит осадку; нос всходит на волну и спускается,
+    // глубоких нырков нет. Выбор модели моря — в настройках.
+    if (SEA.model === 'riding') { this.stepRidingWaves(dt, time); return; }
     this.force.set(0, 0, 0);
     this.torque.set(0, 0, 0);
 
@@ -516,6 +521,12 @@ export class Ship {
     // РЕЖЕТ волны, а не скользит по их поверхности; зелёная вода
     // (слишком большая волна) отработана в updateVisual.
 
+    this.stepHousekeeping(dt);
+  }
+
+  /** Хвост шага физики, ОБЩИЙ для обеих моделей моря: посадка на
+   *  мель, течь, пожар, порог затопления, сдача в плен (Task 27) */
+  private stepHousekeeping(dt: number) {
     // --- посадка на мель / столкновение с землёй ---
     this.checkGrounding(dt);
 
@@ -570,7 +581,147 @@ export class Ship {
         this.onSurrender?.(this);
       }
     }
-    // (момент гибели считает stepSinking — фазовая машина затопления)
+  }
+
+  // ============================================================
+  // МОРЕ «ВОЛНА-ОПОРА» (Task 27): реализация взята из файла игрока
+  // («ФРЕГАТ „ПЕРУН“ — штормовое плавание», раздел 8 «ФИЗИКА
+  // ПЛАВУЧЕСТИ») и адаптирована под наш корабль: нос/корма/борта/
+  // мидель замеряются на Gerstner-волнах активного набора, из
+  // наклона воды строится ОРИЕНТАЦИЯ корпуса (нос всходит на
+  // передний склон гребня и спускается за ним), а вертикаль —
+  // пружина с демпфером к средневзвешенной поверхности.
+  // Корабль ДЕРЖИТСЯ НА ВОДЕ: глубоких нырков нет, осадка почти
+  // постоянна. Крен от ветра на парусах — целевой угол рамки.
+  // ============================================================
+  private rideVy = 0;                 // вертикальная скорость пружины
+  private rideHeel = 0;               // сглаженный крен от ветра
+  private _rf = new THREE.Vector3();
+  private _ru = new THREE.Vector3();
+  private _rr = new THREE.Vector3();
+  private _rv1 = new THREE.Vector3();
+  private _rv2 = new THREE.Vector3();
+  private _rm = new THREE.Matrix4();
+  private _re = new THREE.Euler();
+  private _rq = new THREE.Quaternion();
+  private _rHeelQ = new THREE.Quaternion();
+
+  private stepRidingWaves(dt: number, time: number) {
+    const L = this.preset.length, B = this.preset.beam;
+    this.force.set(0, 0, 0);
+    this.torque.set(0, 0, 0);
+
+    const f = this._f.copy(this.forward);
+    const star = this._r.set(f.z, 0, -f.x).normalize(); // ШТИРБОРТ (право)
+    const spd = this.speed();
+    const m = this.mass + this.water * 1000;
+
+    // --- горизонтальные силы: паруса / вёсла / руль / сопротивление ---
+    // (та же математика, что и в физической модели — без гравитации
+    //  и кренящих моментов: наклон корпуса задаёт рамка волны)
+    this.sailFrac += (this.sailTarget / 3 - this.sailFrac) * Math.min(1, dt * 0.7);
+    const awa = this.apparentWindAngle();
+    const polar = Ship.polar(awa);
+    const sailEffMul = this.sailHP / this.preset.sailHP;
+    const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
+    const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
+    let thrust = 0;
+    if (!this.anchored && this.mastsBroken < 2) {
+      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
+    }
+    if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45;
+    if (this.preset.oars && !this.anchored) {
+      const crewFrac = clamp(this.crew / this.preset.maxCrew, 0.2, 1);
+      const power = this.oarsDeployT * (1 - 0.55 * this.sailFrac) * crewFrac;
+      if (this.rowing > 0) thrust += this.preset.maxSpeed * 0.40 * power;
+      else if (this.rowing < 0) thrust -= this.preset.maxSpeed * 0.28 * power;
+    }
+    this.force.x += f.x * thrust * m * 0.06;
+    this.force.z += f.z * thrust * m * 0.06;
+    // боковой снос от ветра
+    const wf = this._t1.set(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
+    const windTravel = this._t2.copy(wf).multiplyScalar(-this.wind.speed);
+    const lateralStar = windTravel.dot(star);
+    this.force.x += star.x * lateralStar * this.sailFrac * m * 0.004;
+    this.force.z += star.z * lateralStar * this.sailFrac * m * 0.004;
+
+    // руль (только рыскание)
+    this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
+    const rudderAngle = this.rudder * 0.6;
+    const yawAuth = clamp(spd / 4.0, 0, 1.15);
+    this.torque.y -= rudderAngle * yawAuth * m * 12.0;
+
+    // сопротивление (по связным осям)
+    const fwdSpd = this.velocity.dot(f);
+    const latSpd = this.velocity.dot(star);
+    const fwdDrag = -(18 * fwdSpd + 55 * fwdSpd * Math.abs(fwdSpd)) * m * 0.001;
+    const latDrag = -latSpd * 3.2 * m * 0.1;
+    this.force.x += f.x * fwdDrag + star.x * latDrag;
+    this.force.z += f.z * fwdDrag + star.z * latDrag;
+    if (this.anchored) {
+      this.force.x -= this.velocity.x * m * 1.2;
+      this.force.z -= this.velocity.z * m * 1.2;
+    }
+    if (this.grounded) {
+      this.force.x -= this.velocity.x * m * 2.5;
+      this.force.z -= this.velocity.z * m * 2.5;
+    }
+
+    // --- интеграция горизонтали и курса ---
+    this.velocity.addScaledVector(this.force, dt / m);
+    this.velocity.y = 0;
+    this.position.addScaledVector(this.velocity, dt);
+    this.angular.y += (this.torque.y / this.inertia.y) * dt;
+    this.angular.y *= Math.exp(-0.9 * dt);
+    this.angular.x = 0;
+    this.angular.z = 0;
+    // целевой курс — рамка строится ПО НЕМУ, а кватернион плавно
+    // доворачивается к рамке (БЕЗ сброса в вертикаль: иначе slerp
+    // каждый шаг начинался бы заново и наклон не набирался)
+    const heading = this.heading + this.angular.y * dt;
+    // нос после поворота курса
+    f.set(Math.sin(heading), 0, Math.cos(heading));
+    star.set(f.z, 0, -f.x);
+
+    // --- 5 ТОЧЕК ЗАМЕРА на волнах (как в файле игрока) ---
+    const hBow = waterHeightAt(this.position.x + f.x * L * 0.42, this.position.z + f.z * L * 0.42, time);
+    const hStern = waterHeightAt(this.position.x - f.x * L * 0.42, this.position.z - f.z * L * 0.42, time);
+    const hStar = waterHeightAt(this.position.x + star.x * B * 0.78, this.position.z + star.z * B * 0.78, time);
+    const hPort = waterHeightAt(this.position.x - star.x * B * 0.78, this.position.z - star.z * B * 0.78, time);
+    const hMid = waterHeightAt(this.position.x, this.position.z, time);
+
+    // рамка: forward с уклоном нос-корма, up из векторного произведения
+    const slopeZ = (hBow - hStern) / (L * 0.84);
+    this._rv1.set(f.x * L * 0.84, hBow - hStern, f.z * L * 0.84);
+    this._rv2.set(star.x * B * 1.56, hStar - hPort, star.z * B * 1.56);
+    const u = this._ru.copy(this._rv1).cross(this._rv2).normalize();
+    const ff = this._rf.set(f.x, slopeZ, f.z).normalize();
+    const rr = this._rr.copy(u).cross(ff).normalize();
+    this._rm.makeBasis(rr, u, ff);
+    this._rq.setFromRotationMatrix(this._rm);
+
+    // крен от ветра на парусах + затопления — целевой УГОЛ рамки
+    // (в физической модели это torque.z; здесь — доворот вокруг ДП)
+    const heelTarget = clamp(
+      -lateralStar * this.sailFrac * 0.012
+      + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
+      -0.34, 0.34);
+    this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
+    this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
+    this._rq.multiply(this._rHeelQ);
+    // плавный доворот к рамке волны (как slerp в файле игрока, 1−e^−2.6t)
+    this.quaternion.slerp(this._rq, 1 - Math.exp(-2.6 * dt));
+
+    // --- вертикаль: пружина к средневзвешенной поверхности ---
+    // (замер в 5 точках + притопление от наклона и хода — из файла
+    //  игрока; гарантирует ПОСТОЯННУЮ осадку — корабль не ныряет)
+    const sink = -(1 - u.y) * 2.0 - Math.min(Math.abs(spd) * 0.02, 0.2);
+    const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 + sink;
+    this.rideVy += ((targetY - this.position.y) * 5.0 - this.rideVy * 2.4) * dt;
+    this.position.y += this.rideVy * dt;
+
+    // мел / течь / пожар / сдача — общий хвост обеих моделей
+    this.stepHousekeeping(dt);
   }
 
   private checkGrounding(dt: number) {

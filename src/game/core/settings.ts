@@ -11,10 +11,22 @@ export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 // ============================================================
 export type WeatherMode = 'clear' | 'rain' | 'storm' | 'fog';
 
+/** Море и волны — ДВЕ реализации (Task 27, по файлу игрока
+ *  «ФРЕГАТ ПЕРУН»): физическая (Архимед по точкам корпуса,
+ *  корабль режет волны) и «волна-опора» (корабль идёт по
+ *  поверхности, нос всходит на волну и спускается) */
+export type SeaModelKind = 'physical' | 'riding';
+
+export const SEA_MODEL_LABELS: Record<SeaModelKind, string> = {
+  physical: 'Физическая (Архимед, корабль режет волны)',
+  riding: 'Волна-опора (по поверхности, из файла «Перун»)',
+};
+
 export interface WeatherSettings {
   mode: WeatherMode;   // ясно / дождь / гроза / туман
   windSpeed: number;   // 0..24 м/с — сила ветра (задаёт и волнение)
   windDir: number;     // 0..355° — направление ОТКУДА дует (компас)
+  seaModel: SeaModelKind; // модель моря/плавучести (Task 27)
 }
 
 export interface FxSettings {
@@ -118,7 +130,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     ammoJitter: true,
     startMoney: 350,
   },
-  weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
+  weather: { mode: 'clear', windSpeed: 7.5, windDir: 40, seaModel: 'physical' },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
 };
 
@@ -203,6 +215,7 @@ export function loadSettings(): GameSettings {
       if (typeof w.mode === 'string' && ['clear', 'rain', 'storm', 'fog'].includes(w.mode)) s.weather.mode = w.mode as WeatherMode;
       if (typeof w.windSpeed === 'number') s.weather.windSpeed = Math.min(24, Math.max(0, w.windSpeed));
       if (typeof w.windDir === 'number') s.weather.windDir = ((Math.round(w.windDir) % 360) + 360) % 360;
+      if (w.seaModel === 'riding' || w.seaModel === 'physical') s.weather.seaModel = w.seaModel;
     }
     if (isObj(data.fx)) {
       const f = data.fx;

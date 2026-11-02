@@ -1,21 +1,43 @@
 // ============================================================
 // ОБЩИЕ Gerstner-волны: одна функция высоты для ФИЗИКИ (TS)
 // и для ШЕЙДЕРА (GLSL). Никаких расхождений между визуалом и
-// плавучестью — жёстное требование ТЗ (разделы 15/16).
+// плавучестью — жёсткое требование ТЗ (разделы 15/16).
+//
+// ДВЕ РЕАЛИЗАЦИИ МОРЯ (Task 27, по файлу игрока «ФРЕГАТ ПЕРУН»):
+//  'physical' — Архимед по точкам корпуса ( rigid body ):
+//    набор PHYS: пологая зыбь, корабль честно кренится/дифферентится
+//    и РЕЖЕТ волны носом (Task 25);
+//  'riding' — «волна-опора»: набор RIDE из файла игрока — 3 крутые
+//    физические волны с фазами (118/64/38 м) + 3 микроряби только
+//    для картинки; амплитуды растут от ветра НЕЛИНЕЙНО (штиль —
+//    почти гладко, шторм — валы). Корабль идёт ПОВЕРХНОСТЬЮ:
+//    5 точек замера (нос/корма/борта/мидель) задают рамку наклона,
+//    пружина держит осадку — нос всходит на волну и спускается,
+//    глубоких нырков нет (Ship.stepRidingWaves).
+// Набор волн живёт в UNIFORM-массивах шейдера — переключение
+// модели моря не пересобирает материалы.
 // ============================================================
 export interface WaveDef {
   dirX: number; dirZ: number;   // нормализованное направление
   steepness: number;            // крутизна
   wavelength: number;           // длина волны, м
+  phase?: number;               // сдвиг фазы, рад (набор RIDE)
+  micro?: boolean;              // только для картинки (физика не считает)
 }
 
-// Штормовое состояние масштабирует амплитуды (0.4 штиль .. 1.6 шторм)
-export interface SeaState { amplitude: number; }
+/** Модель моря/плавучести — выбирается в настройках (Task 27) */
+export type SeaModel = 'physical' | 'riding';
 
-export const SEA: SeaState = { amplitude: 1.0 };
+// Штормовое состояние масштабирует амплитуды (0.4 штиль .. 1.8 шторм)
+export interface SeaState {
+  amplitude: number;
+  model: SeaModel;
+}
 
-// Набор волн: крупная зыбь -> мелкая рябь (детерминированно, без сида — погода общая)
-export const WAVES: WaveDef[] = [
+export const SEA: SeaState = { amplitude: 1.0, model: 'physical' };
+
+// --- набор PHYS: пологая зыбь для честной гидростатики (Task 12–25) ---
+export const WAVES_PHYS: WaveDef[] = [
   { dirX: 1.0, dirZ: 0.25, steepness: 0.075, wavelength: 110.0 },
   { dirX: 0.8, dirZ: 0.6, steepness: 0.062, wavelength: 55.0 },
   { dirX: 0.95, dirZ: -0.32, steepness: 0.05, wavelength: 28.0 },
@@ -23,39 +45,94 @@ export const WAVES: WaveDef[] = [
   { dirX: 0.88, dirZ: 0.48, steepness: 0.03, wavelength: 8.0 },
 ];
 
+// --- набор RIDE: из файла игрока («ФРЕГАТ ПЕРУН», штормовое
+//     плавание): 3 крутые физические волны + 3 микроряби (только
+//     визуал). Фазовые сдвиги разводят гребни — море «дышит» ---
+export const WAVES_RIDE: WaveDef[] = [
+  { dirX: 1.00, dirZ: 0.25, steepness: 0.180, wavelength: 118.0, phase: 0.0 },
+  { dirX: -0.72, dirZ: 1.00, steepness: 0.150, wavelength: 64.0, phase: 1.7 },
+  { dirX: 0.35, dirZ: -0.94, steepness: 0.120, wavelength: 38.0, phase: 4.1 },
+  { dirX: 0.90, dirZ: -0.40, steepness: 0.110, wavelength: 15.0, phase: 0.5, micro: true },
+  { dirX: -0.30, dirZ: -0.95, steepness: 0.090, wavelength: 8.5, phase: 2.6, micro: true },
+  { dirX: 0.60, dirZ: 0.75, steepness: 0.070, wavelength: 4.8, phase: 5.2, micro: true },
+];
+
+/** максимум слотов под волны в шейдере (наборы 5 и 6) */
+export const MAX_WAVES = 6;
+
+/** АКТИВНЫЙ набор волн по выбранной модели моря */
+export function activeWaves(): WaveDef[] {
+  return SEA.model === 'riding' ? WAVES_RIDE : WAVES_PHYS;
+}
+
 const K = (w: WaveDef) => (Math.PI * 2) / w.wavelength;
 const C = (w: WaveDef) => Math.sqrt(9.81 / K(w)); // фазовая скорость
-const A = (w: WaveDef) => (w.steepness * SEA.amplitude) / K(w); // амплитуда
+const A0 = (w: WaveDef) => w.steepness / K(w);     // амплитуда без погоды
+
+/** Амплитуда волны при текущей погоде. Набор PHYS: линейно от
+ *  SEA.amplitude (как всегда). Набор RIDE — кривая из файла игрока:
+ *  штиль почти гладкий (calm), ветер качает амплитуду нелинейно
+ *  (физические волны ~wind^1.25, микроряби ~wind^1.7), наш
+ *  диапазон погоды 0.42..1.9 приводится к их 0..1.6 делением на 1.6 */
+function amplitudeOf(w: WaveDef): number {
+  if (SEA.model !== 'riding') return (w.steepness * SEA.amplitude) / K(w);
+  const wind = Math.min(1.25, Math.max(0, SEA.amplitude / 1.6));
+  const calm = w.micro ? 0.04 : 0.10;
+  const pw = w.micro ? 1.7 : 1.25;
+  return A0(w) * (calm + (1 - calm) * Math.pow(wind, pw));
+}
+
+/** Погодные множители амплитуд для ШЕЙДЕРА (два диапазона волн):
+ *  набор PHYS — оба равны SEA.amplitude (как раньше);
+ *  набор RIDE — кривые calm+…^pw из файла игрока */
+export function seaAmpLoHi(): { lo: number; hi: number } {
+  if (SEA.model !== 'riding') return { lo: SEA.amplitude, hi: SEA.amplitude };
+  const wind = Math.min(1.25, Math.max(0, SEA.amplitude / 1.6));
+  return {
+    lo: 0.10 + 0.90 * Math.pow(wind, 1.25),   // длинные физические
+    hi: 0.04 + 0.96 * Math.pow(wind, 1.7),    // короткие/микроряби
+  };
+}
+
+/** Волны для ФИЗИКИ: активный набор БЕЗ микроряби (микро — только
+ *  картинка, как в файле игрока: PHYS-список для waterHeightAt) */
+function physicsWaves(): WaveDef[] {
+  const all = activeWaves();
+  return SEA.model === 'riding' ? all.filter((w) => !w.micro) : all;
+}
 
 /** Высота воды в мировой точке (x,z) в момент t. Итеративная оценка Gerstner. */
 export function waterHeightAt(x: number, z: number, t: number): number {
+  const waves = physicsWaves();
   // 2 итерации обращения горизонтального смещения
+  // (набор RIDE — 3, как в файле игрока: волны круче, сходимость хуже)
+  const iter = SEA.model === 'riding' ? 3 : 2;
   let px = x, pz = z;
-  for (let it = 0; it < 2; it++) {
+  for (let it = 0; it < iter; it++) {
     let dx = 0, dz = 0;
-    for (const w of WAVES) {
-      const k = K(w), c = C(w), a = A(w);
-      const f = k * (w.dirX * px + w.dirZ * pz - c * t);
+    for (const w of waves) {
+      const k = K(w), c = C(w), a = amplitudeOf(w);
+      const f = k * (w.dirX * px + w.dirZ * pz - c * t) + (w.phase ?? 0);
       dx += w.dirX * a * Math.cos(f);
       dz += w.dirZ * a * Math.cos(f);
     }
     px = x - dx; pz = z - dz;
   }
   let y = 0;
-  for (const w of WAVES) {
-    const k = K(w), c = C(w), a = A(w);
-    const f = k * (w.dirX * px + w.dirZ * pz - c * t);
+  for (const w of waves) {
+    const k = K(w), c = C(w), a = amplitudeOf(w);
+    const f = k * (w.dirX * px + w.dirZ * pz - c * t) + (w.phase ?? 0);
     y += a * Math.sin(f);
   }
   return y;
 }
 
 /** Огибающая волнения: сумма амплитуд всех гармоник (м) при текущей
- *  погоде. Физически — максимально возможная высота гребня над средним
- *  уровнем; используется посадкой корпуса на волну (лимит подъёма). */
+ *  погоде. Физически — максимально возможная высота гребня над
+ *  средним уровнем. */
 export function waveEnvelope(): number {
   let s = 0;
-  for (const w of WAVES) s += (w.steepness * SEA.amplitude) / K(w);
+  for (const w of activeWaves()) s += amplitudeOf(w);
   return s;
 }
 
@@ -72,34 +149,65 @@ export function waterNormalAt(x: number, z: number, t: number, out: [number, num
   return out;
 }
 
-/** GLSL-фрагмент с теми же константами — вставляется в вершинный шейдер воды.
- *  Два диапазона амплитуд: ampLo — длинная зыбь (110/55 м),
- *  ampHi — короткие волны (28/15/8 м). Дальние LOD-кольца с крупной
- *  ячейкой теряют только короткий диапазон — переход на границе
- *  детального чанка не читается как «квадрат». */
+/** Данные волн для UNIFORM-массивов шейдера (активный набор,
+ *  добитый нулями до MAX_WAVES). A — без погоды: погода приходит
+ *  множителями uAmpLo/uAmpHi (два диапазона волн). */
+export function waveUniformData(): {
+  wa: [number, number, number, number][];  // dir.x, dir.z, k, A0
+  wb: [number, number, number, number][];  // k*c, phase, micro?, —
+} {
+  const list = activeWaves();
+  const wa: [number, number, number, number][] = [];
+  const wb: [number, number, number, number][] = [];
+  const len2 = Math.hypot(1, 0.25); // нормализация направлений RIDE
+  for (let i = 0; i < MAX_WAVES; i++) {
+    const w = list[i];
+    if (!w) {
+      wa.push([1, 0, 0.001, 0]);
+      wb.push([0, 0, 0, 0]);
+      continue;
+    }
+    // направления в файле игрока не нормализованы — нормализуем здесь
+    const dl = Math.hypot(w.dirX, w.dirZ) || 1;
+    const dx = w.dirX / dl, dz = w.dirZ / dl;
+    void len2;
+    wa.push([dx, dz, K(w), A0(w)]);
+    wb.push([K(w) * C(w), w.phase ?? 0, w.micro ? 1 : 0, 0]);
+  }
+  return { wa, wb };
+}
+
+/** GLSL-фрагмент с теми же волнами — вставляется в вершинный шейдер
+ *  воды. Волны в UNIFORM-массивах (uWaveA/uWaveB): переключение
+ *  модели моря меняет только значения uniform'ов, материалы не
+ *  пересобираются. Два диапазона амплитуд: множитель ampLo —
+ *  длинная зыбь (индексы < N_LO), ampHi — короткие волны/рябь.
+ *  Дальние LOD-кольца с крупной ячейкой теряют только короткий
+ *  диапазон — переход на границе детального чанка не читается
+ *  как «квадрат». */
 export function gerstnerGLSL(): string {
   return `
-#define N_WAVES ${WAVES.length}
-#define N_LO ${Math.ceil(WAVES.length / 2)}
+#define N_WAVES ${MAX_WAVES}
+#define N_LO 3
 uniform float uTime;
-uniform float uAmp; // общий множитель погоды ( SEA.amplitude )
+uniform vec4 uWaveA[N_WAVES];   // xy = dir, z = k, w = A0 (без погоды)
+uniform vec4 uWaveB[N_WAVES];   // x = k*c, y = phase, z = micro-флаг
+uniform float uAmpLo;           // погодный множитель длинных волн
+uniform float uAmpHi;           // погодный множитель коротких волн
 // Основная функция: смещение вершины и нормаль
 void gerstner(vec2 p, float ampLo, float ampHi, out vec3 disp, out vec3 normal) {
   disp = vec3(0.0);
   vec3 tang = vec3(1.0, 0.0, 0.0);
   vec3 bino = vec3(0.0, 0.0, 1.0);
-  vec2 dirs[N_WAVES] = vec2[N_WAVES](${WAVES.map((w) => `vec2(${w.dirX.toFixed(4)}, ${w.dirZ.toFixed(4)})`).join(', ')});
-  float ks[N_WAVES] = float[N_WAVES](${WAVES.map((w) => (K(w)).toFixed(6)).join(', ')});
-  float as_[N_WAVES] = float[N_WAVES](${WAVES.map((w) => (A(w)).toFixed(6)).join(', ')});
-  float cph[N_WAVES] = float[N_WAVES](${WAVES.map((w) => (K(w) * C(w)).toFixed(6)).join(', ')});
   for (int i = 0; i < N_WAVES; i++) {
-    float k = ks[i];
-    float a = as_[i] * (i < N_LO ? ampLo : ampHi);
-    float f = k * (dot(dirs[i], p) - cph[i] * uTime);
+    vec2 dir = uWaveA[i].xy;
+    float k = uWaveA[i].z;
+    float a = uWaveA[i].w * (i < N_LO ? ampLo : ampHi);
+    float f = k * (dot(dir, p) - uWaveB[i].x * uTime) + uWaveB[i].y;
     float sf = sin(f), cf = cos(f);
-    disp += vec3(dirs[i].x * a * cf, a * sf, dirs[i].y * a * cf);
-    tang += vec3(-dirs[i].x * dirs[i].x * (k * a * sf), dirs[i].x * (k * a * cf), -dirs[i].x * dirs[i].y * (k * a * sf));
-    bino += vec3(-dirs[i].y * dirs[i].x * (k * a * sf), dirs[i].y * (k * a * cf), -dirs[i].y * dirs[i].y * (k * a * sf));
+    disp += vec3(dir.x * a * cf, a * sf, dir.y * a * cf);
+    tang += vec3(-dir.x * dir.x * (k * a * sf), dir.x * (k * a * cf), -dir.x * dir.y * (k * a * sf));
+    bino += vec3(-dir.y * dir.x * (k * a * sf), dir.y * (k * a * cf), -dir.y * dir.y * (k * a * sf));
   }
   normal = normalize(cross(bino, tang));
 }

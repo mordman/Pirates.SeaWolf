@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { waterHeightAt, waterNormalAt } from '../water/waves';
+import { waterHeightAt } from '../water/waves';
 import { updateBoatFalls, type BoatVis } from './buildShip';
 import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
@@ -82,6 +82,7 @@ export class BoatLaunch {
   strokePhase = 0;
   oarDeploy = 0;
   roll = 0; pitch = 0;
+  private bowFoamCd = 0;       // кулдаун буруна у носа
 
   // гребцы в шлюпке (видны только на воде)
   rowers: THREE.Group[] = [];
@@ -425,24 +426,51 @@ export class BoatLaunch {
       }
     }
 
-    // --- плавучесть: посадка на волну Gerstner ---
-    const wy = waterHeightAt(this.pos.x, this.pos.z, time);
+    // --- ПЛАВУЧЕСТЬ ЯЛА: 5 ТОЧЕК НА ВОЛНЕ (Task 27, как корабль в
+    //     режиме «волна-опора» из файла игрока): нос/корма/борта
+    //     замеряются на Gerstner-волнах, из наклона воды строится
+    //     посадка — лодка ДЕРЖИТСЯ НА ПОВЕРХНОСТИ (нос всходит на
+    //     гребень и скользит вниз), пружина держит осадку. До сих
+    //     пор замер одной точки + нормаль оставляли ял ПОД ВОДОЙ
+    //     на крутых волнах (жалоба «лодка плавает под водой») ---
+    const L = this.vis.len, B = this.vis.beam;
+    const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
+    const sx = fz, sz = -fx;                    // штирборт яла
+    const hBow = waterHeightAt(this.pos.x + fx * L * 0.42, this.pos.z + fz * L * 0.42, time);
+    const hStern = waterHeightAt(this.pos.x - fx * L * 0.42, this.pos.z - fz * L * 0.42, time);
+    const hStar = waterHeightAt(this.pos.x + sx * B * 0.5, this.pos.z + sz * B * 0.5, time);
+    const hPort = waterHeightAt(this.pos.x - sx * B * 0.5, this.pos.z - sz * B * 0.5, time);
+    const hMid = waterHeightAt(this.pos.x, this.pos.z, time);
     if (!this.splashed) {
-      this.particles.splash(this.pos.x, wy, this.pos.z, 1.5);
+      this.particles.splash(this.pos.x, hMid, this.pos.z, 1.5);
       this.onSplash?.();
       this.splashed = true;
     }
-    const draft = this.vis.len * 0.155 * 0.24; // осадка гружёного яла
-    b.position.set(this.pos.x, wy - draft + Math.sin(time * 1.7) * 0.015, this.pos.z);
-    waterNormalAt(this.pos.x, this.pos.z, time, this._n);
-    // наклон по нормали воды в осях шлюпки + лёгкая бортовая качка от гребков
-    const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
-    this.pitch = THREE.MathUtils.clamp(
-      -(this._n[0] * fx + this._n[2] * fz) * 1.15, -0.2, 0.2);
-    this.roll = THREE.MathUtils.clamp(
-      (this._n[0] * fz - this._n[2] * fx) * 1.05, -0.28, 0.28)
+    // посадка: прямое следование СРЕДНЕВЗВЕШЕННОЙ ПОВЕРХНОСТИ (пружина
+    // попадала в резонанс с волной и гонила ял в противофазе ±2.5 м —
+    // «лодка плавает под водой/над водой»); быстрое экспоненциальное
+    // сглаживание гасит дрожь замеров, но не отстаёт от волны
+    const draft = L * 0.155 * 0.24;
+    const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 - draft;
+    this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 10.0);
+    b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
+    // наклон по УКЛОНАМ воды между точками (нос-корма, борт-борт) +
+    // лёгкая бортовая качка от гребков
+    const pitchSlope = (hBow - hStern) / (L * 0.84);
+    const rollSlope = (hStar - hPort) / (B * 1.0);
+    this.pitch = THREE.MathUtils.clamp(-pitchSlope, -0.35, 0.35);
+    this.roll = THREE.MathUtils.clamp(rollSlope, -0.4, 0.4)
       + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
     b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
+
+    // --- вода ОБТЕКАЕТ ял: бурун у носа на ходу (как у корабля) ---
+    this.bowFoamCd = Math.max(0, this.bowFoamCd - dt);
+    if (Math.abs(this.vel) > 0.35 && this.bowFoamCd <= 0) {
+      const bx = this.pos.x + fx * L * 0.44, bz = this.pos.z + fz * L * 0.44;
+      this.particles.splash(bx, waterHeightAt(bx, bz, time) + 0.05, bz,
+        0.25 + Math.min(0.5, Math.abs(this.vel) * 0.3));
+      this.bowFoamCd = 0.5;
+    }
 
     // --- вёсла: разворот на воду + гребок; гребцы в такт ---
     this.oarDeploy += ((this.phase === 'afloat' ? 1 : 0) - this.oarDeploy) * Math.min(1, dt * 1.4);

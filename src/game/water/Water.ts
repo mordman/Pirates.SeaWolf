@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { gerstnerGLSL, SEA, waterHeightAt } from './waves';
+import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpLoHi } from './waves';
 
 const NOISE_GLSL = `
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
@@ -39,9 +39,17 @@ export class Water {
   private step = WATER_DEFAULTS.chunkSize / WATER_DEFAULTS.detailSegs;
 
   constructor(opts?: { detailSegs?: number; chunkSize?: number; far?: number; lodSkip?: number }) {
+    // волны — в UNIFORM-массивах (набор PHYS/RIDE переключается
+    // без пересборки материала, Task 27)
+    const wu = waveUniformData();
+    const amp = seaAmpLoHi();
     this.uniforms = {
       uTime: { value: 0 },
       uAmp: { value: SEA.amplitude },
+      uAmpLo: { value: amp.lo },
+      uAmpHi: { value: amp.hi },
+      uWaveA: { value: wu.wa.map((v) => new THREE.Vector4(...v)) },
+      uWaveB: { value: wu.wb.map((v) => new THREE.Vector4(...v)) },
       uShift: { value: new THREE.Vector3() },   // floating origin
       uSunDir: { value: new THREE.Vector3(0.4, 0.7, 0.2) },
       uSunColor: { value: new THREE.Color(1, 0.95, 0.85) },
@@ -84,7 +92,7 @@ export class Water {
           float fadeLo = 1.0 - smoothstep(uFarFade.x, uFarFade.y, d);
           float fadeHi = 1.0 - smoothstep(uHiFade.x, uHiFade.y, d);
           vec3 disp; vec3 nrm;
-          gerstner(worldXZ, uAmp * fadeLo, uAmp * fadeHi, disp, nrm);
+          gerstner(worldXZ, uAmpLo * fadeLo, uAmpHi * fadeHi, disp, nrm);
           vec3 p = sceneP + disp;
           vNormal = nrm;
           vScenePos = p;
@@ -282,6 +290,18 @@ export class Water {
   update(time: number, camScenePos: THREE.Vector3, worldShift: THREE.Vector3) {
     this.uniforms.uTime.value = time;
     this.uniforms.uAmp.value = SEA.amplitude;
+    // две модели моря (Task 27): набор волн и погодные множители —
+    // каждый кадр из waves.ts (переключение в настройках мгновенное)
+    const wu = waveUniformData();
+    const wa = this.uniforms.uWaveA.value as THREE.Vector4[];
+    const wb = this.uniforms.uWaveB.value as THREE.Vector4[];
+    for (let i = 0; i < wa.length; i++) {
+      wa[i].set(wu.wa[i][0], wu.wa[i][1], wu.wa[i][2], wu.wa[i][3]);
+      wb[i].set(wu.wb[i][0], wu.wb[i][1], wu.wb[i][2], wu.wb[i][3]);
+    }
+    const amp = seaAmpLoHi();
+    this.uniforms.uAmpLo.value = amp.lo;
+    this.uniforms.uAmpHi.value = amp.hi;
     (this.uniforms.uShift.value as THREE.Vector3).copy(worldShift);
     this.cam.copy(camScenePos);
     // снапим к шагу СЕТКИ (общая решётка чанка и всех колец): вершины

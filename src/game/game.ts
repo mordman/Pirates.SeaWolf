@@ -278,6 +278,9 @@ export class Game {
     this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
     this.weather = new WeatherSystem(this.scene);
     this.weather.applySettings(this.settings.weather);
+    // модель моря (Task 27): физическая или «волна-опора» — до
+    // создания кораблей (набор волн задаёт и посадку)
+    SEA.model = this.settings.weather.seaModel;
     this.weather.onThunder = (dist) => this.audio.thunder(dist);
     this.applyFx(this.settings.fx);
     this.updateParticleScale();
@@ -328,7 +331,26 @@ export class Game {
     });
   }
 
-  /** Применить новые настройки на лету (вызывается экраном настроек) */
+  /** Переключение модели моря (Task 27): физическая (Архимед по
+   *  точкам корпуса) или «волна-опора» (по файлу игрока «Перун» —
+   *  корабль идёт по поверхности, нос всходит на волну). Волны
+   *  живут в uniform-массивах шейдера — переключение мгновенное */
+  applySeaModel(model: 'physical' | 'riding', announce = true) {
+    if (SEA.model === model) return;
+    SEA.model = model;
+    // сброс вертикальной динамики кораблей (пружина riding-режима
+    // подхватит посадку сама; у физической — Архимед)
+    if (this.player) {
+      this.player.velocity.y = 0;
+      for (const a of this.aiShips) a.ship.velocity.y = 0;
+    }
+    if (announce) {
+      this.pushMessage(model === 'riding'
+        ? 'Море: волна-опора — корабль идёт по поверхности волн'
+        : 'Море: физическое — Архимед по точкам корпуса');
+    }
+  }
+
   applySettings(s: GameSettings) {
     const prev = this.settings;
     this.settings = s;
@@ -388,6 +410,10 @@ export class Game {
       || prev.weather.windSpeed !== s.weather.windSpeed
       || prev.weather.windDir !== s.weather.windDir) {
       this.weather.applySettings(s.weather);
+    }
+    // модель моря — мгновенное переключение (Task 27)
+    if (prev.weather.seaModel !== s.weather.seaModel) {
+      this.applySeaModel(s.weather.seaModel);
     }
   }
 
@@ -1605,6 +1631,13 @@ export class Game {
     return waterHeightAt(x, z, this.time);
   }
 
+  /** Отладочный хук: высота воды в ЯВНОЕ время t — для E2E-циклов,
+   *  шагающих физику с собственным счётчиком времени (Task 27:
+   *  замеры посадки шлюпки/корабля по тому же t, что и физика) */
+  waterHeightAtT(x: number, z: number, t: number) {
+    return waterHeightAt(x, z, t);
+  }
+
   /** Разрыв снаряда у гавани: рыбацкие шлюпки в радиусе идут ко дну —
    *  щепа гибами, брызги, выброшенные на песок разносит вдребезги.
    *  Возвращает число поражённых шлюпок */
@@ -1760,6 +1793,7 @@ export class Game {
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
       // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
       greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
+      seaModel: SEA.model,
       // погода (e2e/диагностика): режим, дождь, туман, молнии
       weather: {
         mode: this.weather.mode,

@@ -294,6 +294,21 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 </Row>
               </div>
               <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Море и волны</div>
+                <Row label="Модель моря" hint="волна-опора: корабль идёт по поверхности — нос всходит на волну и спускается; физическая: честный Архимед по точкам корпуса, корабль режет волны">
+                  <select value={s.weather.seaModel}
+                    onChange={e => update(d => { d.weather.seaModel = e.target.value as 'physical' | 'riding'; })}
+                    className={inputCls}>
+                    <option value="physical">Физическая (Архимед, режет волны)</option>
+                    <option value="riding">Волна-опора (по поверхности)</option>
+                  </select>
+                </Row>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  «Волна-опора» — реализация из штормового демо «Фрегат „Перун“»:
+                  крутые валы с фазами, корабль держится на воде и не ныряет глубоко.
+                </div>
+              </div>
+              <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Дым и огонь выстрелов</div>
                 <Row label="Видимость дыма" hint="полностью скрывает дым и вспышки">
                   <input type="checkbox" checked={s.fx.smokeVisible}

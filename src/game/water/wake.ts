@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { gerstnerGLSL, SEA } from './waves';
+import { gerstnerGLSL, SEA, waveUniformData, seaAmpLoHi } from './waves';
 
 // ============================================================
 // Кильватерный след + пена по ватерлинии (без «линии разреза»):
@@ -213,6 +213,10 @@ export class WaterlineFoam {
         uSpeed: { value: 0 },      // 0..1 доля скорости
         uRoll: { value: 0 },
         uAmp: { value: SEA.amplitude },   // погода (высота волн)
+        uAmpLo: { value: SEA.amplitude }, // погодные множители (Task 27)
+        uAmpHi: { value: SEA.amplitude },
+        uWaveA: { value: waveUniformData().wa.map((v) => new THREE.Vector4(...v)) },
+        uWaveB: { value: waveUniformData().wb.map((v) => new THREE.Vector4(...v)) },
         uShift: { value: new THREE.Vector3() }, // floating origin: сцена -> мир
       },
       vertexShader: /* glsl */`
@@ -229,7 +233,7 @@ export class WaterlineFoam {
           vec3 sceneP = (modelMatrix * vec4(position, 1.0)).xyz;
           vec2 worldXZ = sceneP.xz + uShift.xz;
           vec3 disp; vec3 nrm;
-          gerstner(worldXZ, uAmp, uAmp, disp, nrm);
+          gerstner(worldXZ, uAmpLo, uAmpHi, disp, nrm);
           // кольцо следует высоте волны (без горизонтального сдвига —
           // контур привязан к корпусу)
           vec3 p = sceneP + vec3(0.0, disp.y, 0.0);
@@ -287,6 +291,17 @@ export class WaterlineFoam {
     this.mat.uniforms.uSpeed.value = speedFrac;
     this.mat.uniforms.uRoll.value = roll;
     this.mat.uniforms.uAmp.value = SEA.amplitude;
+    // волны активной модели моря (Task 27) — значения uniform'ов
+    const wu = waveUniformData();
+    const wa = this.mat.uniforms.uWaveA.value as THREE.Vector4[];
+    const wb = this.mat.uniforms.uWaveB.value as THREE.Vector4[];
+    for (let i = 0; i < wa.length; i++) {
+      wa[i].set(wu.wa[i][0], wu.wa[i][1], wu.wa[i][2], wu.wa[i][3]);
+      wb[i].set(wu.wb[i][0], wu.wb[i][1], wu.wb[i][2], wu.wb[i][3]);
+    }
+    const amp = seaAmpLoHi();
+    this.mat.uniforms.uAmpLo.value = amp.lo;
+    this.mat.uniforms.uAmpHi.value = amp.hi;
     if (shift) (this.mat.uniforms.uShift.value as THREE.Vector3).copy(shift);
   }
 }
