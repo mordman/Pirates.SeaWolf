@@ -82,8 +82,10 @@ const ui = jparse(ev(`(() => {
   }, 300));
 })()`));
 log('A UI:', JSON.stringify(ui));
-check('A: в настройках (Погода) есть выбор «Модель моря» с 2 вариантами',
-  ui.found && ui.value === 'physical' && ui.opts.length === 2, JSON.stringify(ui.opts));
+// Task 29: моделей моря стало ТРИ (добавлен штормовой модуль sea.js)
+check('A: в настройках (Погода) есть выбор «Модель моря» (физ/опора/шторм)',
+  ui.found && ui.value === 'physical' && ui.opts.length === 3
+    && ui.opts.some(o => o.includes('Штормовой')), JSON.stringify(ui.opts));
 // переключить через UI на «волна-опора» и применить
 const uiSwitch = ev(`(() => {
   const sels = [...document.querySelectorAll('select')];

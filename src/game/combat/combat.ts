@@ -276,8 +276,21 @@ export class CombatSystem {
     this.emit(GameEvents.MESSAGE, { text: 'Орудия перезаряжаются!' });
   }
 
-  fireBroadside() {
-    if (!this.aim.active) return;
+  /** Залп бортом с АКТИВАЦИЕЙ прицела на нужную сторону (Task 29:
+   *  комбинации E+Пробел — правый борт, Q+Пробел — левый).
+   *  Возвращает число выстреливших орудий. */
+  fireSideVolley(side: -1 | 1): number {
+    if (!this.aim.active || this.aim.side !== side) {
+      this.aim.active = true;
+      this.aim.side = side;
+      this.trajLine.visible = true;
+      this.emit(GameEvents.AIM_TOGGLED, true);
+    }
+    return this.fireBroadside();
+  }
+
+  fireBroadside(): number {
+    if (!this.aim.active) return 0;
     const guns = this.aim.side === 1 ? this.player.visual.gunsStarboard : this.player.visual.gunsPort;
     let fired = 0;
     for (let i = 0; i < guns.length; i++) {
@@ -298,6 +311,7 @@ export class CombatSystem {
         this.emit(GameEvents.MESSAGE, { text: 'Борт перезаряжается!' });
       }
     }
+    return fired;
   }
 
   private fireGun(idx: number, gun: THREE.Object3D, delay = 0) {

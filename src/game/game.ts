@@ -3,7 +3,9 @@ import { InputManager } from './core/input';
 import { EventBus, GameEvents } from './core/events';
 import { clamp } from './core/rng';
 import { Water } from './water/Water';
-import { SEA, waterHeightAt } from './water/waves';
+import { SEA, waterHeightAt, setStormSea } from './water/waves';
+import { SeaModule, type SeaShipState } from './sea/sea';
+import { applyBuoyancyConfig } from './sea/shipPhysics';
 import { Ship } from './ship/Ship';
 import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, type FlagKind } from './ship/buildShip';
 import { FIGUREHEADS } from './ship/figurehead';
@@ -21,7 +23,7 @@ import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
-import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings } from './core/settings';
+import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings, type BuoyancySettings, type SeaModelKind } from './core/settings';
 
 // ============================================================
 // Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
@@ -182,6 +184,9 @@ export class Game {
   scene = new THREE.Scene();
   rig: CameraRig;
   water: Water;
+  /** Штормовой модуль sea.js (Task 29) — третья модель моря:
+   *  создаётся лениво при первом выборе, дальше только видимость */
+  sea: SeaModule | null = null;
   sky: SkySystem;
   weather: WeatherSystem;
   world: World;
@@ -245,6 +250,8 @@ export class Game {
   private lastSOffset = 0; // удержание S для заднего хода
   private boardingTarget: AIShip | null = null;
   private spawnPos = new THREE.Vector3(315, 0, 620);
+  /** последний счётчик ударов носом (штормовой модуль) — для тряски */
+  private lastStormSlam = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.settings = loadSettings();
@@ -278,9 +285,15 @@ export class Game {
     this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
     this.weather = new WeatherSystem(this.scene);
     this.weather.applySettings(this.settings.weather);
-    // модель моря (Task 27): физическая или «волна-опора» — до
-    // создания кораблей (набор волн задаёт и посадку)
+    // модель моря (Task 27/29): физическая, «волна-опора» или
+    // ШТОРМОВОЙ МОДУЛЬ sea.js — до создания кораблей (набор волн
+    // задаёт и посадку); качка — из настроек (shipPhysics.js)
     SEA.model = this.settings.weather.seaModel;
+    applyBuoyancyConfig(this.mapBuoyancy(this.settings.buoyancy));
+    if (SEA.model === 'storm') {
+      this.ensureStormSea();
+      this.water.group.visible = false;
+    }
     this.weather.onThunder = (dist) => this.audio.thunder(dist);
     this.applyFx(this.settings.fx);
     this.updateParticleScale();
@@ -331,23 +344,84 @@ export class Game {
     });
   }
 
-  /** Переключение модели моря (Task 27): физическая (Архимед по
-   *  точкам корпуса) или «волна-опора» (по файлу игрока «Перун» —
-   *  корабль идёт по поверхности, нос всходит на волну). Волны
-   *  живут в uniform-массивах шейдера — переключение мгновенное */
-  applySeaModel(model: 'physical' | 'riding', announce = true) {
+  /** Настройки качки (shipPhysics.js) → конфиг модуля */
+  private mapBuoyancy(b: BuoyancySettings) {
+    return {
+      heaveStiffness: b.heaveStiffness,
+      heaveDamping: b.heaveDamping,
+      orientResponse: b.orientResponse,
+      sinkHeel: b.sinkHeel,
+      sinkSpeed: b.sinkSpeed,
+      sampleForeAft: b.sampleForeAft,
+      sampleSide: b.sampleSide,
+      floodCooldown: b.floodCooldown,
+      immersion: { frigate: b.immersionFrigate, boat: b.immersionBoat, default: b.immersionDefault },
+    };
+  }
+
+  /** Применить настройки качки ко ВСЕМ судам (включая шлюпку) */
+  private applyBuoyancySettings(b: BuoyancySettings) {
+    const mapped = this.mapBuoyancy(b);
+    const all: Ship[] = [this.player, ...this.aiShips.map(a => a.ship)];
+    if (this.pgTarget) all.push(this.pgTarget.ship);
+    for (const s of all) s.buoy.applySettings(mapped);
+    this.boatLaunch?.buoy.applySettings(mapped);
+  }
+
+  /** Сила ветра 0..1 для штормового модуля (0..24 м/с общих настроек) */
+  private stormWind01(): number {
+    return Math.min(1, Math.max(0, this.wind.speed / 24));
+  }
+
+  /** Ленивое создание штормового модуля sea.js (первый выбор модели) */
+  private ensureStormSea() {
+    if (this.sea) return;
+    const sm = this.settings.sea;
+    this.sea = new SeaModule(this.scene, {
+      farSize: Math.max(2600, this.settings.graphics.drawDistance),
+      farSeg: sm.farSeg,
+      nearSeg: sm.nearSeg,
+      nearSize: sm.nearSize,
+      foam: sm.foam,
+      heightScale: sm.waveHeight,
+      lenScale: sm.waveLength,
+    });
+    setStormSea(this.sea);
+    this.sea.setWind(this.stormWind01());
+    this.sea.setWindDir(this.wind.from);
+    this.sea.setVisible(SEA.model === 'storm');
+  }
+
+  /** Переключение модели моря (Task 27/29): физическая (Архимед
+   *  по точкам корпуса), «волна-опора» (по файлу игрока «Перун») или
+   *  ШТОРМОВОЙ МОДУЛЬ sea.js (свой рендер + качка ShipBuoyancy).
+   *  Волны живут в uniform-массивах шейдера — переключение мгновенное */
+  applySeaModel(model: SeaModelKind, announce = true) {
     if (SEA.model === model) return;
     SEA.model = model;
-    // сброс вертикальной динамики кораблей (пружина riding-режима
-    // подхватит посадку сама; у физической — Архимед)
+    if (model === 'storm') this.ensureStormSea();
+    const stormOn = model === 'storm';
+    this.water.group.visible = !stormOn;
+    this.sea?.setVisible(stormOn);
+    // сброс вертикальной динамики кораблей (пружина качки модуля
+    // подхватит посадку сама; у физической — Архимед). Засев —
+    // текущая высота воды под корпусом, чтобы шторм начинался
+    // без длинного транзиента просадки
     if (this.player) {
       this.player.velocity.y = 0;
       for (const a of this.aiShips) a.ship.velocity.y = 0;
+      this.player.buoy.reset(waterHeightAt(this.player.position.x, this.player.position.z, this.time));
+      for (const a of this.aiShips) {
+        a.ship.buoy.reset(waterHeightAt(a.ship.position.x, a.ship.position.z, this.time));
+      }
+      this.boatLaunch?.buoy.reset();
     }
     if (announce) {
-      this.pushMessage(model === 'riding'
-        ? 'Море: волна-опора — корабль идёт по поверхности волн'
-        : 'Море: физическое — Архимед по точкам корпуса');
+      this.pushMessage(model === 'storm'
+        ? 'Море: штормовой модуль sea.js — валы Герстнера, качка корпуса'
+        : model === 'riding'
+          ? 'Море: волна-опора — корабль идёт по поверхности волн'
+          : 'Море: физическое — Архимед по точкам корпуса');
     }
   }
 
@@ -411,9 +485,24 @@ export class Game {
       || prev.weather.windDir !== s.weather.windDir) {
       this.weather.applySettings(s.weather);
     }
-    // модель моря — мгновенное переключение (Task 27)
+    // модель моря — мгновенное переключение (Task 27/29)
     if (prev.weather.seaModel !== s.weather.seaModel) {
       this.applySeaModel(s.weather.seaModel);
+    }
+    // штормовой модуль: спектр и сетки — на лету (Task 29)
+    if (this.sea) {
+      const a = prev.sea, b = s.sea;
+      if (a.waveHeight !== b.waveHeight || a.waveLength !== b.waveLength || a.foam !== b.foam) {
+        this.sea.applySpectrumSettings(b.waveHeight, b.waveLength, b.foam);
+      }
+      if (a.farSeg !== b.farSeg || a.nearSeg !== b.nearSeg || a.nearSize !== b.nearSize
+        || prev.graphics.drawDistance !== g.drawDistance) {
+        this.sea.configure(Math.max(2600, g.drawDistance), b.farSeg, b.nearSize, b.nearSeg);
+      }
+    }
+    // качка корпуса (shipPhysics.js) — ко всем судам на лету (Task 29)
+    if (JSON.stringify(prev.buoyancy) !== JSON.stringify(s.buoyancy)) {
+      this.applyBuoyancySettings(s.buoyancy);
     }
   }
 
@@ -1412,10 +1501,27 @@ export class Game {
       }
     }
 
-    // огонь
-    if (this.combat.aim.active) {
-      if (inp.lmbJust) this.combat.fireOne();
-      if (inp.pressed(c.fire)) this.combat.fireBroadside();
+    // огонь; ЛКМ — одиночный выстрел (при прицеле);
+    // КОМБИНАЦИИ (Task 29): E+Пробел — залп ПРАВОГО борта,
+    // Q+Пробел — ЛЕВОГО (прицел на нужную сторону включается сам)
+    if (this.combat.aim.active && inp.lmbJust) this.combat.fireOne();
+    if (inp.pressed(c.fire)) {
+      const starHeld = inp.isDown(c.aimStarboard);
+      const portHeld = inp.isDown(c.aimPort);
+      if (starHeld || portHeld) {
+        const side = starHeld ? 1 : -1;
+        // авто-открытие портов при залпе (как при прицельном)
+        if (p.visual.gunPorts.length && !p.portsOpen) {
+          p.portsOpen = true;
+          this.pushMessage('Порты открываются — залп задержится!');
+        }
+        const fired = this.combat.fireSideVolley(side);
+        if (fired > 0) {
+          this.pushMessage(side === 1 ? 'Залп правого борта!' : 'Залп левого борта!');
+        }
+      } else if (this.combat.aim.active) {
+        this.combat.fireBroadside();
+      }
     }
 
     // ремонт/откачка
@@ -1522,7 +1628,8 @@ export class Game {
     const hh = Math.floor(hours);
     const mm = Math.floor((hours - hh) * 60);
     h.clock = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-    h.seaState = SEA.amplitude;
+    // волнение: штормовой модуль считает сам (сумма амплитуд зыбей)
+    h.seaState = SEA.model === 'storm' && this.sea ? this.sea.envelope() : SEA.amplitude;
     h.repairAction = p.pumpAction ? (p.onFire ? 'Тушение пожара...' : p.water > 0.05 ? 'Откачка воды...' : p.planks > 0 && p.hullHP < p.hullMax ? 'Ремонт...' : null) : null;
     h.canDock = this.canDock();
     h.nearPortName = this.nearPort?.name ?? null;
@@ -1602,17 +1709,23 @@ export class Game {
       this.wind.speed += (4.2 - this.wind.speed) * Math.min(1, dt * 0.6);
       SEA.amplitude = 0.42;
       this.seaAmpSmooth = 0.42;
-      return vis;
+    } else {
+      this.wind.speed = this.weather.wind.speed;
+      this.wind.from = this.weather.wind.from;
+      // амплитуда волн — ТОЛЬКО от силы ветра (настройки больше нет):
+      // 3 м/с ≈ 0.44 (рябь), 7.5 м/с ≈ 0.76 (свежий бриз),
+      // 15 м/с ≈ 1.3 (крепкий), 22 м/с ≈ 1.8 (шторм), потолок 2.0;
+      // swell набирается/спадает с запаздыванием — как настоящее море
+      const ampTarget = clamp(0.22 + this.wind.speed * 0.072, 0.3, 2.0);
+      this.seaAmpSmooth += (ampTarget - this.seaAmpSmooth) * Math.min(1, dt * 0.22);
+      SEA.amplitude = this.seaAmpSmooth;
     }
-    this.wind.speed = this.weather.wind.speed;
-    this.wind.from = this.weather.wind.from;
-    // амплитуда волн — ТОЛЬКО от силы ветра (настройки больше нет):
-    // 3 м/с ≈ 0.44 (рябь), 7.5 м/с ≈ 0.76 (свежий бриз),
-    // 15 м/с ≈ 1.3 (крепкий), 22 м/с ≈ 1.8 (шторм), потолок 2.0;
-    // swell набирается/спадает с запаздыванием — как настоящее море
-    const ampTarget = clamp(0.22 + this.wind.speed * 0.072, 0.3, 2.0);
-    this.seaAmpSmooth += (ampTarget - this.seaAmpSmooth) * Math.min(1, dt * 0.22);
-    SEA.amplitude = this.seaAmpSmooth;
+    // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): сила И направление ветра —
+    // из ОБЩИХ настроек погоды, аналогично остальным моделям
+    if (this.sea) {
+      this.sea.setWind(this.stormWind01());
+      this.sea.setWindDir(this.wind.from);
+    }
     return vis;
   }
 
@@ -1751,6 +1864,12 @@ export class Game {
       this.lastGreenWater = this.player.greenWater;
     }
 
+    // удар носом о вал (штормовой модуль, Task 29) — тряска камеры
+    if (this.player.stormSlams > this.lastStormSlam) {
+      this.lastStormSlam = this.player.stormSlams;
+      this.rig.addShake(0.3);
+    }
+
     // телеметрия для отладки/E2E: window.__sea
     const dbg = window as unknown as { __sea: Record<string, unknown> };
     const sailsV = this.player.visual.sails.sails;
@@ -1794,6 +1913,24 @@ export class Game {
       // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
       greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
       seaModel: SEA.model,
+      // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): телеметрия спектра/качки
+      storm: this.sea ? {
+        ...this.sea.stats(),
+        active: SEA.model === 'storm' ? 1 : 0,
+        waterHidden: this.water.group.visible ? 0 : 1,
+        buoy: {
+          y: +p.buoy.y.toFixed(2), vy: +p.buoy.vy.toFixed(2),
+          roll: +p.euler.z.toFixed(3), pitch: +p.euler.x.toFixed(3),
+          immersion: +p.buoy.vessel.immersion.toFixed(2),
+          slams: p.stormSlams, floods: p.stormFloods,
+          boatFloods: this.boatLaunch ? this.boatLaunch.stormFloods : 0,
+          cfg: {
+            stiff: +p.buoy.cfg.heaveStiffness.toFixed(1),
+            damp: +p.buoy.cfg.heaveDamping.toFixed(1),
+            orient: +p.buoy.cfg.orientResponse.toFixed(1),
+          },
+        },
+      } : null,
       // погода (e2e/диагностика): режим, дождь, туман, молнии
       weather: {
         mode: this.weather.mode,
@@ -2053,8 +2190,36 @@ export class Game {
       arrowX: arrX, arrowY: arrY,
     });
 
-    // вода
+    // вода и ШТОРМОВОЙ МОДУЛЬ (Task 29): сетки следуют за судном
+    // игрока (или шлюпкой), пена — вокруг корпуса; окружение —
+    // из глобального неба (солнце/отражение/туман/день-ночь)
     this.water.update(this.time, this.rig.camera.position, this.negShift);
+    if (this.sea && SEA.model === 'storm') {
+      let shipState: SeaShipState;
+      const bl = this.boatLaunch;
+      if (bl && bl.phase === 'afloat') {
+        // пена вокруг шлюпки, пока игрок в ней
+        shipState = {
+          x: bl.pos.x, z: bl.pos.z,
+          fx: Math.sin(bl.heading), fz: Math.cos(bl.heading),
+          speed: clamp(Math.abs(bl.vel) / 2, 0, 1),
+          beam: bl.buoy.vessel.beam, len: bl.buoy.vessel.len,
+          flood: bl.buoy.floodPulse,
+        };
+      } else {
+        const pf = this.player.forward;
+        shipState = {
+          x: this.player.position.x, z: this.player.position.z,
+          fx: pf.x, fz: pf.z,
+          speed: clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1),
+          beam: this.player.preset.beam, len: this.player.preset.length,
+          flood: this.player.buoy.floodPulse,
+        };
+      }
+      this.sea.update(this.time, dt, shipState, this.shift);
+      this.sea.setEnvironment(this.sky.sunDir, env.sky, env.fog, fogD,
+        0.25 + 0.75 * dayF);
+    }
 
     // звук
     this.audio.update(dt, {
@@ -2157,6 +2322,8 @@ export class Game {
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('resize', this.onResize);
     this.input.dispose();
+    this.sea?.dispose();
+    setStormSea(null);
     this.envRT?.dispose();
     this.envTex?.dispose();
     this.pmrem?.dispose();

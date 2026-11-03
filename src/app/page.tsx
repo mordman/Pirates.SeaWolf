@@ -478,6 +478,7 @@ export default function Home() {
               <span><b className="text-amber-200">{keyLabel(settings.controls.steerLeft)} / {keyLabel(settings.controls.steerRight)}</b> — руль</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.aimPort)} / {keyLabel(settings.controls.aimStarboard)}</b> — прицел борта</span>
               <span><b className="text-amber-200">ЛКМ / {keyLabel(settings.controls.fire)}</b> — выстрел / залп</span>
+              <span><b className="text-amber-200">E+Пробел / Q+Пробел</b> — залп правого / левого борта</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — боеприпасы</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера (изометрия и др.)</span>
               <span><b className="text-amber-200">Колесо</b> — зум</span>
@@ -1142,6 +1143,7 @@ export default function Home() {
               <div><b className="text-amber-200">Колесо</b> — зум</div>
               <div><b className="text-amber-200">ЛКМ</b> — выстрел орудия</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.fire)}</b> — залп всем бортом</div>
+              <div><b className="text-amber-200">E+Пробел / Q+Пробел</b> — залп правого / левого борта без прицеливания</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.ammo[0])}–{keyLabel(settings.controls.ammo[3])}</b> — ядро/книппель/картечь/зажигат.</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.repair)} (держать)</b> — тушить/откачивать/чинить</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.camera)}</b> — камера: изометрия → корма → борт → свободная</div>

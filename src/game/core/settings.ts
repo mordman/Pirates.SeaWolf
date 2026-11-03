@@ -11,16 +11,44 @@ export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 // ============================================================
 export type WeatherMode = 'clear' | 'rain' | 'storm' | 'fog';
 
-/** Море и волны — ДВЕ реализации (Task 27, по файлу игрока
- *  «ФРЕГАТ ПЕРУН»): физическая (Архимед по точкам корпуса,
- *  корабль режет волны) и «волна-опора» (корабль идёт по
- *  поверхности, нос всходит на волну и спускается) */
-export type SeaModelKind = 'physical' | 'riding';
+/** Море и волны — ТРИ реализации: физическая (Task 12–25),
+ *  «волна-опора» (Task 27) и АВТОНОМНЫЙ ШТОРМОВОЙ МОДУЛЬ sea.js
+ *  (Task 29: две сетки Gerstner + пена вокруг корпуса в шейдере
+ *  + качка ShipBuoyancy из shipPhysics.js) */
+export type SeaModelKind = 'physical' | 'riding' | 'storm';
 
 export const SEA_MODEL_LABELS: Record<SeaModelKind, string> = {
   physical: 'Физическая (Архимед, корабль режет волны)',
   riding: 'Волна-опора (по поверхности, из файла «Перун»)',
+  storm: 'Штормовой модуль (sea.js: Герстнер + качка корпуса)',
 };
+
+/** Параметры штормового модуля (sea.js) — всё, что можно
+ *  настроить в приложенном коде; ветер/направление — ОБЩИЕ
+ *  настройки погоды (действуют на модуль так же) */
+export interface SeaModuleSettings {
+  waveHeight: number;   // 0.3..2 — множитель крутизны (высоты) волн
+  waveLength: number;   // 0.6..1.8 — множитель длин волн
+  foam: number;         // 0..1.5 — пена: барашки, обводка корпуса, кильватер
+  farSeg: number;       // 128..320 — сегменты дальней сетки (качество)
+  nearSeg: number;      // 128..320 — сегменты ближней сетки (детализация)
+  nearSize: number;     // 260..500 — сторона ближней сетки, м
+}
+
+/** Качка корпуса (shipPhysics.js) — пружины/ориентация/посадка */
+export interface BuoyancySettings {
+  heaveStiffness: number;    // 1..12 — жёсткость пружины вертикальной качки
+  heaveDamping: number;      // 0.5..6 — демпфер вертикальной качки
+  orientResponse: number;    // 0.5..8 — «вязкость» доворота к склону волны
+  sinkHeel: number;          // 0..3 — заглубление от крена, м
+  sinkSpeed: number;         // 0..0.08 — заглубление от хода, м/м·с⁻¹
+  sampleForeAft: number;     // 0.2..0.6 — доля длины: точки замера нос/корма
+  sampleSide: number;        // 0.4..1 — доля полуширины: точки замера бортов
+  immersionFrigate: number;  // 0.25..0.75 — посадка крупных судов
+  immersionBoat: number;     // 0.25..0.85 — посадка шлюпки
+  immersionDefault: number;  // 0.25..0.75 — посадка остальных судов
+  floodCooldown: number;     // 0.5..6 — пауза между событиями заливания, с
+}
 
 export interface WeatherSettings {
   mode: WeatherMode;   // ясно / дождь / гроза / туман
@@ -89,6 +117,8 @@ export interface GameSettings {
   gameplay: GameplaySettings;
   weather: WeatherSettings;
   fx: FxSettings;
+  sea: SeaModuleSettings;      // штормовой модуль sea.js (Task 29)
+  buoyancy: BuoyancySettings;  // качка корпуса shipPhysics.js (Task 29)
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
@@ -132,6 +162,13 @@ export const DEFAULT_SETTINGS: GameSettings = {
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40, seaModel: 'physical' },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
+  sea: { waveHeight: 1, waveLength: 1, foam: 1, farSeg: 256, nearSeg: 256, nearSize: 300 },
+  buoyancy: {
+    heaveStiffness: 5, heaveDamping: 2.4, orientResponse: 2.6,
+    sinkHeel: 1.2, sinkSpeed: 0.02, sampleForeAft: 0.42, sampleSide: 0.78,
+    immersionFrigate: 0.45, immersionBoat: 0.65, immersionDefault: 0.5,
+    floodCooldown: 1.4,
+  },
 };
 
 /** Рекомендуемые параметры погоды по режиму (кнопка режима подтягивает ветер) */
@@ -148,9 +185,10 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     (настройка waveHeight удалена); (2) стартовый боезапас приведён к
 //     реалистичному 40/12/20/8 (было 90/30/60/20 — песочница);
 //     (3) новая настройка «случайная недостача боезапаса 1–10%».
-// Старые сохранённые боезапасы сбрасываются на новые дефолты,
-// остальные разделы не трогаются.
-const SCHEMA_VER = 3;
+// v4 (Task 29): новые разделы sea (штормовой модуль sea.js) и
+//     buoyancy (качка shipPhysics.js) + модель моря 'storm'.
+//     Старые сохранения: боезапас сбрасывается только если версия < 3.
+const SCHEMA_VER = 4;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -215,7 +253,30 @@ export function loadSettings(): GameSettings {
       if (typeof w.mode === 'string' && ['clear', 'rain', 'storm', 'fog'].includes(w.mode)) s.weather.mode = w.mode as WeatherMode;
       if (typeof w.windSpeed === 'number') s.weather.windSpeed = Math.min(24, Math.max(0, w.windSpeed));
       if (typeof w.windDir === 'number') s.weather.windDir = ((Math.round(w.windDir) % 360) + 360) % 360;
-      if (w.seaModel === 'riding' || w.seaModel === 'physical') s.weather.seaModel = w.seaModel;
+      if (w.seaModel === 'riding' || w.seaModel === 'physical' || w.seaModel === 'storm') s.weather.seaModel = w.seaModel;
+    }
+    if (isObj(data.sea)) {
+      const m = data.sea;
+      if (typeof m.waveHeight === 'number') s.sea.waveHeight = Math.min(2, Math.max(0.3, m.waveHeight));
+      if (typeof m.waveLength === 'number') s.sea.waveLength = Math.min(1.8, Math.max(0.6, m.waveLength));
+      if (typeof m.foam === 'number') s.sea.foam = Math.min(1.5, Math.max(0, m.foam));
+      if (typeof m.farSeg === 'number') s.sea.farSeg = Math.min(320, Math.max(128, Math.round(m.farSeg / 16) * 16));
+      if (typeof m.nearSeg === 'number') s.sea.nearSeg = Math.min(320, Math.max(128, Math.round(m.nearSeg / 16) * 16));
+      if (typeof m.nearSize === 'number') s.sea.nearSize = Math.min(500, Math.max(260, Math.round(m.nearSize / 20) * 20));
+    }
+    if (isObj(data.buoyancy)) {
+      const b = data.buoyancy;
+      if (typeof b.heaveStiffness === 'number') s.buoyancy.heaveStiffness = Math.min(12, Math.max(1, b.heaveStiffness));
+      if (typeof b.heaveDamping === 'number') s.buoyancy.heaveDamping = Math.min(6, Math.max(0.5, b.heaveDamping));
+      if (typeof b.orientResponse === 'number') s.buoyancy.orientResponse = Math.min(8, Math.max(0.5, b.orientResponse));
+      if (typeof b.sinkHeel === 'number') s.buoyancy.sinkHeel = Math.min(3, Math.max(0, b.sinkHeel));
+      if (typeof b.sinkSpeed === 'number') s.buoyancy.sinkSpeed = Math.min(0.08, Math.max(0, b.sinkSpeed));
+      if (typeof b.sampleForeAft === 'number') s.buoyancy.sampleForeAft = Math.min(0.6, Math.max(0.2, b.sampleForeAft));
+      if (typeof b.sampleSide === 'number') s.buoyancy.sampleSide = Math.min(1, Math.max(0.4, b.sampleSide));
+      if (typeof b.immersionFrigate === 'number') s.buoyancy.immersionFrigate = Math.min(0.75, Math.max(0.25, b.immersionFrigate));
+      if (typeof b.immersionBoat === 'number') s.buoyancy.immersionBoat = Math.min(0.85, Math.max(0.25, b.immersionBoat));
+      if (typeof b.immersionDefault === 'number') s.buoyancy.immersionDefault = Math.min(0.75, Math.max(0.25, b.immersionDefault));
+      if (typeof b.floodCooldown === 'number') s.buoyancy.floodCooldown = Math.min(6, Math.max(0.5, b.floodCooldown));
     }
     if (isObj(data.fx)) {
       const f = data.fx;
@@ -225,9 +286,12 @@ export function loadSettings(): GameSettings {
       if (typeof f.smokeTransparency === 'number') s.fx.smokeTransparency = Math.min(0.95, Math.max(0, f.smokeTransparency));
     }
     // МИГРАЦИЯ v3: сохранение сделано до «реалистичного» боекомплекта —
-    // сбрасываем только стартовый боезапас на новые дефолты
-    if (data.v !== SCHEMA_VER) {
+    // сбрасываем только стартовый боезапас на новые дефолты.
+    // v4: новые разделы sea/buoyancy просто берут дефолты (выше).
+    if (typeof (data as { v?: number }).v !== 'number' || (data as { v: number }).v < 3) {
       s.gameplay.startingAmmo = { ...DEFAULT_SETTINGS.gameplay.startingAmmo };
+    }
+    if (data.v !== SCHEMA_VER) {
       saveSettings(s); // сразу перезаписываем с новой версией схемы
     }
     return s;
@@ -276,7 +340,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   camera: 'Камера',
   aimPort: 'Прицел: левый борт',
   aimStarboard: 'Прицел: правый борт / действие',
-  fire: 'Залп бортом',
+  fire: 'Залп (Пробел; E+Пробел — правый борт, Q+Пробел — левый)',
   repair: 'Ремонт / откачка',
   map: 'Карта',
   help: 'Помощь',

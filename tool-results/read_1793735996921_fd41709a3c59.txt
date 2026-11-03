@@ -1,0 +1,1102 @@
+     1→import * as THREE from 'three';
+     2→import { InputManager } from './core/input';
+     3→import { EventBus, GameEvents } from './core/events';
+     4→import { clamp } from './core/rng';
+     5→import { Water } from './water/Water';
+     6→import { SEA, waterHeightAt } from './water/waves';
+     7→import { Ship } from './ship/Ship';
+     8→import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, type FlagKind } from './ship/buildShip';
+     9→import { FIGUREHEADS } from './ship/figurehead';
+    10→import { DECOS } from './ship/hullDeco';
+    11→import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
+    12→import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
+    13→import { World, heightAt, type PortDef } from './world/world';
+    14→import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
+    15→import { Particles } from './fx/particles';
+    16→import { GibPool } from './fx/gibs';
+    17→import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
+    18→import { setCrewFx, deckCrewFor } from './ship/crew';
+    19→import { BoatLaunch } from './ship/launch';
+    20→import { SkySystem } from './fx/sky';
+    21→import { WeatherSystem } from './fx/weather';
+    22→import { AudioSys } from './audio/audio';
+    23→import { AIShip } from './ai/ai';
+    24→import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings } from './core/settings';
+    25→
+    26→// ============================================================
+    27→// Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
+    28→// floating origin, события, HUD-снимок для React.
+    29→// ============================================================
+    30→
+    31→export interface HudMessage { id: number; text: string; }
+    32→
+    33→/** Отчёт о состоянии мишени полигона (для панели мини-игры) */
+    34→export interface TargetReport {
+    35→  name: string;
+    36→  modelId: string;
+    37→  hullPct: number;
+    38→  waterPct: number;
+    39→  leakRate: number;
+    40→  crew: number; maxCrew: number;
+    41→  masts: { broken: boolean; hpPct: number }[];
+    42→  holesBelow: number; holesAbove: number;
+    43→  sinking: boolean; sunk: boolean;
+    44→  dist: number;
+    45→  returnFire: boolean;
+    46→}
+    47→
+    48→export interface HudState {
+    49→  started: boolean;
+    50→  dead: boolean;
+    51→  speed: number;         // узлы
+    52→  headingDeg: number;
+    53→  windFromDeg: number;   // компас, откуда
+    54→  windSpeed: number;     // м/с
+    55→  windRelDeg: number;    // относительно курса
+    56→  sailLevel: number;
+    57→  rudder: number;
+    58→  hullPct: number;
+    59→  sailPct: number;
+    60→  crew: number; maxCrew: number;
+    61→  waterPct: number;
+    62→  onFire: boolean;
+    63→  firePct: number;        // сила пожара 0..1
+    64→  anchored: boolean;
+    65→  grounded: boolean;
+    66→  sinking: boolean;
+    67→  ammoType: AmmoType;
+    68→  ammoCounts: Record<string, number>;
+    69→  planks: number;
+    70→  gold: number;
+    71→  cargo: Record<string, number>;
+    72→  cargoT: number;          // занято трюма, т
+    73→  cargoMaxT: number;       // грузоподъёмность, т
+    74→  aiming: boolean;
+    75→  aimSide: string;
+    76→  aimRange: number;
+    77→  gunsReadyPct: number;
+    78→  targetName: string | null;
+    79→  cameraLabel: string;
+    80→  clock: string;
+    81→  seaState: number;
+    82→  repairAction: string | null;
+    83→  canDock: boolean;
+    84→  nearPortName: string | null; // ближайшая гавань (подсказка швартовки)
+    85→  canBoard: boolean;
+    86→  boardedName: string | null;
+    87→  shipId: string;        // пресет корабля игрока (подсветка в порту)
+    88→  shipName: string;
+    89→  shipClass: string;
+    90→  docked: boolean;
+    91→  /** порт, в котором стоим (имя/уровень/население) */
+    92→  portInfo: { name: string; tierName: string; population: number } | null;
+    93→  /** вёсла (гребные суда): вывалены/выкладываются/гребут */
+    94→  oars: { has: boolean; out: boolean; deploy: number; rowing: number } | null;
+    95→  /** пушечные порты: закрытые батареи (открыты/анимация/число) */
+    96→  gunPorts: { has: boolean; open: boolean; anim: number; count: number } | null;
+    97→  /** надетые фигура и украшение (магазин порта) */
+    98→  figureOn: string | null;
+    99→  decoOn: string | null;
+   100→  messages: HudMessage[];
+   101→  mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string }[];
+   102→  mapShips: { x: number; z: number; kind: string; cat: 'war' | 'merchant'; surrendered: boolean }[];
+   103→  mapPlayer: { x: number; z: number; h: number };
+   104→  fps: number;
+   105→  dayF: number;
+   106→  proving: boolean;
+   107→  target: TargetReport | null;
+   108→  /** шлюпка за кормой: фаза спуска, ход, расстояние до кормы */
+   109→  boat: { phase: string; t: number; dist: number; speed: number; row: number } | null;
+   110→}
+   111→
+   112→// ---------- товары (рынок в порту) ----------
+   113→export interface GoodDef { key: string; name: string; base: number; weight: number; icon: string; }
+   114→/** Товары: цена зависит от порта (priceMul) — основа торговых маршрутов */
+   115→export const GOODS: GoodDef[] = [
+   116→  { key: 'sugar', name: 'Сахар', base: 24, weight: 1, icon: '🍬' },
+   117→  { key: 'rum', name: 'Ром', base: 46, weight: 1, icon: '🍾' },
+   118→  { key: 'timber', name: 'Древесина', base: 9, weight: 1, icon: '🌲' },
+   119→  { key: 'spice', name: 'Пряности', base: 85, weight: 0.5, icon: '🌶' },
+   120→  { key: 'silk', name: 'Шёлк', base: 120, weight: 0.5, icon: '🧵' },
+   121→];
+   122→
+   123→// ---------- скины (флаг / паруса / корпус) + гальюнные фигуры + украшения ----------
+   124→export interface SkinDef {
+   125→  id: string;
+   126→  kind: 'flag' | 'sail' | 'hull' | 'figure' | 'deco';
+   127→  name: string;
+   128→  price: number;
+   129→  flag?: FlagKind;
+   130→  hex?: number;   // -1 = вернуть штатный вид пресета
+   131→  swatch: string; // цвет кружка в UI
+   132→  desc?: string;  // описание (фигуры/украшения)
+   133→}
+   134→export const SKINS: SkinDef[] = [
+   135→  { id: 'flag.pirate', kind: 'flag', name: 'Весёлый Роджер', price: 150, flag: 'pirate', swatch: '#14100c' },
+   136→  { id: 'flag.pirateRed', kind: 'flag', name: 'Кровавый Роджер', price: 400, flag: 'pirateRed', swatch: '#8a1f16' },
+   137→  { id: 'flag.jollyCrown', kind: 'flag', name: 'Роджер с короной', price: 600, flag: 'jollyCrown', swatch: '#0d0a08' },
+   138→  { id: 'flag.blackplain', kind: 'flag', name: 'Проклятый (чёрный)', price: 500, flag: 'blackplain', swatch: '#0a0908' },
+   139→  { id: 'flag.maiden', kind: 'flag', name: 'Дева моря', price: 500, flag: 'maiden', swatch: '#efe7d2' },
+   140→  { id: 'flag.navy', kind: 'flag', name: 'Военный вымпел', price: 250, flag: 'navy', swatch: '#a3362c' },
+   141→  { id: 'flag.merchant', kind: 'flag', name: 'Торговый флаг', price: 200, flag: 'merchant', swatch: '#d8cfbd' },
+   142→  { id: 'sail.default', kind: 'sail', name: 'Штатная парусина', price: 0, hex: -1, swatch: '#e9dcc2' },
+   143→  { id: 'sail.black', kind: 'sail', name: 'Чёрные паруса', price: 500, hex: 0x23232a, swatch: '#23232a' },
+   144→  { id: 'sail.red', kind: 'sail', name: 'Багряные паруса', price: 450, hex: 0x8a3a30, swatch: '#8a3a30' },
+   145→  { id: 'sail.blue', kind: 'sail', name: 'Лазурные паруса', price: 400, hex: 0x51749a, swatch: '#51749a' },
+   146→  { id: 'sail.emerald', kind: 'sail', name: 'Изумрудные паруса', price: 400, hex: 0x4e7a5a, swatch: '#4e7a5a' },
+   147→  { id: 'hull.default', kind: 'hull', name: 'Естественное дерево', price: 0, hex: -1, swatch: '#7a5c38' },
+   148→  { id: 'hull.darkoak', kind: 'hull', name: 'Тёмный дуб', price: 350, hex: 0x8a7460, swatch: '#8a7460' },
+   149→  { id: 'hull.black', kind: 'hull', name: 'Чёрный корпус', price: 550, hex: 0x4a4a50, swatch: '#4a4a50' },
+   150→  { id: 'hull.blue', kind: 'hull', name: 'Адмиральский синий', price: 450, hex: 0x6a7a9a, swatch: '#6a7a9a' },
+   151→  { id: 'hull.crimson', kind: 'hull', name: 'Багровый корпус', price: 450, hex: 0xa86058, swatch: '#a86058' },
+   152→  // гальюнные фигуры — резные украшения форштевня (порт)
+   153→  ...FIGUREHEADS.map(f => ({
+   154→    id: f.id, kind: 'figure' as const, name: f.name, price: f.price,
+   155→    swatch: f.swatch, desc: f.desc,
+   156→  })),
+   157→  // украшения бортов — золотые узоры/вензеля/эмблемы (порт)
+   158→  ...DECOS.map(d => ({
+   159→    id: d.id, kind: 'deco' as const, name: d.name, price: d.price,
+   160→    swatch: '#d8ab48', desc: d.desc,
+   161→  })),
+   162→];
+   163→
+   164→// ---------- улучшения корабля (верфь) ----------
+   165→export interface ShipUpgrades { hull: number; sails: number; masts: number; cargo: number; }
+   166→export const UPGRADE_MAX = 3;
+   167→export const UPGRADE_INFO: { key: keyof ShipUpgrades; name: string; desc: string; icon: string }[] = [
+   168→  { key: 'hull', name: 'Обшивка корпуса', desc: '+15% прочности корпуса за уровень', icon: '🛡' },
+   169→  { key: 'sails', name: 'Парусина', desc: '+15% прочности парусов за уровень', icon: '⛵' },
+   170→  { key: 'masts', name: 'Мачты и такелаж', desc: '+20% прочности мачт за уровень', icon: '⚓' },
+   171→  { key: 'cargo', name: 'Переоборудование трюма', desc: '+20% грузоподъёмности за уровень', icon: '📦' },
+   172→];
+   173→
+   174→export function goodName(key: string): string {
+   175→  return GOODS.find(g => g.key === key)?.name ?? key;
+   176→}
+   177→
+   178→export class Game {
+   179→  bus = new EventBus();
+   180→  input: InputManager;
+   181→  renderer: THREE.WebGLRenderer;
+   182→  scene = new THREE.Scene();
+   183→  rig: CameraRig;
+   184→  water: Water;
+   185→  sky: SkySystem;
+   186→  weather: WeatherSystem;
+   187→  world: World;
+   188→  particles = new Particles(1400);
+   189→  /** куски тел, разорванных ядрами (мировые координаты) */
+   190→  gibs = new GibPool();
+   191→  audio = new AudioSys();
+   192→
+   193→  player!: Ship;
+   194→  aiShips: AIShip[] = [];
+   195→  combat!: CombatSystem;
+   196→  /** спуск/подъём шлюпки и управление ею на воде (клавиша B) */
+   197→  boatLaunch: BoatLaunch | null = null;
+   198→
+   199→  worldGroup = new THREE.Group();
+   200→  private shift = new THREE.Vector3();     // worldGroup.position
+   201→  private negShift = new THREE.Vector3();  // для воды
+   202→
+   203→  wind = { from: 0.7, speed: 7.5 };
+   204→
+   205→  docked = false;
+   206→  dead = false;
+   207→  started = false;
+   208→  settings: GameSettings;         // графика/управление/звук (см. core/settings.ts)
+   209→  uiOpen = false;                 // открыт ли модальный экран (пауза ввода)
+   210→  paused = false;                 // отладка/E2E: заморозить физику (рендер идёт)
+   211→
+   212→  // ===== Экономика порта =====
+   213→  /** ближайшая гавань (для подсказки швартовки) */
+   214→  nearPort: PortDef | null = null;
+   215→  /** порт, в котором стоим */
+   216→  dockedPort: PortDef | null = null;
+   217→  /** улучшения по типам судов (сохраняются при возврате к модели) */
+   218→  shipUpgrades: Record<string, ShipUpgrades> = {};
+   219→  /** купленные скины */
+   220→  skinsOwned = new Set<string>(['flag.pirate', 'sail.default', 'hull.default', 'figure.stock', 'deco.none']);
+   221→  /** надетые скины (переносятся на любой корабль игрока) */
+   222→  skinsOn: { flag: FlagKind | null; sail: number | null; hull: number | null;
+   223→    figure: string | null; deco: string | null } =
+   224→    { flag: null, sail: null, hull: null, figure: null, deco: null };
+   225→
+   226→  // ===== Полигон (мини-игра проверки повреждений) =====
+   227→  proving = false;                // активен ли режим полигона
+   228→  /** ватага пиратов на острове логова (густо, по ТЗ) */
+   229→  lairFolk: LandFolk | null = null;
+   230→  pgTarget: AIShip | null = null; // мишень на якоре
+   231→  pgModel = 'fluyt';              // модель мишени
+   232→  pgReturnFire = false;           // отвечает ли мишень огнём
+   233→  private PG_ANCHOR = new THREE.Vector3(3200, 0, 2300); // чистая вода (запас до берега >1.1 км) вдали от островов
+   234→
+   235→  private msgId = 1;
+   236→  messages: HudMessage[] = [];
+   237→  private msgTtl: number[] = [];
+   238→
+   239→  hud: HudState;
+   240→  private accum = 0;
+   241→  private time = 0;
+   242→  private lastFrame = performance.now();
+   243→  private fpsSmooth = 60;
+   244→  private rafId = 0;
+   245→  private lastSOffset = 0; // удержание S для заднего хода
+   246→  private boardingTarget: AIShip | null = null;
+   247→  private spawnPos = new THREE.Vector3(315, 0, 620);
+   248→
+   249→  constructor(private canvas: HTMLCanvasElement) {
+   250→    this.settings = loadSettings();
+   251→    const g = this.settings.graphics;
+   252→    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+   253→    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
+   254→    this.renderer.setSize(window.innerWidth, window.innerHeight);
+   255→    this.renderer.shadowMap.enabled = g.shadows;
+   256→    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+   257→    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+   258→    this.renderer.toneMappingExposure = 1.06;
+   259→
+   260→    this.input = new InputManager(canvas);
+   261→    this.input.setPreventCodes(this.preventCodes());
+   262→    this.rig = new CameraRig(window.innerWidth / window.innerHeight);
+   263→    this.rig.camera.far = g.drawDistance * 2 + 4000;
+   264→    this.rig.camera.updateProjectionMatrix();
+   265→    this.scene.add(this.worldGroup);
+   266→    this.scene.fog = new THREE.FogExp2(0x9fb6bd, this.fogBase());
+   267→
+   268→    this.water = new Water({
+   269→      detailSegs: g.waterDetail,
+   270→      chunkSize: g.waterChunkSize,
+   271→      far: g.drawDistance,
+   272→      lodSkip: g.waterLodStep,
+   273→    });
+   274→    this.water.setFoamQuality(g.foamQuality);
+   275→    this.scene.add(this.water.group);
+   276→    this.sky = new SkySystem(this.scene);
+   277→    this.sky.setShadowRes(g.shadowRes);
+   278→    this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
+   279→    this.weather = new WeatherSystem(this.scene);
+   280→    this.weather.applySettings(this.settings.weather);
+   281→    // модель моря (Task 27): физическая или «волна-опора» — до
+   282→    // создания кораблей (набор волн задаёт и посадку)
+   283→    SEA.model = this.settings.weather.seaModel;
+   284→    this.weather.onThunder = (dist) => this.audio.thunder(dist);
+   285→    this.applyFx(this.settings.fx);
+   286→    this.updateParticleScale();
+   287→    this.world = new World();
+   288→    this.worldGroup.add(this.world.group);
+   289→    this.worldGroup.add(this.particles.points);
+   290→    this.worldGroup.add(this.particles.firePoints); // огонь — аддитивный пул
+   291→    this.gibs.addTo(this.worldGroup);
+   292→    initDebris(this.worldGroup);
+   293→    setCrewFx(this.gibs, this.particles);
+   294→    Ship.gibs = this.gibs;
+   295→    this.world.onDiscover = (isl) => this.pushMessage(`Открыт остров: ${isl.name}!`);
+   296→
+   297→    this.spawnShips();
+   298→    this.wireEvents();
+   299→
+   300→    this.hud = this.makeHud();
+   301→    (window as unknown as { __game?: Game }).__game = this;
+   302→    // THREE для E2E-тестов (повороты кватернионами в eval без бандла)
+   303→    (window as unknown as { __THREE?: typeof THREE }).__THREE = THREE;
+   304→    // высота суши для E2E (проверки лагеря/островов)
+   305→    (window as unknown as { __heightAt?: (x: number, z: number) => number }).__heightAt = heightAt;
+   306→    window.addEventListener('resize', this.onResize);
+   307→  }
+   308→
+   309→  /** Базовая плотность тумана из дальности прорисовки: к краю воды ~92% тумана */
+   310→  private fogBase(): number {
+   311→    return 1.55 / Math.max(1500, this.settings.graphics.drawDistance);
+   312→  }
+   313→
+   314→  /** Коды клавиш, которые не должен обрабатывать браузер (страница/скролл) */
+   315→  private preventCodes(): Set<string> {
+   316→    const c = this.settings.controls;
+   317→    return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
+   318→      c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help, c.oars, c.boat,
+   319→      ...c.ammo, 'Tab', 'Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+   320→  }
+   321→
+   322→  /** Применить настройки эффектов дыма/огня */
+   323→  private applyFx(fx: FxSettings) {
+   324→    // прозрачность ↑ → непрозрачность ↓ (пик альфы клуба)
+   325→    const alpha = 0.55 * (1 - fx.smokeTransparency);
+   326→    this.particles.applyFx({
+   327→      smokeVisible: fx.smokeVisible,
+   328→      smokeSize: fx.smokeSize,
+   329→      smokeDensity: fx.smokeDensity,
+   330→      smokeAlpha: Math.max(0.03, alpha),
+   331→    });
+   332→  }
+   333→
+   334→  /** Переключение модели моря (Task 27): физическая (Архимед по
+   335→   *  точкам корпуса) или «волна-опора» (по файлу игрока «Перун» —
+   336→   *  корабль идёт по поверхности, нос всходит на волну). Волны
+   337→   *  живут в uniform-массивах шейдера — переключение мгновенное */
+   338→  applySeaModel(model: 'physical' | 'riding', announce = true) {
+   339→    if (SEA.model === model) return;
+   340→    SEA.model = model;
+   341→    // сброс вертикальной динамики кораблей (пружина riding-режима
+   342→    // подхватит посадку сама; у физической — Архимед)
+   343→    if (this.player) {
+   344→      this.player.velocity.y = 0;
+   345→      for (const a of this.aiShips) a.ship.velocity.y = 0;
+   346→    }
+   347→    if (announce) {
+   348→      this.pushMessage(model === 'riding'
+   349→        ? 'Море: волна-опора — корабль идёт по поверхности волн'
+   350→        : 'Море: физическое — Архимед по точкам корпуса');
+   351→    }
+   352→  }
+   353→
+   354→  applySettings(s: GameSettings) {
+   355→    const prev = this.settings;
+   356→    this.settings = s;
+   357→    const g = s.graphics;
+   358→    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
+   359→    if (prev.graphics.shadows !== g.shadows) this.setShadows(g.shadows);
+   360→    if (prev.graphics.shadowRes !== g.shadowRes) this.sky.setShadowRes(g.shadowRes);
+   361→    if (prev.graphics.waterDetail !== g.waterDetail || prev.graphics.drawDistance !== g.drawDistance
+   362→      || prev.graphics.waterChunkSize !== g.waterChunkSize || prev.graphics.waterLodStep !== g.waterLodStep) {
+   363→      this.water.configure(g.waterDetail, g.waterChunkSize, g.drawDistance, g.waterLodStep);
+   364→    }
+   365→    // дистанция мишени на полигоне — переставить цель без сброса повреждений
+   366→    if (prev.gameplay.provingDistance !== s.gameplay.provingDistance
+   367→      && this.proving && this.pgTarget) {
+   368→      const t = this.pgTarget.ship;
+   369→      t.position.copy(this.pgTargetPos());
+   370→      t.position.y = 0;
+   371→      this.pushMessage(`Мишень переставлена: ${s.gameplay.provingDistance} м`);
+   372→    }
+   373→    // боезапас: изменение настройки сразу выдается игроку (песочница)
+   374→    const prevAmmo = prev.gameplay.startingAmmo;
+   375→    const nextAmmo = s.gameplay.startingAmmo;
+   376→    if (prevAmmo.ball !== nextAmmo.ball || prevAmmo.chain !== nextAmmo.chain
+   377→      || prevAmmo.grape !== nextAmmo.grape || prevAmmo.fire !== nextAmmo.fire) {
+   378→      this.player.ammo = { ...nextAmmo };
+   379→      this.pushMessage(`Боезапас: ядра ${nextAmmo.ball} · книппели ${nextAmmo.chain} · картечь ${nextAmmo.grape} · зажигательные ${nextAmmo.fire}`);
+   380→    }
+   381→    // кошелёк: смена настройки стартового золота применяется сразу
+   382→    if (prev.gameplay.startMoney !== s.gameplay.startMoney) {
+   383→      this.player.gold = s.gameplay.startMoney;
+   384→      this.pushMessage(`Кошелёк капитана: ${s.gameplay.startMoney} зол.`);
+   385→    }
+   386→    // прочность: перемасштабировать корпуса/парусы/мачты ВСЕХ кораблей
+   387→    if (prev.gameplay.hullDurability !== s.gameplay.hullDurability) {
+   388→      const k = s.gameplay.hullDurability / prev.gameplay.hullDurability;
+   389→      const rescale = (sh: Ship) => {
+   390→        sh.hullMax *= k; sh.hullHP *= k;
+   391→        sh.sailMax *= k; sh.sailHP *= k;
+   392→        sh.mastMaxHP *= k;
+   393→        for (let i = 0; i < sh.mastHP.length; i++) sh.mastHP[i] *= k;
+   394→      };
+   395→      rescale(this.player);
+   396→      for (const a of this.aiShips) rescale(a.ship);
+   397→      if (this.pgTarget) rescale(this.pgTarget.ship);
+   398→      this.pushMessage(`Прочность кораблей: ×${s.gameplay.hullDurability.toFixed(2)}`);
+   399→    }
+   400→    this.water.setFoamQuality(g.foamQuality);
+   401→    this.rig.camera.far = g.drawDistance * 2 + 4000;
+   402→    this.rig.camera.updateProjectionMatrix();
+   403→    this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);
+   404→    (this.scene.fog as THREE.FogExp2).density = this.fogBase();
+   405→    this.audio.setVolume(s.audio.volume);
+   406→    this.input.setPreventCodes(this.preventCodes());
+   407→    this.combat.infiniteAmmo = s.gameplay.infiniteAmmo;
+   408→    this.applyFx(s.fx);
+   409→    if (prev.weather.mode !== s.weather.mode
+   410→      || prev.weather.windSpeed !== s.weather.windSpeed
+   411→      || prev.weather.windDir !== s.weather.windDir) {
+   412→      this.weather.applySettings(s.weather);
+   413→    }
+   414→    // модель моря — мгновенное переключение (Task 27)
+   415→    if (prev.weather.seaModel !== s.weather.seaModel) {
+   416→      this.applySeaModel(s.weather.seaModel);
+   417→    }
+   418→  }
+   419→
+   420→  private setShadows(on: boolean) {
+   421→    this.renderer.shadowMap.enabled = on;
+   422→    this.renderer.shadowMap.needsUpdate = true;
+   423→    // переключение теней требует перекомпиляции материалов
+   424→    this.scene.traverse((o) => {
+   425→      const mesh = o as THREE.Mesh;
+   426→      if (mesh.material) {
+   427→        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+   428→        for (const m of mats) (m as THREE.Material).needsUpdate = true;
+   429→      }
+   430→    });
+   431→  }
+   432→
+   433→  /** Отладочный хук для E2E: принудительный ветер (→ состояние моря) */
+   434→  debugSetWind(speed: number) {
+   435→    this.settings.weather.windSpeed = speed;
+   436→    this.weather.applySettings(this.settings.weather);
+   437→    this.wind.speed = speed;
+   438→  }
+   439→
+   440→  private spawnShips() {
+   441→    const terrain = (x: number, z: number) => heightAt(x, z);
+   442→    // прочность кораблей — из настроек; боезапас игрока — стартовый набор
+   443→    // с реалистичной недостачей 1–10% (порох отсырел, расстреляли, не доехало)
+   444→    const gp = this.settings.gameplay;
+   445→    const startAmmo = gp.ammoJitter
+   446→      ? rollStartingAmmo(gp.startingAmmo).ammo
+   447→      : { ...gp.startingAmmo };
+   448→    const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo };
+   449→    const aiOpts = { durabilityMul: gp.hullDurability };
+   450→    // игрок: шлюп в глубокой воде за пирсом
+   451→    this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
+   452→    const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
+   453→      new THREE.Vector3(this.world.islands[0].cx, 0, this.world.islands[0].cz)).setY(0).normalize();
+   454→    this.spawnPos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 130);
+   455→    this.player.position.copy(this.spawnPos);
+   456→    this.player.position.y = 0;
+   457→    this.player.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
+   458→    this.player.gold = this.settings.gameplay.startMoney;
+   459→    this.player.cargo = { sugar: 0, rum: 0, timber: 0 };
+   460→    this.worldGroup.add(this.player.visual.group);
+   461→    this.worldGroup.add(this.player.foam.mesh);
+   462→    this.worldGroup.add(this.player.wake.mesh);
+   463→
+   464→    // шлюпка за кормой: спуск на воду и управление (клавиша B)
+   465→    this.boatLaunch = new BoatLaunch({
+   466→      ship: this.player, worldGroup: this.worldGroup, particles: this.particles,
+   467→      islands: () => this.world.islands,
+   468→      msg: (t) => this.pushMessage(t),
+   469→      onSplash: () => this.audio.splash(0),
+   470→    });
+   471→
+   472→    // торговцы (спавн в проверенно глубокой воде)
+   473→    const routes: THREE.Vector3[][] = [
+   474→      [new THREE.Vector3(850, 0, -380), new THREE.Vector3(500, 0, 760), new THREE.Vector3(-350, 0, 560), new THREE.Vector3(-100, 0, -80)],
+   475→      [new THREE.Vector3(-1350, 0, -260), new THREE.Vector3(-900, 0, -520), new THREE.Vector3(-380, 0, -740), new THREE.Vector3(-700, 0, -60)],
+   476→    ];
+   477→    const safeSpawns = [new THREE.Vector3(820, 0, -150), new THREE.Vector3(-1000, 0, -350)];
+   478→    const traderModels = ['fluyt', 'pinnace']; // флейт и пинасс — торговые суда эпохи
+   479→    routes.forEach((route, i) => {
+   480→      const trader = new Ship(traderModels[i], false, this.wind, terrain, this.particles, aiOpts);
+   481→      trader.position.copy(safeSpawns[i]);
+   482→      trader.quaternion.setFromEuler(new THREE.Euler(0, i * 1.3, 0));
+   483→      trader.gold = 260 + i * 190;
+   484→      trader.cargo = { sugar: 18 + i * 9, rum: 6 + i * 5, timber: 22 + i * 11 };
+   485→      this.worldGroup.add(trader.visual.group);
+   486→      this.worldGroup.add(trader.foam.mesh);
+   487→      this.worldGroup.add(trader.wake.mesh);
+   488→      const ai = new AIShip(trader, route, 'route');
+   489→      this.aiShips.push(ai);
+   490→    });
+   491→
+   492→    // каравелла — быстрый торговец северными путями (латинские паруса)
+   493→    const caravelRoute = [
+   494→      new THREE.Vector3(1200, 0, 600), new THREE.Vector3(0, 0, 950),
+   495→      new THREE.Vector3(-1100, 0, 850), new THREE.Vector3(-500, 0, 150),
+   496→    ];
+   497→    const caravel = new Ship('caravel', false, this.wind, terrain, this.particles, aiOpts);
+   498→    caravel.position.copy(caravelRoute[0]);
+   499→    caravel.quaternion.setFromEuler(new THREE.Euler(0, -1.2, 0));
+   500→    caravel.gold = 340;
+   501→    caravel.cargo = { sugar: 14, rum: 9, timber: 30 };
+   502→    this.worldGroup.add(caravel.visual.group);
+   503→    this.worldGroup.add(caravel.foam.mesh);
+   504→    this.worldGroup.add(caravel.wake.mesh);
+   505→    this.aiShips.push(new AIShip(caravel, caravelRoute, 'route'));
+   506→
+   507→    // галеон — флагман на якоре в гавани (для осмотра и проверки повреждений)
+   508→    const galleon = new Ship('galleon', false, this.wind, terrain, this.particles, aiOpts);
+   509→    const perp = new THREE.Vector3(-seaDir.z, 0, seaDir.x);
+   510→    galleon.position.copy(this.spawnPos).addScaledVector(perp, 85).addScaledVector(seaDir, 45);
+   511→    galleon.position.y = 0;
+   512→    galleon.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z) + 0.7, 0));
+   513→    galleon.crew = 70;
+   514→    this.worldGroup.add(galleon.visual.group);
+   515→    this.worldGroup.add(galleon.foam.mesh);
+   516→    this.worldGroup.add(galleon.wake.mesh);
+   517→    this.aiShips.push(new AIShip(galleon, [], 'anchored'));
+   518→
+   519→    // военный патруль
+   520→    const patrol = [
+   521→      new THREE.Vector3(940, 0, 380), new THREE.Vector3(660, 0, 720),
+   522→      new THREE.Vector3(240, 0, 730), new THREE.Vector3(30, 0, 380),
+   523→      new THREE.Vector3(240, 0, 30), new THREE.Vector3(660, 0, 30),
+   524→    ];
+   525→    const brig = new Ship('brig', false, this.wind, terrain, this.particles, aiOpts);
+   526→    brig.position.set(940, 0, 380);
+   527→    brig.crew = 52;
+   528→    this.worldGroup.add(brig.visual.group);
+   529→    this.worldGroup.add(brig.foam.mesh);
+   530→    this.worldGroup.add(brig.wake.mesh);
+   531→    this.aiShips.push(new AIShip(brig, patrol, 'patrol'));
+   532→
+   533→    // фрегат Surprise — быстрый патруль южных маршрутов
+   534→    const surpriseRoute = [
+   535→      new THREE.Vector3(-350, 0, -1100), new THREE.Vector3(400, 0, -1500),
+   536→      new THREE.Vector3(1100, 0, -900), new THREE.Vector3(600, 0, -350),
+   537→    ];
+   538→    const surprise = new Ship('surprise', false, this.wind, terrain, this.particles, aiOpts);
+   539→    surprise.position.copy(surpriseRoute[0]);
+   540→    surprise.quaternion.setFromEuler(new THREE.Euler(0, 2.1, 0));
+   541→    surprise.crew = 170;
+   542→    this.worldGroup.add(surprise.visual.group);
+   543→    this.worldGroup.add(surprise.foam.mesh);
+   544→    this.worldGroup.add(surprise.wake.mesh);
+   545→    this.aiShips.push(new AIShip(surprise, surpriseRoute, 'patrol'));
+   546→
+   547→    // ост-индец Amsterdam — тяжёлый торговец через весь архипелаг
+   548→    const eicRoute = [
+   549→      new THREE.Vector3(-1900, 0, 1300), new THREE.Vector3(-400, 0, 1500),
+   550→      new THREE.Vector3(900, 0, 1200), new THREE.Vector3(1800, 0, 200),
+   551→    ];
+   552→    const eic = new Ship('amsterdam', false, this.wind, terrain, this.particles, aiOpts);
+   553→    eic.position.copy(eicRoute[0]);
+   554→    eic.quaternion.setFromEuler(new THREE.Euler(0, -0.4, 0));
+   555→    eic.gold = 720;
+   556→    eic.cargo = { sugar: 40, rum: 22, timber: 55 };
+   557→    this.worldGroup.add(eic.visual.group);
+   558→    this.worldGroup.add(eic.foam.mesh);
+   559→    this.worldGroup.add(eic.wake.mesh);
+   560→    this.aiShips.push(new AIShip(eic, eicRoute, 'route'));
+   561→
+   562→    // шлюп Lady Washington — каботажник у гавани (пушнинная торговля)
+   563→    const ladyRoute = [
+   564→      new THREE.Vector3(700, 0, 700), new THREE.Vector3(300, 0, 950),
+   565→      new THREE.Vector3(-100, 0, 800), new THREE.Vector3(250, 0, 550),
+   566→    ];
+   567→    const lady = new Ship('ladyw', false, this.wind, terrain, this.particles, aiOpts);
+   568→    lady.position.copy(ladyRoute[0]);
+   569→    lady.gold = 180;
+   570→    lady.cargo = { sugar: 6, rum: 3, timber: 12 };
+   571→    this.worldGroup.add(lady.visual.group);
+   572→    this.worldGroup.add(lady.foam.mesh);
+   573→    this.worldGroup.add(lady.wake.mesh);
+   574→    this.aiShips.push(new AIShip(lady, ladyRoute, 'route'));
+   575→
+   576→    // === ПИРАТСКОЕ ЛОГОВО: эскадра у острова «Логово пиратов» ===
+   577→    // (рядом с полигоном): все под чёрными флагами, включая
+   578→    // легендарную «Чёрную жемчужину» — флагман на рейде
+   579→    this.spawnPirateFleet(aiOpts);
+   580→
+   581→    this.combat = new CombatSystem(this.player, this.particles, (t, p) => this.bus.emit(t, p));
+   582→    this.combat.others = this.aiShips.map(a => a.ship);
+   583→    this.combat.addTo(this.worldGroup);
+   584→    this.combat.infiniteAmmo = gp.infiniteAmmo;
+   585→  }
+   586→
+   587→  /** Пиратская эскадра в логове: 7 судов плотным кольцом у берега +
+   588→   *  2 патруля вокруг острова; флагман — «Чёрная жемчужина» */
+   589→  private spawnPirateFleet(aiOpts: { durabilityMul: number }) {
+   590→    const isl = this.world.islands.find(i => i.name === 'Логово пиратов');
+   591→    if (!isl) return;
+   592→    const terrain = (x: number, z: number) => heightAt(x, z);
+   593→    const ring = (aDeg: number, dist: number) => {
+   594→      const a = aDeg * Math.PI / 180;
+   595→      return new THREE.Vector3(isl.cx + Math.cos(a) * (isl.r + dist), 0, isl.cz + Math.sin(a) * (isl.r + dist));
+   596→    };
+   597→    // [модель, угол°, дистанция от берега, yaw, экипаж, золото, груз]
+   598→    const specs: [string, number, number, number, number, number, number[]][] = [
+   599→      ['blackpearl', 180, 95, 0.1, 120, 2600, [12, 8, 10, 4, 3]],
+   600→      ['sloop', 152, 55, 0.7, 20, 260, [3, 2, 4, 0, 0]],
+   601→      ['sloop', 208, 55, -0.6, 20, 240, [2, 3, 3, 1, 0]],
+   602→      ['brig', 122, 75, 1.1, 52, 720, [6, 4, 8, 2, 1]],
+   603→      ['mystique', 252, 65, -1.2, 92, 820, [5, 6, 4, 3, 2]],
+   604→      ['caravel', 92, 90, 2.0, 24, 420, [4, 3, 5, 1, 1]],
+   605→      ['cog', 300, 85, -2.2, 26, 380, [7, 2, 9, 0, 0]],
+   606→    ];
+   607→    for (const [model, a, dist, yaw, crew, gold, loot] of specs) {
+   608→      const sh = new Ship(model, false, this.wind, terrain, this.particles, aiOpts);
+   609→      sh.position.copy(ring(a, dist));
+   610→      sh.quaternion.setFromEuler(new THREE.Euler(0, yaw, 0));
+   611→      sh.crew = crew;
+   612→      sh.gold = gold;
+   613→      sh.cargo = { sugar: loot[0], rum: loot[1], timber: loot[2], spice: loot[3], silk: loot[4] };
+   614→      setFlagKind(sh.visual, 'pirate'); // все — под чёрным флагом
+   615→      this.worldGroup.add(sh.visual.group);
+   616→      this.worldGroup.add(sh.foam.mesh);
+   617→      this.worldGroup.add(sh.wake.mesh);
+   618→      this.aiShips.push(new AIShip(sh, [], 'anchored'));
+   619→    }
+   620→    // два патруля вокруг острова
+   621→    for (const [model, a0, crew, gold] of [
+   622→      ['sloop', 0, 18, 300], ['brig', 180, 48, 650],
+   623→    ] as [string, number, number, number][]) {
+   624→      const sh = new Ship(model, false, this.wind, terrain, this.particles, aiOpts);
+   625→      sh.position.copy(ring(a0, 280));
+   626→      sh.crew = crew;
+   627→      sh.gold = gold;
+   628→      setFlagKind(sh.visual, 'pirate');
+   629→      this.worldGroup.add(sh.visual.group);
+   630→      this.worldGroup.add(sh.foam.mesh);
+   631→      this.worldGroup.add(sh.wake.mesh);
+   632→      const route: THREE.Vector3[] = [];
+   633→      for (let k = 0; k < 6; k++) route.push(ring(a0 + k * 60, 280));
+   634→      this.aiShips.push(new AIShip(sh, route, 'patrol'));
+   635→    }
+   636→    // ПИРАТЫ НА САМОМ ОСТРОВЕ: густая ватага «человечков» — ходоки
+   637→    // по тропам, дворовые у костра, часовые у кромки воды; картечь
+   638→    // по берегу выкашивает их (combat.onGroundHit → killNear)
+   639→    this.lairFolk = buildLandFolk(folkCountFor(isl.r), {
+   640→      cx: isl.cx, cz: isl.cz, r: isl.r, maxH: isl.maxH,
+   641→      heightAt: (x, z) => heightAt(x, z), seed: 4242,
+   642→    });
+   643→    this.worldGroup.add(this.lairFolk.group);
+   644→    this.worldGroup.add(this.lairFolk.props); // костры лагеря
+   645→  }
+   646→
+   647→  private wireEvents() {
+   648→    const distToPlayer = (p: THREE.Vector3) => p.distanceTo(this.player.position);
+   649→    this.bus.on(GameEvents.CANNON_FIRED, (p) => {
+   650→      const d = (p as { pos: THREE.Vector3; power: number });
+   651→      this.audio.cannon(d.power, distToPlayer(d.pos));
+   652→      if (distToPlayer(d.pos) < 60) this.rig.addShake(0.35 * d.power);
+   653→    });
+   654→    this.bus.on(GameEvents.PROJECTILE_SPLASH, (p) => {
+   655→      this.audio.splash(distToPlayer((p as { pos: THREE.Vector3 }).pos));
+   656→    });
+   657→    this.bus.on(GameEvents.TERRAIN_HIT, (p) => {
+   658→      const d = p as { pos: THREE.Vector3; trees: number };
+   659→      this.audio.woodHit(distToPlayer(d.pos));
+   660→      if (d.trees > 0) {
+   661→        this.rig.addShake(Math.min(0.3, 0.12 * d.trees));
+   662→        this.pushMessage(`Снаряд повалил деревьев: ${d.trees}`);
+   663→      }
+   664→    });
+   665→    this.bus.on(GameEvents.PROJECTILE_HIT, (p) => {
+   666→      const d = (p as { pos: THREE.Vector3; target: Ship });
+   667→      this.audio.woodHit(distToPlayer(d.pos));
+   668→      if (d.target === this.player) this.rig.addShake(0.5);
+   669→      // ИИ реагирует на агрессию игрока
+   670→      const ai = this.aiShips.find(a => a.ship === d.target);
+   671→      if (ai) ai.onPlayerAggression(this.aiShips);
+   672→    });
+   673→    this.bus.on(GameEvents.MESSAGE, (p) => {
+   674→      this.pushMessage((p as { text: string }).text);
+   675→    });
+   676→    this.bus.on(GameEvents.MAST_BROKEN, (p) => {
+   677→      const d = (p as { target: Ship; pos: THREE.Vector3 });
+   678→      this.audio.woodHit(distToPlayer(d.pos));
+   679→      this.rig.addShake(0.35);
+   680→      const who = d.target === this.player ? 'Наш корабль' : d.target.preset.name;
+   681→      this.pushMessage(`${who}: мачта переломлена!`);
+   682→    });
+   683→  }
+   684→
+   685→  // ===== Карта окружения для PBR-металла =====
+   686→  // Панорама 64×32 из цветов неба (sky/horizon/fog) + пятно солнца
+   687→  // по sunDir → PMREM → scene.environment: орудия, фурнитура и золото
+   688→  // отражают небо, а не выглядят чёрными «картонками». Дереву (metalness
+   689→  // 0.05) отражения почти не видны — только лёгкий подсвет.
+   690→  private pmrem: THREE.PMREMGenerator | null = null;
+   691→  private envTex: THREE.DataTexture | null = null;
+   692→  private envRT: THREE.WebGLRenderTarget | null = null;
+   693→  private envNextUpd = 2;
+   694→  private updateEnvMap(dayF: number, env: { sky: THREE.Color; horizon: THREE.Color; fog: THREE.Color; sun: THREE.Color }) {
+   695→    if (this.envNextUpd > 0) { this.envNextUpd -= 1; return; }
+   696→    this.envNextUpd = 150; // ~2.5 с при 60 к/с
+   697→    const W = 64, H = 32;
+   698→    if (!this.envTex) {
+   699→      this.envTex = new THREE.DataTexture(new Uint8Array(W * H * 4), W, H,
+   700→        THREE.RGBAFormat, THREE.UnsignedByteType);
+   701→      this.envTex.mapping = THREE.EquirectangularReflectionMapping;
+   702→      this.envTex.minFilter = THREE.LinearFilter;
+   703→      this.envTex.magFilter = THREE.LinearFilter;
+   704→      this.envTex.generateMipmaps = false;
+   705→      this.pmrem = new THREE.PMREMGenerator(this.renderer);
+   706→    }
+   707→    const d = this.envTex.image.data as Uint8Array;
+   708→    const sd = this.sky.sunDir;
+   709→    const sunI = Math.max(0.15, dayF);
+   710→    const water = env.fog.clone().multiplyScalar(0.4);
+   711→    const c = new THREE.Color();
+   712→    for (let y = 0; y < H; y++) {
+   713→      const v = (y + 0.5) / H;                 // v=0 низ (вода), v=1 зенит
+   714→      const dy = Math.sin((v - 0.5) * Math.PI);
+   715→      const rh = Math.sqrt(Math.max(0, 1 - dy * dy));
+   716→      for (let x = 0; x < W; x++) {
+   717→        const u = (x + 0.5) / W;
+   718→        const phi = (u - 0.5) * Math.PI * 2;
+   719→        const dx = Math.cos(phi) * rh, dz = Math.sin(phi) * rh;
+   720→        // небо над горизонтом, тёмная вода под ним
+   721→        if (dy >= 0) c.copy(env.horizon).lerp(env.sky, Math.pow(Math.min(1, dy * 1.6), 0.6));
+   722→        else c.copy(env.horizon).lerp(water, Math.min(1, -dy * 2.2));
+   723→        // солнце: яркое ядро + мягкий ореол
+   724→        const s = Math.max(0, dx * sd.x + dy * sd.y + dz * sd.z);
+   725→        const core = Math.pow(s, 380) * 255 * sunI;
+   726→        const halo = Math.pow(s, 14) * 60 * sunI;
+   727→        const k = Math.min(1, core + halo);
+   728→        if (k > 0) c.lerp(env.sun, k);
+   729→        const o = (y * W + x) * 4;
+   730→        d[o] = Math.min(255, Math.round(c.r * 255));
+   731→        d[o + 1] = Math.min(255, Math.round(c.g * 255));
+   732→        d[o + 2] = Math.min(255, Math.round(c.b * 255));
+   733→        d[o + 3] = 255;
+   734→      }
+   735→    }
+   736→    this.envTex.needsUpdate = true;
+   737→    this.envRT?.dispose();
+   738→    this.envRT = this.pmrem!.fromEquirectangular(this.envTex);
+   739→    this.scene.environment = this.envRT.texture;
+   740→    // сдержанно: стилистика — не «хромированный» флот
+   741→    (this.scene as THREE.Scene & { environmentIntensity: number }).environmentIntensity = 0.75;
+   742→  }
+   743→
+   744→
+   745→  // ===== Полигон: чистое море + корабль-мишень на якоре =====
+   746→  /** Мишень на траверзе ПРАВОГО борта игрока (курс игрока — восток, right = +Z) */
+   747→  private pgTargetPos(): THREE.Vector3 {
+   748→    // дистанция до мишени — настраивается (Настройки → Игра)
+   749→    return this.PG_ANCHOR.clone().add(new THREE.Vector3(0, 0, this.settings.gameplay.provingDistance));
+   750→  }
+   751→
+   752→  private spawnProvingTarget(modelId: string) {
+   753→    this.removeProvingTarget();
+   754→    const terrain = (x: number, z: number) => heightAt(x, z);
+   755→    const ship = new Ship(modelId, false, this.wind, terrain, this.particles,
+   756→      { durabilityMul: this.settings.gameplay.hullDurability });
+   757→    ship.position.copy(this.pgTargetPos());
+   758→    ship.position.y = 0;
+   759→    ship.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // параллельно игроку
+   760→    ship.noSurrender = true;
+   761→    this.worldGroup.add(ship.visual.group);
+   762→    this.worldGroup.add(ship.foam.mesh);
+   763→    this.worldGroup.add(ship.wake.mesh);
+   764→    const ai = new AIShip(ship, [], 'anchored');
+   765→    ai.returnFire = this.pgReturnFire;
+   766→    // мишень с поставленным рангоутом: стрелять есть по чему — и по парусам
+   767→    ship.sailOverride = 0.85;
+   768→    this.pgTarget = ai;
+   769→    this.combat.others.push(ship);
+   770→  }
+   771→
+   772→  private removeProvingTarget() {
+   773→    if (!this.pgTarget) return;
+   774→    const s = this.pgTarget.ship;
+   775→    const idx = this.combat.others.indexOf(s);
+   776→    if (idx >= 0) this.combat.others.splice(idx, 1);
+   777→    this.worldGroup.remove(s.visual.group);
+   778→    this.worldGroup.remove(s.foam.mesh);
+   779→    this.worldGroup.remove(s.wake.mesh);
+   780→    s.dispose();
+   781→    this.pgTarget = null;
+   782→    clearDebris(); // обломки старой мишени не мешают новому заходу
+   783→  }
+   784→
+   785→  startProving(modelId = 'fluyt') {
+   786→    if (!this.started) this.start();
+   787→    this.exitProving();
+   788→    this.proving = true;
+   789→    this.pgModel = modelId;
+   790→    // штиль: ровный ветер и лёгкая зыбь (блокируется в updateWeather)
+   791→    this.wind.speed = 4.2;
+   792→    SEA.amplitude = 0.42;
+   793→    const p = this.player;
+   794→    p.clearDamage();
+   795→    p.position.copy(this.PG_ANCHOR); p.position.y = 0;
+   796→    p.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // курс на восток
+   797→    p.anchored = false;
+   798→    // боезапас полигона — не меньше стандартного набора
+   799→    const am = this.settings.gameplay.startingAmmo;
+   800→    p.ammo = {
+   801→      ball: Math.max(250, am.ball),
+   802→      chain: Math.max(120, am.chain),
+   803→      grape: Math.max(150, am.grape),
+   804→      fire: Math.max(60, am.fire),
+   805→    };
+   806→    p.planks = 30;
+   807→    this.combat.aim.active = false;
+   808→    this.docked = false;
+   809→    this.spawnProvingTarget(modelId);
+   810→    this.pushMessage(`Полигон: чистое море, мишень на якоре с правого борта (${this.settings.gameplay.provingDistance} м)`);
+   811→  }
+   812→
+   813→  pgSetModel(modelId: string) {
+   814→    this.pgModel = modelId;
+   815→    if (this.proving) this.spawnProvingTarget(modelId);
+   816→  }
+   817→
+   818→  setPgReturnFire(on: boolean) {
+   819→    this.pgReturnFire = on;
+   820→    if (this.pgTarget) this.pgTarget.returnFire = on;
+   821→  }
+   822→
+   823→  resetProvingTarget() {
+   824→    if (!this.pgTarget) return;
+   825→    const s = this.pgTarget.ship;
+   826→    s.clearDamage();
+   827→    clearDebris();
+   828→    s.position.copy(this.pgTargetPos());
+   829→    s.position.y = 0;
+   830→    s.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
+   831→    const am = this.settings.gameplay.startingAmmo;
+   832→    this.player.ammo = {
+   833→      ball: Math.max(250, am.ball),
+   834→      chain: Math.max(120, am.chain),
+   835→      grape: Math.max(150, am.grape),
+   836→      fire: Math.max(60, am.fire),
+   837→    };
+   838→    this.pushMessage('Мишень восстановлена, боезапас пополнен');
+   839→  }
+   840→
+   841→  exitProving() {
+   842→    this.removeProvingTarget();
+   843→    this.proving = false;
+   844→    this.pgReturnFire = false;
+   845→    // вернуть игрока к гавани (как при возрождении)
+   846→    const p = this.player;
+   847→    p.clearDamage();
+   848→    const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
+   849→      new THREE.Vector3(this.world.islands[0].cx, 0, this.world.islands[0].cz)).setY(0).normalize();
+   850→    const pos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 130);
+   851→    p.position.copy(pos); p.position.y = 0;
+   852→    p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
+   853→    p.anchored = false;
+   854→    this.combat.aim.active = false;
+   855→    this.pushMessage('Возврат к Пальмовой гавани');
+   856→  }
+   857→
+   858→  // ===== Смена корабля игрока (верфь в порту — ЗА ЗОЛОТО;
+   859→  //  на полигоне смена бесплатная — песочница) =====
+   860→  changeShip(presetId: string, free = false): string | null {
+   861→    if (!PRESETS[presetId]) return 'Судно не найдено на верфи';
+   862→    if (presetId === this.player.preset.id) return 'Вы уже на этом корабле';
+   863→    const old = this.player;
+   864→    // шлюпку вернуть на шлюпбалки до пересборки корабля
+   865→    this.boatLaunch?.abort();
+   866→    // сохранить состояние игрока
+   867→    const pos = old.position.clone();
+   868→    const quat = old.quaternion.clone();
+   869→    let gold = old.gold;
+   870→    const planks = old.planks, crew = old.crew;
+   871→    const cargo = { ...old.cargo };
+   872→    const ammo = { ...old.ammo };
+   873→    const sailTarget = old.sailTarget;
+   874→    if (!free) {
+   875→      const price = shipPrice(PRESETS[presetId]);
+   876→      const refund = Math.round(shipPrice(old.preset) * 0.4);
+   877→      const cost = price - refund;
+   878→      if (gold < cost) return `Нужно ${cost} зол. (цена ${price} − возврат за текущий ${refund})`;
+   879→      gold -= cost;
+   880→      this.pushMessage(`Куплено: ${PRESETS[presetId].name} за ${price} зол. (возврат ${refund})`);
+   881→    }
+   882→    // убрать старый корабль из сцены
+   883→    this.worldGroup.remove(old.visual.group);
+   884→    this.worldGroup.remove(old.foam.mesh);
+   885→    this.worldGroup.remove(old.wake.mesh);
+   886→    old.dispose();
+   887→    // новый корабль (прочность — из настроек)
+   888→    const gp = this.settings.gameplay;
+   889→    const np = new Ship(presetId, true, this.wind, (x, z) => heightAt(x, z), this.particles,
+   890→      { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo } });
+   891→    // не отнимать боезапас при смене (берём максимум из текущего и стартового)
+   892→    (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
+   893→      np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
+   894→    });
+   895→    np.position.copy(pos);
+   896→    np.position.y = 0;
+   897→    np.quaternion.copy(quat);
+   898→    np.velocity.set(0, 0, 0);
+   899→    np.angular.set(0, 0, 0);
+   900→    np.gold = gold;
+   901→    np.planks = planks;
+   902→    np.cargo = cargo;
+   903→    // экипаж: в порту команда переходит на новый корабль (в пределах
+   904→    // штата), а на ПОЛИГОНЕ (бесплатная смена) — набирается под
+   905→    // НОВЫЙ корабль по норме (по замечанию игрока: количество команды
+   906→    // должно меняться вместе с судном)
+   907→    np.crew = free
+   908→      ? Math.round(np.preset.maxCrew * 0.8)
+   909→      : Math.min(crew, np.preset.maxCrew);
+   910→    np.sailTarget = sailTarget;
+   911→    np.sailOverride = null;
+   912→    np.anchored = old.anchored;
+   913→    np.oarsOut = false; // вёсла нового корабля убраны
+   914→    np.rowing = 0;
+   915→    np.portsOpen = false; // порты задраены (батареи молчат до команды P)
+   916→    np.portsT = 0;
+   917→    // улучшения и скины этого игрока — на новый корабль
+   918→    this.applyUpgrades(np);
+   919→    this.applySkins(np);
+   920→    this.player = np;
+   921→    this.combat.player = np;
+   922→    // шлюпка нового корабля — свой контроллер спуска (след пены
+   923→    // старой шлюпки снимается со сцены)
+   924→    this.boatLaunch?.dispose();
+   925→    this.boatLaunch = new BoatLaunch({
+   926→      ship: np, worldGroup: this.worldGroup, particles: this.particles,
+   927→      islands: () => this.world.islands,
+   928→      msg: (t) => this.pushMessage(t),
+   929→      onSplash: () => this.audio.splash(0),
+   930→    });
+   931→    this.combat.resizeReloads(np.visual.gunsPort.length + np.visual.gunsStarboard.length);
+   932→    this.combat.aim.active = false;
+   933→    this.combat.aim.target = null;
+   934→    this.boardingTarget = null;
+   935→    this.worldGroup.add(np.visual.group);
+   936→    this.worldGroup.add(np.foam.mesh);
+   937→    this.worldGroup.add(np.wake.mesh);
+   938→    this.rig.snap();
+   939→    this.pushMessage(`⚓ Новый корабль: ${np.preset.name} (${np.preset.shipClass})` +
+   940→      (free ? ` — экипаж ${np.crew}/${np.preset.maxCrew}` : ''));
+   941→    return null;
+   942→  }
+   943→
+   944→  pushMessage(text: string) {
+   945→    this.messages.push({ id: this.msgId++, text });
+   946→    this.msgTtl.push(4.5);
+   947→    if (this.messages.length > 4) { this.messages.shift(); this.msgTtl.shift(); }
+   948→  }
+   949→
+   950→  start() {
+   951→    if (this.started) return;
+   952→    this.started = true;
+   953→    this.audio.init();
+   954→    this.pushMessage('Поднять паруса! W — паруса, A/D — руль, Q/E — прицел, C — камера');
+   955→  }
+   956→
+   957→  // ---------- порт (любая гавань архипелага) ----------
+   958→  canDock(): boolean {
+   959→    if (this.docked || this.player.sinking) { this.nearPort = null; return false; }
+   960→    this.nearPort = null;
+   961→    if (this.player.speedKnots() < 4.5) {
+   962→      let best = Infinity;
+   963→      for (const p of this.world.ports) {
+   964→        const d = this.player.position.distanceTo(p.dockEnd);
+   965→        if (d < 110 && d < best) { best = d; this.nearPort = p; }
+   966→      }
+   967→    }
+   968→    return !!this.nearPort;
+   969→  }
+   970→
+   971→  dock() {
+   972→    this.docked = true;
+   973→    this.dockedPort = this.nearPort ?? this.world.ports[0];
+   974→    this.player.anchored = true;
+   975→    this.player.sailTarget = 0;
+   976→    this.player.velocity.multiplyScalar(0.1);
+   977→    this.audio.bell();
+   978→    const p = this.dockedPort;
+   979→    this.pushMessage(`Швартовка: ${p.name} — ${p.tierName.toLowerCase()}, ${p.population} жителей`);
+   980→  }
+   981→
+   982→  undock() {
+   983→    this.docked = false;
+   984→    this.player.anchored = false;
+   985→    const port = this.dockedPort ?? this.world.ports[0];
+   986→    // лёгкий толчок от пирса
+   987→    const away = new THREE.Vector3().subVectors(this.player.position, port.dockEnd).setY(0).normalize();
+   988→    this.player.velocity.addScaledVector(away, 1.2);
+   989→    this.dockedPort = null;
+   990→    this.pushMessage('Отдать швартовы!');
+   991→  }
+   992→
+   993→  // ---------- грузоподъёмность ----------
+   994→  /** Занято трюма (т): товары + вооружение (снаряды) + команда с
+   995→   *  припасами + доски. Суммарно не больше грузоподъёмности! */
+   996→  cargoUsedT(s: Ship = this.player): number {
+   997→    let t = 0;
+   998→    for (const g of GOODS) t += (s.cargo[g.key] || 0) * g.weight;
+   999→    t += (s.ammo.ball || 0) * 0.02 + (s.ammo.chain || 0) * 0.03
+  1000→      + (s.ammo.grape || 0) * 0.025 + (s.ammo.fire || 0) * 0.02;
+  1001→    t += s.crew * 0.12 + s.planks * 0.15;
+  1002→    return +t.toFixed(1);
+  1003→  }
+  1004→
+  1005→  /** Полная грузоподъёмность (т) с учётом улучшения трюма */
+  1006→  cargoMaxT(s: Ship = this.player): number {
+  1007→    const up = this.shipUpgrades[s.preset.id];
+  1008→    return +(s.preset.cargo * (1 + 0.2 * (up?.cargo ?? 0))).toFixed(1);
+  1009→  }
+  1010→
+  1011→  get repairCost(): number {
+  1012→    const base = Math.ceil((this.player.hullMax - this.player.hullHP) * 2.2);
+  1013→    // в большом порту верфи дешевле (конкуренция), на пристани — дороже
+  1014→    const mul = this.dockedPort ? 1.2 - this.dockedPort.tier * 0.1 : 1;
+  1015→    return Math.max(1, Math.round(base * mul));
+  1016→  }
+  1017→
+  1018→  portRepair() {
+  1019→    const cost = this.repairCost;
+  1020→    if (cost <= 0) return 'Корпус уже в порядке';
+  1021→    if (this.player.gold < cost) return 'Не хватает золота';
+  1022→    this.player.gold -= cost;
+  1023→    this.player.hullHP = this.player.hullMax;
+  1024→    this.player.sailHP = this.player.sailMax;
+  1025→    this.player.water = 0;
+  1026→    this.player.leakRate = 0;
+  1027→    this.pushMessage(`Полный ремонт выполнен (-${cost} зол.)`);
+  1028→    return null;
+  1029→  }
+  1030→
+  1031→  portBuyAmmo(kind: AmmoType): string | null {
+  1032→    const price = kind === 'ball' ? 4 : kind === 'grape' ? 5 : kind === 'chain' ? 9 : 12;
+  1033→    const qty = kind === 'chain' ? 5 : 10;
+  1034→    const w = qty * (kind === 'chain' ? 0.03 : kind === 'grape' ? 0.025 : 0.02);
+  1035→    if (this.cargoUsedT() + w > this.cargoMaxT()) return 'Трюм полон — вооружение не влезает';
+  1036→    if (this.player.gold < price) return 'Не хватает золота';
+  1037→    this.player.gold -= price;
+  1038→    this.player.ammo[kind] += qty;
+  1039→    return null;
+  1040→  }
+  1041→
+  1042→  portBuyPlanks(): string | null {
+  1043→    if (this.cargoUsedT() + 5 * 0.15 > this.cargoMaxT()) return 'Трюм полон — доски не влезают';
+  1044→    if (this.player.gold < 15) return 'Не хватает золота';
+  1045→    this.player.gold -= 15;
+  1046→    this.player.planks += 5;
+  1047→    return null;
+  1048→  }
+  1049→
+  1050→  portHireCrew(): string | null {
+  1051→    if (this.player.crew >= this.player.preset.maxCrew) return 'Команда уже полная';
+  1052→    if (this.cargoUsedT() + 0.12 > this.cargoMaxT()) return 'Трюм полон — припасы для матроса не влезают';
+  1053→    if (this.player.gold < 30) return 'Не хватает золота';
+  1054→    this.player.gold -= 30;
+  1055→    this.player.crew++;
+  1056→    return null;
+  1057→  }
+  1058→
+  1059→  // ---------- рынок товаров (цены зависят от порта) ----------
+  1060→  /** цена товара в ТЕКУЩЕМ порту: покупка / продажа */
+  1061→  portGoodPrice(g: GoodDef, mode: 'buy' | 'sell'): number {
+  1062→    const m = this.dockedPort?.priceMul ?? 1;
+  1063→    return Math.max(1, Math.round(g.base * m * (mode === 'buy' ? 1 : 0.82)));
+  1064→  }
+  1065→
+  1066→  portBuyGood(key: string, qty: number): string | null {
+  1067→    const g = GOODS.find(x => x.key === key);
+  1068→    if (!g || qty <= 0) return 'Товар не найден';
+  1069→    const total = this.portGoodPrice(g, 'buy') * qty;
+  1070→    if (this.cargoUsedT() + qty * g.weight > this.cargoMaxT()) return 'Трюм полон — не влезает';
+  1071→    if (this.player.gold < total) return 'Не хватает золота';
+  1072→    this.player.gold -= total;
+  1073→    this.player.cargo[key] = (this.player.cargo[key] || 0) + qty;
+  1074→    return null;
+  1075→  }
+  1076→
+  1077→  portSellGood(key: string, qty: number): string | null {
+  1078→    const g = GOODS.find(x => x.key === key);
+  1079→    if (!g) return 'Товар не найден';
+  1080→    const have = this.player.cargo[key] || 0;
+  1081→    const n = Math.min(qty, have);
+  1082→    if (n <= 0) return 'Этого товара нет в трюме';
+  1083→    const total = this.portGoodPrice(g, 'sell') * n;
+  1084→    this.player.cargo[key] = have - n;
+  1085→    this.player.gold += total;
+  1086→    this.pushMessage(`Продано: ${g.name} ×${n} — +${total} зол.`);
+  1087→    return null;
+  1088→  }
+  1089→
+  1090→  portSellCargo(): string | null {
+  1091→    let total = 0;
+  1092→    for (const g of GOODS) {
+  1093→      const amt = this.player.cargo[g.key] || 0;
+  1094→      if (amt > 0) total += amt * this.portGoodPrice(g, 'sell');
+  1095→      this.player.cargo[g.key] = 0;
+  1096→    }
+  1097→    if (total <= 0) return 'Трюм пуст';
+  1098→    this.player.gold += total;
+  1099→    this.pushMessage(`Груз продан: +${total} зол.`);
+  1100→    return null;
+
+[showing lines 1-1100 of 2169; use offset=1101 with limit to continue reading]

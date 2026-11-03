@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { waterHeightAt } from '../water/waves';
+import { waterHeightAt, SEA } from '../water/waves';
 import { updateBoatFalls, type BoatVis } from './buildShip';
 import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
 import type { Particles } from '../fx/particles';
 import { WakeTrail, WaterlineFoam } from '../water/wake';
+import { ShipBuoyancy } from '../sea/shipPhysics';
 
 // ============================================================
 // СПУСК ШЛЮПКИ НА ВОДУ (по замечанию игрока: «можно спустить
@@ -83,6 +84,12 @@ export class BoatLaunch {
   oarDeploy = 0;
   roll = 0; pitch = 0;
   private bowFoamCd = 0;       // кулдаун буруна у носа
+
+  // качка штормового модуля (Task 29, shipPhysics.js): ял на
+  // волнах моря 'storm' — та же ShipBuoyancy, что и у кораблей
+  readonly buoy = new ShipBuoyancy();
+  /** счётчик заливаний шлюпки (телеметрия) */
+  stormFloods = 0;
 
   // гребцы в шлюпке (видны только на воде)
   rowers: THREE.Group[] = [];
@@ -446,48 +453,70 @@ export class BoatLaunch {
       }
     }
 
-    // --- ПЛАВУЧЕСТЬ ЯЛА: 7 ТОЧЕК НА ВОЛНЕ (Task 27→28): нос/корма/
-    //     борта/мидель + ПОЛУНОС и ПОЛУКОРМА — между прежними 5
-    //     точками середина корпуса проваливалась ПОД гребень на
-    //     коротких волнах («вода режет лодку»); посадка по
-    //     средневзвешенной поверхности + БЫСТРОЕ сглаживание — ял
-    //     ДЕРЖИТСЯ ПОВЕРХНОСТИ (нос всходит на гребень и скользит
-    //     вниз), осадка мала — планширь всегда над водой ---
+    // --- ПЛАВУЧЕСТЬ ЯЛА ---
+    // ШТОРМОВОЙ МОДУЛЬ (Task 29): посадка/наклон — из ShipBuoyancy
+    // (shipPhysics.js игрока): 4+1 замер, нормаль, пружинный гейв.
+    // Отсчёт высоты — планширь яла ≈ КВЛ, поэтому depth=0, а
+    // immersion (настройка «посадка шлюпки») смещает её ±0.5.
     const L = this.vis.len, B = this.vis.beam;
+    const draft = L * 0.155 * 0.15;            // осадка яла (визуальный офсет воротника)
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
-    const sx = fz, sz = -fx;                    // штирборт яла
-    const hBow = waterHeightAt(this.pos.x + fx * L * 0.42, this.pos.z + fz * L * 0.42, time);
-    const hStern = waterHeightAt(this.pos.x - fx * L * 0.42, this.pos.z - fz * L * 0.42, time);
-    const hStar = waterHeightAt(this.pos.x + sx * B * 0.5, this.pos.z + sz * B * 0.5, time);
-    const hPort = waterHeightAt(this.pos.x - sx * B * 0.5, this.pos.z - sz * B * 0.5, time);
-    const hMid = waterHeightAt(this.pos.x, this.pos.z, time);
-    const hBowM = waterHeightAt(this.pos.x + fx * L * 0.21, this.pos.z + fz * L * 0.21, time);
-    const hSternM = waterHeightAt(this.pos.x - fx * L * 0.21, this.pos.z - fz * L * 0.21, time);
     if (!this.splashed) {
-      this.particles.splash(this.pos.x, hMid, this.pos.z, 1.5);
+      this.particles.splash(this.pos.x, waterHeightAt(this.pos.x, this.pos.z, time), this.pos.z, 1.5);
       this.onSplash?.();
       this.splashed = true;
     }
-    // посадка: прямое следование СРЕДНЕВЗВЕШЕННОЙ ПОВЕРХНОСТИ (пружина
-    // попадала в резонанс с волной и гонила ял в противофазе ±2.5 м —
-    // «лодка плавает под водой/над водой»); быстрое экспоненциальное
-    // сглаживание гасит дрожь замеров, но не отстаёт от волны.
-    // Осадка мала (0.15·полной высоты борта — Task 28: ял ПОВЫШЕ
-    // на воде, привальный брус не подрезается водой)
-    const draft = L * 0.155 * 0.15;
-    const targetY = hMid * 0.30
-      + (hBow + hStern) * 0.11 + (hPort + hStar) * 0.095
-      + (hBowM + hSternM) * 0.145 - draft;
-    this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 13.0);
-    b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
-    // наклон по УКЛОНАМ воды между точками (нос-корма, борт-борт) +
-    // лёгкая бортовая качка от гребков
-    const pitchSlope = (hBow - hStern) / (L * 0.84);
-    const rollSlope = (hStar - hPort) / (B * 1.0);
-    this.pitch = THREE.MathUtils.clamp(-pitchSlope, -0.35, 0.35);
-    this.roll = THREE.MathUtils.clamp(rollSlope, -0.4, 0.4)
-      + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
-    b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
+    if (SEA.model === 'storm') {
+      const hullDepth = L * 0.155;             // высота борта яла, м
+      this.buoy.setVessel({ type: 'boat', len: L, beam: B, depth: 0, deck: 0.12 });
+      this.buoy.update(dt, time, {
+        x: this.pos.x, z: this.pos.z, yaw: this.heading, speed: Math.abs(this.vel),
+      }, waterHeightAt);
+      this.pos.y = this.buoy.y + (this.buoy.vessel.immersion - 0.5) * hullDepth;
+      b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
+      // наклон — кватернион модуля + лёгкая качка от гребков
+      this._e.setFromQuaternion(this.buoy.q, 'YXZ');
+      this.pitch = THREE.MathUtils.clamp(this._e.x, -0.35, 0.35);
+      this.roll = THREE.MathUtils.clamp(this._e.z, -0.4, 0.4)
+        + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
+      b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
+      if (this.buoy.events.floodPort || this.buoy.events.floodStar) this.stormFloods++;
+    } else {
+      // 7 ТОЧЕК НА ВОЛНЕ (Task 27→28): нос/корма/борта/мидель +
+      // ПОЛУНОС и ПОЛУКОРМА — между прежними 5 точками середина
+      // корпуса проваливалась ПОД гребень на коротких волнах
+      // («вода режет лодку»); посадка по средневзвешенной поверхности
+      // + БЫСТРОЕ сглаживание — ял ДЕРЖИТСЯ ПОВЕРХНОСТИ (нос всходит
+      // на гребень и скользит вниз), осадка мала — планширь всегда
+      // над водой
+      const sx = fz, sz = -fx;                    // штирборт яла
+      const hBow = waterHeightAt(this.pos.x + fx * L * 0.42, this.pos.z + fz * L * 0.42, time);
+      const hStern = waterHeightAt(this.pos.x - fx * L * 0.42, this.pos.z - fz * L * 0.42, time);
+      const hStar = waterHeightAt(this.pos.x + sx * B * 0.5, this.pos.z + sz * B * 0.5, time);
+      const hPort = waterHeightAt(this.pos.x - sx * B * 0.5, this.pos.z - sz * B * 0.5, time);
+      const hMid = waterHeightAt(this.pos.x, this.pos.z, time);
+      const hBowM = waterHeightAt(this.pos.x + fx * L * 0.21, this.pos.z + fz * L * 0.21, time);
+      const hSternM = waterHeightAt(this.pos.x - fx * L * 0.21, this.pos.z - fz * L * 0.21, time);
+      // посадка: прямое следование СРЕДНЕВЗВЕШЕННОЙ ПОВЕРХНОСТИ (пружина
+      // попадала в резонанс с волной и гонила ял в противофазе ±2.5 м —
+      // «лодка плавает под водой/над водой»); быстрое экспоненциальное
+      // сглаживание гасит дрожь замеров, но не отстаёт от волны.
+      // Осадка мала (0.15·полной высоты борта — Task 28: ял ПОВЫШЕ
+      // на воде, привальный брус не подрезается водой)
+      const targetY = hMid * 0.30
+        + (hBow + hStern) * 0.11 + (hPort + hStar) * 0.095
+        + (hBowM + hSternM) * 0.145 - draft;
+      this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 13.0);
+      b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
+      // наклон по УКЛОНАМ воды между точками (нос-корма, борт-борт) +
+      // лёгкая бортовая качка от гребков
+      const pitchSlope = (hBow - hStern) / (L * 0.84);
+      const rollSlope = (hStar - hPort) / (B * 1.0);
+      this.pitch = THREE.MathUtils.clamp(-pitchSlope, -0.35, 0.35);
+      this.roll = THREE.MathUtils.clamp(rollSlope, -0.4, 0.4)
+        + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
+      b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
+    }
 
     // --- вода ОБТЕКАЕТ ял: бурун у носа на ходу (как у корабля) ---
     this.bowFoamCd = Math.max(0, this.bowFoamCd - dt);

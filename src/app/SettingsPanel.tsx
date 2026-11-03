@@ -295,12 +295,13 @@ export default function SettingsPanel({ initial, onApply, onClose }:
               </div>
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Море и волны</div>
-                <Row label="Модель моря" hint="волна-опора: корабль идёт по поверхности — нос всходит на волну и спускается; физическая: честный Архимед по точкам корпуса, корабль режет волны">
+                <Row label="Модель моря" hint="волна-опора: корабль идёт по поверхности — нос всходит на волну и спускается; физическая: честный Архимед по точкам корпуса, корабль режет волны; штормовой модуль: море + качка из приложенных файлов sea.js / shipPhysics.js">
                   <select value={s.weather.seaModel}
-                    onChange={e => update(d => { d.weather.seaModel = e.target.value as 'physical' | 'riding'; })}
+                    onChange={e => update(d => { d.weather.seaModel = e.target.value as 'physical' | 'riding' | 'storm'; })}
                     className={inputCls}>
                     <option value="physical">Физическая (Архимед, режет волны)</option>
                     <option value="riding">Волна-опора (по поверхности)</option>
+                    <option value="storm">Штормовой модуль (sea.js)</option>
                   </select>
                 </Row>
                 <div className="mt-1 text-[10px] text-stone-500">
@@ -308,6 +309,112 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   крутые валы с фазами, корабль держится на воде и не ныряет глубоко.
                 </div>
               </div>
+
+              {s.weather.seaModel === 'storm' && (
+                <div className="py-2">
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
+                    Штормовой модуль (sea.js)
+                  </div>
+                  <div className="mb-1 text-[10px] text-stone-500">
+                    Сила и направление ветра — общие настройки выше («Сила ветра» и
+                    «Направление ветра»): модуль слушает их так же, как паруса и погода.
+                    Солнце, небо и туман — из глобального неба (день/ночь, гроза).
+                  </div>
+                  <Row label="Высота волн" hint="множитель крутизны штормовых вал (0.3 — зыбь, 2 — валы с гору)">
+                    <Slider value={s.sea.waveHeight} min={0.3} max={2} step={0.05}
+                      onChange={v => update(d => { d.sea.waveHeight = v; })}
+                      format={v => `×${v.toFixed(2)}`} />
+                  </Row>
+                  <Row label="Длина волн" hint="масштаб длин волн спектра (0.6 — короткая chop, 1.8 — длинная зыбь)">
+                    <Slider value={s.sea.waveLength} min={0.6} max={1.8} step={0.05}
+                      onChange={v => update(d => { d.sea.waveLength = v; })}
+                      format={v => `×${v.toFixed(2)}`} />
+                  </Row>
+                  <Row label="Пена" hint="барашки на гребнях, обводка корпуса, кильватер и бурун у форштевня">
+                    <Slider value={s.sea.foam} min={0} max={1.5} step={0.05}
+                      onChange={v => update(d => { d.sea.foam = v; })}
+                      format={v => `${Math.round(v * 100)}%`} />
+                  </Row>
+                  <Row label="Дальняя сетка" hint="сегменты по стороне: качество волн до горизонта (128 быстро … 320 детально)">
+                    <Slider value={s.sea.farSeg} min={128} max={320} step={32}
+                      onChange={v => update(d => { d.sea.farSeg = Math.round(v / 16) * 16; })}
+                      format={v => `${v}`} />
+                  </Row>
+                  <Row label="Ближняя сетка" hint="сегменты детальной сетки вокруг корабля (мелкая рябь)">
+                    <Slider value={s.sea.nearSeg} min={128} max={320} step={32}
+                      onChange={v => update(d => { d.sea.nearSeg = Math.round(v / 16) * 16; })}
+                      format={v => `${v}`} />
+                  </Row>
+                  <Row label="Размер ближней сетки" hint="сторона детального квадрата вокруг корабля, м (дальность — из настроек графики)">
+                    <Slider value={s.sea.nearSize} min={260} max={500} step={20}
+                      onChange={v => update(d => { d.sea.nearSize = v; })}
+                      format={v => `${v} м`} />
+                  </Row>
+                </div>
+              )}
+
+              {s.weather.seaModel === 'storm' && (
+                <div className="py-2">
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
+                    Качка корпуса (shipPhysics.js)
+                  </div>
+                  <Row label="Жёсткость качки" hint="пружина вертикальной качки: больше — резче подскакивает на волне">
+                    <Slider value={s.buoyancy.heaveStiffness} min={1} max={12} step={0.5}
+                      onChange={v => update(d => { d.buoyancy.heaveStiffness = v; })}
+                      format={v => v.toFixed(1)} />
+                  </Row>
+                  <Row label="Демпфер качки" hint="как быстро гаснет вертикальная качка">
+                    <Slider value={s.buoyancy.heaveDamping} min={0.5} max={6} step={0.1}
+                      onChange={v => update(d => { d.buoyancy.heaveDamping = v; })}
+                      format={v => v.toFixed(1)} />
+                  </Row>
+                  <Row label="Отзывчивость корпуса" hint="скорость доворота к склону волны: меньше — лениво переваливается, больше — липнет к волне">
+                    <Slider value={s.buoyancy.orientResponse} min={0.5} max={8} step={0.1}
+                      onChange={v => update(d => { d.buoyancy.orientResponse = v; })}
+                      format={v => `${v.toFixed(1)} 1/с`} />
+                  </Row>
+                  <Row label="Заглубление от крена" hint="сколько корпус садится при наклоне поверхности, м">
+                    <Slider value={s.buoyancy.sinkHeel} min={0} max={3} step={0.1}
+                      onChange={v => update(d => { d.buoyancy.sinkHeel = v; })}
+                      format={v => `${v.toFixed(1)} м`} />
+                  </Row>
+                  <Row label="Заглубление от хода" hint="динамическое погружение на скорости (м/м·с⁻¹)">
+                    <Slider value={s.buoyancy.sinkSpeed} min={0} max={0.08} step={0.005}
+                      onChange={v => update(d => { d.buoyancy.sinkSpeed = v; })}
+                      format={v => v.toFixed(3)} />
+                  </Row>
+                  <Row label="Замер: нос/корма" hint="доля длины корпуса для точек замера воды">
+                    <Slider value={s.buoyancy.sampleForeAft} min={0.2} max={0.6} step={0.02}
+                      onChange={v => update(d => { d.buoyancy.sampleForeAft = v; })}
+                      format={v => v.toFixed(2)} />
+                  </Row>
+                  <Row label="Замер: борта" hint="доля полуширины для точек замера воды">
+                    <Slider value={s.buoyancy.sampleSide} min={0.4} max={1} step={0.02}
+                      onChange={v => update(d => { d.buoyancy.sampleSide = v; })}
+                      format={v => v.toFixed(2)} />
+                  </Row>
+                  <Row label="Посадка: крупные суда" hint="0.5 — проектная осадка; больше — сидит выше (фрегаты и линейные)">
+                    <Slider value={s.buoyancy.immersionFrigate} min={0.25} max={0.75} step={0.05}
+                      onChange={v => update(d => { d.buoyancy.immersionFrigate = v; })}
+                      format={v => v.toFixed(2)} />
+                  </Row>
+                  <Row label="Посадка: шлюпка" hint="лёгкий ял сидит выше корпуса (0.65 по умолчанию)">
+                    <Slider value={s.buoyancy.immersionBoat} min={0.25} max={0.85} step={0.05}
+                      onChange={v => update(d => { d.buoyancy.immersionBoat = v; })}
+                      format={v => v.toFixed(2)} />
+                  </Row>
+                  <Row label="Посадка: прочие суда" hint="шлюпы, торговцы и прочие">
+                    <Slider value={s.buoyancy.immersionDefault} min={0.25} max={0.75} step={0.05}
+                      onChange={v => update(d => { d.buoyancy.immersionDefault = v; })}
+                      format={v => v.toFixed(2)} />
+                  </Row>
+                  <Row label="Пауза заливаний" hint="минимальный интервал события «волна залила палубу», с">
+                    <Slider value={s.buoyancy.floodCooldown} min={0.5} max={6} step={0.1}
+                      onChange={v => update(d => { d.buoyancy.floodCooldown = v; })}
+                      format={v => `${v.toFixed(1)} с`} />
+                  </Row>
+                </div>
+              )}
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Дым и огонь выстрелов</div>
                 <Row label="Видимость дыма" hint="полностью скрывает дым и вспышки">

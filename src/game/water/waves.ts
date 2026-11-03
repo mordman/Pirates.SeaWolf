@@ -3,20 +3,20 @@
 // и для ШЕЙДЕРА (GLSL). Никаких расхождений между визуалом и
 // плавучестью — жёсткое требование ТЗ (разделы 15/16).
 //
-// ДВЕ РЕАЛИЗАЦИИ МОРЯ (Task 27, по файлу игрока «ФРЕГАТ ПЕРУН»):
-//  'physical' — Архимед по точкам корпуса ( rigid body ):
+// ТРИ РЕАЛИЗАЦИИ МОРЯ:
+//  'physical' — Архимед по точкам корпуса (rigid body):
 //    набор PHYS: пологая зыбь, корабль честно кренится/дифферентится
 //    и РЕЖЕТ волны носом (Task 25);
-//  'riding' — «волна-опора»: набор RIDE из файла игрока — 3 крутые
-//    физические волны с фазами (118/64/38 м) + 3 микроряби только
-//    для картинки; амплитуды растут от ветра НЕЛИНЕЙНО (штиль —
-//    почти гладко, шторм — валы). Корабль идёт ПОВЕРХНОСТЬЮ:
-//    5 точек замера (нос/корма/борта/мидель) задают рамку наклона,
-//    пружина держит осадку — нос всходит на волну и спускается,
-//    глубоких нырков нет (Ship.stepRidingWaves).
-// Набор волн живёт в UNIFORM-массивах шейдера — переключение
-// модели моря не пересобирает материалы.
+//  'riding' — «волна-опора» (Task 27): набор RIDE из файла игрока;
+//  'storm' — АВТОНОМНЫЙ МОДУЛЬ sea.js (Task 29): свой рендер
+//    (две сетки + пена вокруг корпуса в шейдере), свой CPU-расчёт
+//    высоты (3 итерации инверсии) и качка через ShipBuoyancy
+//    (shipPhysics.js). Когда модель активна, waterHeightAt/
+//    waveUniformData/seaAmpLoHi делегируют модулю — ВСЕ системы
+//    (кильватеры, пенные воротники, брызги, бои) видят то же море.
 // ============================================================
+import { SeaModule } from '../sea/sea';
+
 export interface WaveDef {
   dirX: number; dirZ: number;   // нормализованное направление
   steepness: number;            // крутизна
@@ -25,8 +25,13 @@ export interface WaveDef {
   micro?: boolean;              // только для картинки (физика не считает)
 }
 
-/** Модель моря/плавучести — выбирается в настройках (Task 27) */
-export type SeaModel = 'physical' | 'riding';
+/** Модель моря/плавучести — выбирается в настройках (Task 27/29) */
+export type SeaModel = 'physical' | 'riding' | 'storm';
+
+/** Активный экземпляр штормового модуля (регистрирует Game) */
+let stormSea: SeaModule | null = null;
+export function setStormSea(s: SeaModule | null) { stormSea = s; }
+export function stormSeaInstance(): SeaModule | null { return stormSea; }
 
 // Штормовое состояние масштабирует амплитуды (0.4 штиль .. 1.8 шторм)
 export interface SeaState {
@@ -60,9 +65,11 @@ export const WAVES_RIDE: WaveDef[] = [
 /** максимум слотов под волны в шейдере (наборы 5 и 6) */
 export const MAX_WAVES = 6;
 
-/** АКТИВНЫЙ набор волн по выбранной модели моря */
+/** АКТИВНЫЙ набор волн по выбранной модели моря (для 'storm' набор
+ * не используется напрямую — данные идут из модуля, здесь только
+ * резерв на случай, когда модуль ещё не создан) */
 export function activeWaves(): WaveDef[] {
-  return SEA.model === 'riding' ? WAVES_RIDE : WAVES_PHYS;
+  return SEA.model === 'physical' ? WAVES_PHYS : WAVES_RIDE;
 }
 
 const K = (w: WaveDef) => (Math.PI * 2) / w.wavelength;
@@ -86,6 +93,10 @@ function amplitudeOf(w: WaveDef): number {
  *  набор PHYS — оба равны SEA.amplitude (как раньше);
  *  набор RIDE — кривые calm+…^pw из файла игрока */
 export function seaAmpLoHi(): { lo: number; hi: number } {
+  // штормовой модуль: амплитуды уже учтены в A (модуль сам ведёт
+  // погоду) — множители единичные, чтобы пенные воротники/кильватеры
+  // совпали с поверхностью модуля
+  if (SEA.model === 'storm' && stormSea) return { lo: 1, hi: 1 };
   if (SEA.model !== 'riding') return { lo: SEA.amplitude, hi: SEA.amplitude };
   const wind = Math.min(1.25, Math.max(0, SEA.amplitude / 1.6));
   return {
@@ -98,11 +109,36 @@ export function seaAmpLoHi(): { lo: number; hi: number } {
  *  картинка, как в файле игрока: PHYS-список для waterHeightAt) */
 function physicsWaves(): WaveDef[] {
   const all = activeWaves();
-  return SEA.model === 'riding' ? all.filter((w) => !w.micro) : all;
+  return SEA.model === 'physical' ? all : all.filter((w) => !w.micro);
 }
 
-/** Высота воды в мировой точке (x,z) в момент t. Итеративная оценка Gerstner. */
+/** Высота воды в мировой точке (x,z) в момент t. Штормовой модуль
+ *  (sea.js) считает сам (свои фазы/направления/амплитуды); без
+ *  модуля — резервный набор RIDE. Итеративная оценка Gerstner. */
 export function waterHeightAt(x: number, z: number, t: number): number {
+  if (SEA.model === 'storm') {
+    if (stormSea) return stormSea.heightAt(x, z, t);
+    // модуль ещё не создан (первая сборка сцены) — считаем по RIDE
+    const wavesR = WAVES_RIDE.filter((w) => !w.micro);
+    let px0 = x, pz0 = z;
+    for (let it = 0; it < 3; it++) {
+      let dx = 0, dz = 0;
+      for (const w of wavesR) {
+        const k = K(w), c = C(w), a = A0(w);
+        const f = k * (w.dirX * px0 + w.dirZ * pz0 - c * t) + (w.phase ?? 0);
+        dx += w.dirX * a * Math.cos(f);
+        dz += w.dirZ * a * Math.cos(f);
+      }
+      px0 = x - dx; pz0 = z - dz;
+    }
+    let y0 = 0;
+    for (const w of wavesR) {
+      const k = K(w), c = C(w), a = A0(w);
+      const f = k * (w.dirX * px0 + w.dirZ * pz0 - c * t) + (w.phase ?? 0);
+      y0 += a * Math.sin(f);
+    }
+    return y0;
+  }
   const waves = physicsWaves();
   // 2 итерации обращения горизонтального смещения
   // (набор RIDE — 3, как в файле игрока: волны круче, сходимость хуже)
@@ -131,6 +167,7 @@ export function waterHeightAt(x: number, z: number, t: number): number {
  *  погоде. Физически — максимально возможная высота гребня над
  *  средним уровнем. */
 export function waveEnvelope(): number {
+  if (SEA.model === 'storm' && stormSea) return stormSea.envelope();
   let s = 0;
   for (const w of activeWaves()) s += amplitudeOf(w);
   return s;
@@ -151,11 +188,25 @@ export function waterNormalAt(x: number, z: number, t: number, out: [number, num
 
 /** Данные волн для UNIFORM-массивов шейдера (активный набор,
  *  добитый нулями до MAX_WAVES). A — без погоды: погода приходит
- *  множителями uAmpLo/uAmpHi (два диапазона волн). */
+ *  множителями uAmpLo/uAmpHi (два диапазона волн).
+ *  Для 'storm' данные идут из модуля sea.js — с УЖЕ учтённой
+ *  погодой в A (поэтому seaAmpLoHi даёт 1/1): так пенные воротники
+ *  и кильватеры ложатся точно на поверхность штормового моря. */
 export function waveUniformData(): {
-  wa: [number, number, number, number][];  // dir.x, dir.z, k, A0
+  wa: [number, number, number, number][];  // dir.x, dir.z, k, A
   wb: [number, number, number, number][];  // k*c, phase, micro?, —
 } {
+  if (SEA.model === 'storm' && stormSea) {
+    const exact = stormSea.uniformDataExact();
+    const wa: [number, number, number, number][] = [];
+    const wb: [number, number, number, number][] = [];
+    for (let i = 0; i < MAX_WAVES; i++) {
+      if (!exact.wa[i]) { wa.push([1, 0, 0.001, 0]); wb.push([0, 0, 0, 0]); continue; }
+      wa.push(exact.wa[i]);
+      wb.push(exact.wb[i]);
+    }
+    return { wa, wb };
+  }
   const list = activeWaves();
   const wa: [number, number, number, number][] = [];
   const wb: [number, number, number, number][] = [];
