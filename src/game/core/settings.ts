@@ -75,6 +75,7 @@ export interface GraphicsSettings {
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
   foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
+  useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
 }
 
 export interface ControlsSettings {
@@ -122,10 +123,10 @@ export interface GameSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, detailLod: 150 },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, detailLod: 210 },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, detailLod: 270 },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, detailLod: 340 },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, detailLod: 150, useGLBModels: true },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, detailLod: 210, useGLBModels: true },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, detailLod: 270, useGLBModels: true },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, detailLod: 340, useGLBModels: true },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -213,6 +214,7 @@ export function loadSettings(): GameSettings {
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
+      if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
     }
     if (isObj(data.controls)) {
       const c = data.controls;

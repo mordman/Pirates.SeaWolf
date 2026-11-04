@@ -98,15 +98,25 @@ function MiniMap({ hud }: { hud: HudState }) {
     }
     const px = (x: number) => c + (x - hud.mapPlayer.x) * scale;
     const pz = (z: number) => c + (z - hud.mapPlayer.z) * scale;
+    // полигон берега (острова НЕПРАВИЛЬНОЙ формы — не круги)
+    const coastPath = (isl: typeof hud.mapIslands[0]) => {
+      ctx.beginPath();
+      (isl.pts ?? []).forEach((p, i) => {
+        const X = px(p.x), Z = pz(p.z);
+        if (i === 0) ctx.moveTo(X, Z); else ctx.lineTo(X, Z);
+      });
+      ctx.closePath();
+    };
     // острова: открытые — в цвете, неизвестные — пунктиром
     for (const isl of hud.mapIslands) {
       const ix = px(isl.x), iz = pz(isl.z);
       const r = Math.max(3, isl.r * scale);
-      if (ix < -r || ix > S + r || iz < -r || iz > S + r) continue;
+      if (ix < -r * 1.6 || ix > S + r * 1.6 || iz < -r * 1.6 || iz > S + r * 1.6) continue;
       if (!isl.discovered) {
         ctx.strokeStyle = 'rgba(220,200,150,0.28)';
         ctx.setLineDash([3, 4]);
-        ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.stroke();
+        if ((isl.pts ?? []).length >= 3) { coastPath(isl); ctx.stroke(); }
+        else { ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.stroke(); }
         ctx.setLineDash([]);
         continue;
       }
@@ -115,7 +125,8 @@ function MiniMap({ hud }: { hud: HudState }) {
       grad.addColorStop(0.75, '#c9b26a');
       grad.addColorStop(1, '#1d5d6e');
       ctx.fillStyle = grad;
-      ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.fill();
+      if ((isl.pts ?? []).length >= 3) { coastPath(isl); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(ix, iz, r, 0, Math.PI * 2); ctx.fill(); }
     }
     // корабли ИИ: военные — красные, торговцы — янтарные, сдавшиеся — белые
     for (const s of hud.mapShips) {
@@ -374,13 +385,24 @@ export default function Home() {
     const cx = W / 2, cy = H / 2;
     const px = (x: number) => cx + x * scale;
     const pz = (z: number) => cy + z * scale;
+    // полигон берега: острова неправильной формы
+    const coastPath = (isl: typeof hud.mapIslands[0]) => {
+      ctx.beginPath();
+      (isl.pts ?? []).forEach((p, i) => {
+        const X = px(p.x), Z = pz(p.z);
+        if (i === 0) ctx.moveTo(X, Z); else ctx.lineTo(X, Z);
+      });
+      ctx.closePath();
+    };
     // острова: все подписаны (навигационная карта); неоткрытые — пунктиром
     for (const isl of hud.mapIslands) {
       const r = Math.max(4, isl.r * scale);
+      const hasPts = (isl.pts ?? []).length >= 3;
       if (!isl.discovered) {
         ctx.strokeStyle = 'rgba(220,200,150,0.35)';
         ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.stroke();
+        if (hasPts) { coastPath(isl); ctx.stroke(); }
+        else { ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.stroke(); }
         ctx.setLineDash([]);
         ctx.fillStyle = 'rgba(232,198,122,0.55)';
         ctx.font = '10px serif';
@@ -393,7 +415,8 @@ export default function Home() {
       grad.addColorStop(0.75, '#c9b26a');
       grad.addColorStop(1, '#1d5d6e');
       ctx.fillStyle = grad;
-      ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.fill();
+      if (hasPts) { coastPath(isl); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(px(isl.x), pz(isl.z), r, 0, Math.PI * 2); ctx.fill(); }
       ctx.fillStyle = '#f0e2c0';
       ctx.font = 'bold 11px serif';
       ctx.textAlign = 'center';

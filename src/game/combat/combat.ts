@@ -984,7 +984,7 @@ export class CombatSystem {
       if (t.sunk || t.sinking) continue;
       toT.subVectors(t.position, ship.position);
       const dist = toT.length();
-      if (dist > 900) continue;
+      if (dist > 520) continue; // уменьшенная дальность пушек: упреждение только до 520 м
       toT.normalize();
       const dot = toT.dot(dir);
       if (dot < 0.92) continue; // в пределах ~23° от прицела

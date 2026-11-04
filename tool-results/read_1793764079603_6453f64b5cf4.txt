@@ -1,0 +1,1114 @@
+     1→import * as THREE from 'three';
+     2→import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+     3→import { RNG, fbm2, clamp, smoothstep } from '../core/rng';
+     4→import { buildFishingVillage, type FishingVillage, type WorldBoat } from './fishing';
+     5→
+     6→// ============================================================
+     7→// Мир: детерминированные острова по сиду, густая растительность
+     8→// (инстансинг + ветровая анимация), животные-атмосфера, порт.
+     9→// ============================================================
+    10→
+    11→export interface IslandDef {
+    12→  cx: number; cz: number; r: number; maxH: number;
+    13→  type: 'port' | 'jungle' | 'rock' | 'atoll';
+    14→  name: string;
+    15→  discovered: boolean;
+    16→}
+    17→
+    18→// ---------- порты: по одному на КАЖДОМ острове ----------
+    19→/** Уровень порта зависит от размера острова: пристань → деревня →
+    20→ *  городок → город-крепость с пушками и населением */
+    21→export interface PortDef {
+    22→  island: IslandDef;
+    23→  name: string;          // название гавани (совпадает с островом)
+    24→  tier: 0 | 1 | 2 | 3;   // пристань / деревня / городок / город-крепость
+    25→  tierName: string;
+    26→  population: number;    // население посёлка/города
+    27→  dockEnd: THREE.Vector3; // конец пирса (точка швартовки)
+    28→  /** направление от берега в море (куда смотрит пирс) */
+    29→  dir: THREE.Vector3;
+    30→  /** множитель цен на товары: <1 — порт производит (дёшево покупает),
+    31→   *  >1 — порт требует (дорого продаёт) — основа торговых маршрутов */
+    32→  priceMul: number;
+    33→}
+    34→
+    35→export const TIER_NAMES = ['Пристань', 'Деревня', 'Городок', 'Город-крепость'] as const;
+    36→
+    37→function tierForIsland(isl: IslandDef): 0 | 1 | 2 | 3 {
+    38→  if (isl.r >= 270) return 3;
+    39→  if (isl.r >= 200) return 2;
+    40→  if (isl.r >= 135) return 1;
+    41→  return 0;
+    42→}
+    43→
+    44→export const WORLD_SEED = 20261027;
+    45→
+    46→// 8 «рукописных» островов (порт + ориентиры) — их индексы используют животные.
+    47→// Мир УВЕЛИЧЕН по ТЗ: острова крупнее (×1.3–1.5) и дальше друг от
+    48→// друга, база архипелага растянута до ±2.2 км, генерация — до ±4.5 км.
+    49→// 9-й — ПИРАТСКОЕ ЛОГОВО у полигона (4400, 3050): остров, густо
+    50→// набитый пиратской эскадрой (эскадра спавнится в game.ts)
+    51→const BASE_ISLANDS: IslandDef[] = [
+    52→  { cx: 675, cz: 525, r: 330, maxH: 30, type: 'port', name: 'Пальмовая гавань', discovered: false },
+    53→  { cx: -975, cz: 750, r: 235, maxH: 16, type: 'jungle', name: 'Зелёный атолл', discovered: false },
+    54→  { cx: -780, cz: -1050, r: 120, maxH: 34, type: 'rock', name: 'Скала Морского Дьявола', discovered: false },
+    55→  { cx: 1350, cz: -930, r: 145, maxH: 11, type: 'atoll', name: 'Черепаший риф', discovered: false },
+    56→  { cx: 2100, cz: 1350, r: 290, maxH: 23, type: 'jungle', name: 'Остров Бакунов', discovered: false },
+    57→  { cx: -2250, cz: -330, r: 205, maxH: 18, type: 'jungle', name: 'Дальний ключ', discovered: false },
+    58→  { cx: -1575, cz: 1725, r: 105, maxH: 27, type: 'rock', name: 'Клык', discovered: false },
+    59→  { cx: 375, cz: -2100, r: 255, maxH: 13, type: 'atoll', name: 'Плёс', discovered: false },
+    60→  { cx: 4400, cz: 3050, r: 205, maxH: 20, type: 'jungle', name: 'Логово пиратов', discovered: false },
+    61→];
+    62→
+    63→/** Процедурная генерация архипелага: детерминированно по сиду —
+    64→ *  кольцом вокруг порта, с минимальными проливами между островами
+    65→ *  (увеличенная карта: дистанции 1700–4200 м, радиусы 120–330 м,
+    66→ *  проливы не уже 800 м).
+    67→ *  Базовые острова не трогаем (животные/порт привязаны к индексам). */
+    68→function generateIslands(): IslandDef[] {
+    69→  const rng = new RNG(WORLD_SEED + 9173);
+    70→  const names = [
+    71→    'Остров Черепа', 'Мыс Багровой Луны', 'Скалы Трёх Братьев', 'Лагуна Сирен',
+    72→    'Кайманов ключ', 'Затерянный риф', 'Бухта Повешенного', 'Остров Гвоздей',
+    73→    'Перьевой атолл', 'Голый риф', 'Отмель Мёртвого Якоря', 'Тихая банка',
+    74→  ];
+    75→  const pool = [...names];
+    76→  const out: IslandDef[] = [];
+    77→  let guard = 0;
+    78→  while (out.length < 11 && guard++ < 900) {
+    79→    const a = rng.range(0, Math.PI * 2);
+    80→    const d = rng.range(1700, 4200);
+    81→    const cx = Math.cos(a) * d;
+    82→    const cz = Math.sin(a) * d * 0.82; // мир чуть шире по X — под карту 640×520
+    83→    if (Math.abs(cx) > 4500 || Math.abs(cz) > 3600) continue;
+    84→    const roll = rng.next();
+    85→    const type: IslandDef['type'] = roll < 0.5 ? 'jungle' : roll < 0.78 ? 'rock' : 'atoll';
+    86→    const r = rng.range(120, 330);
+    87→    // проливы не уже 800 м между берегами
+    88→    let ok = true;
+    89→    for (const isl of [...BASE_ISLANDS, ...out]) {
+    90→      if (Math.hypot(cx - isl.cx, cz - isl.cz) < isl.r + r + 800) { ok = false; break; }
+    91→    }
+    92→    if (!ok) continue;
+    93→    const maxH = type === 'rock' ? rng.range(22, 40) : type === 'jungle' ? rng.range(12, 30) : rng.range(7, 13);
+    94→    const name = pool.length ? pool.splice(Math.floor(rng.next() * pool.length), 1)[0] : `Безымянный риф ${out.length + 1}`;
+    95→    out.push({ cx: Math.round(cx), cz: Math.round(cz), r: Math.round(r), maxH: Math.round(maxH), type, name, discovered: false });
+    96→  }
+    97→  return out;
+    98→}
+    99→
+   100→export const ISLANDS: IslandDef[] = [...BASE_ISLANDS, ...generateIslands()];
+   101→
+   102→/** Высота суши в мировой точке. Открытое море = -14 (глубина), суша > 0 */
+   103→export function heightAt(x: number, z: number): number {
+   104→  let h = -14; // дно открытого моря
+   105→  for (const isl of ISLANDS) {
+   106→    const dx = x - isl.cx, dz = z - isl.cz;
+   107→    const d = Math.hypot(dx, dz);
+   108→    if (d > isl.r * 2.0) continue;
+   109→    // рваная береговая линия: радиус модулируется шумом
+   110→    const coastNoise = fbm2(x * 0.008, z * 0.008, 3, WORLD_SEED + isl.r);
+   111→    const rEff = isl.r * (0.78 + 0.5 * coastNoise);
+   112→    if (d > rEff * 1.5) continue;
+   113→    const fall = smoothstep(1.18, 0.22, d / rEff);
+   114→    const detail = 0.55 + 0.45 * fbm2(x * 0.02, z * 0.02, 4, WORLD_SEED + isl.cx);
+   115→    const ridge = isl.type === 'rock' ? Math.pow(fall, 1.6) : fall;
+   116→    let hi = isl.maxH * ridge * detail - 2.6;
+   117→    // плавный склон к морскому дну за отмелью
+   118→    hi = THREE.MathUtils.lerp(hi, -14, smoothstep(1.12, 1.5, d / rEff));
+   119→    if (hi > h) h = hi;
+   120→  }
+   121→  return h;
+   122→}
+   123→
+   124→function slopeAt(x: number, z: number): number {
+   125→  const e = 1.5;
+   126→  const hx = heightAt(x + e, z) - heightAt(x - e, z);
+   127→  const hz = heightAt(x, z + e) - heightAt(x, z - e);
+   128→  return Math.hypot(hx, hz) / (2 * e);
+   129→}
+   130→
+   131→// ---------- геометрия с цветом ----------
+   132→function paint(g: THREE.BufferGeometry, color: number, jitter = 0.06): THREE.BufferGeometry {
+   133→  const c = new THREE.Color(color);
+   134→  const n = g.getAttribute('position').count;
+   135→  const arr = new Float32Array(n * 3);
+   136→  for (let i = 0; i < n; i++) {
+   137→    const j = 1 + (Math.random() - 0.5) * 2 * jitter;
+   138→    arr[i * 3] = c.r * j; arr[i * 3 + 1] = c.g * j; arr[i * 3 + 2] = c.b * j;
+   139→  }
+   140→  g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+   141→  return g;
+   142→}
+   143→function tf(g: THREE.BufferGeometry, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, s = 1): THREE.BufferGeometry {
+   144→  const m = new THREE.Matrix4().compose(
+   145→    new THREE.Vector3(x, y, z),
+   146→    new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)),
+   147→    new THREE.Vector3(s, s, s));
+   148→  g.applyMatrix4(m);
+   149→  return g;
+   150→}
+   151→
+   152→// ветровая анимация крон (общий uniform)
+   153→export const windTimeUniform = { value: 0 };
+   154→function applySway(mat: THREE.Material, amp: number) {
+   155→  mat.onBeforeCompile = (shader) => {
+   156→    shader.uniforms.uTime = windTimeUniform;
+   157→    shader.vertexShader = shader.vertexShader
+   158→      .replace('#include <common>', '#include <common>\nuniform float uTime;')
+   159→      .replace('#include <begin_vertex>', `#include <begin_vertex>
+   160→        #ifdef USE_INSTANCING
+   161→          vec2 ipos2 = vec2(instanceMatrix[3].x, instanceMatrix[3].z);
+   162→          float swayA = ${amp.toFixed(3)} * sin(uTime * 1.35 + ipos2.x * 0.37 + ipos2.y * 0.43);
+   163→          float hf2 = max(transformed.y - 0.6, 0.0);
+   164→          transformed.x += swayA * hf2;
+   165→          transformed.z += swayA * 0.55 * hf2;
+   166→        #endif`);
+   167→  };
+   168→  mat.customProgramCacheKey = () => `sway-${amp}`;
+   169→}
+   170→
+   171→// ---------- деревья ----------
+   172→function palmGeo(): THREE.BufferGeometry {
+   173→  const parts: THREE.BufferGeometry[] = [];
+   174→  parts.push(paint(tf(new THREE.CylinderGeometry(0.13, 0.24, 8.5, 5), 0, 4.25, 0), 0x7a5a38));
+   175→  const rng = new RNG(42);
+   176→  for (let i = 0; i < 7; i++) {
+   177→    const a = (i / 7) * Math.PI * 2;
+   178→    const frond = new THREE.ConeGeometry(0.42, 3.4, 4);
+   179→    frond.scale(1, 1, 0.16);
+   180→    parts.push(paint(tf(frond, Math.cos(a) * 1.35, 8.3, Math.sin(a) * 1.35, 0.9, -a, 0), 0x3f7d33, 0.12));
+   181→    void rng;
+   182→  }
+   183→  // кокосы
+   184→  parts.push(paint(tf(new THREE.SphereGeometry(0.18, 5, 4), 0.35, 8.1, 0.2), 0x5c4322));
+   185→  parts.push(paint(tf(new THREE.SphereGeometry(0.18, 5, 4), -0.3, 8.05, -0.25), 0x5c4322));
+   186→  return mergeGeometries(parts)!;
+   187→}
+   188→function ficusGeo(): THREE.BufferGeometry {
+   189→  const parts: THREE.BufferGeometry[] = [];
+   190→  parts.push(paint(tf(new THREE.CylinderGeometry(0.42, 0.66, 4.2, 6), 0, 2.1, 0), 0x6b4e2f));
+   191→  parts.push(paint(tf(new THREE.SphereGeometry(2.6, 8, 6), 0, 5.6, 0, 0, 0, 0).scale(1, 0.72, 1) as THREE.BufferGeometry, 0x2f5e2b, 0.14));
+   192→  parts.push(paint(tf(new THREE.SphereGeometry(1.7, 7, 5), 1.6, 4.6, 0.8), 0x39682f, 0.14));
+   193→  parts.push(paint(tf(new THREE.SphereGeometry(1.4, 7, 5), -1.4, 5.1, -0.9), 0x35622c, 0.14));
+   194→  return mergeGeometries(parts)!;
+   195→}
+   196→function jungleGeo(): THREE.BufferGeometry {
+   197→  const parts: THREE.BufferGeometry[] = [];
+   198→  parts.push(paint(tf(new THREE.CylinderGeometry(0.2, 0.38, 5.4, 5), 0, 2.7, 0), 0x6e5230));
+   199→  parts.push(paint(tf(new THREE.SphereGeometry(1.9, 7, 6), 0, 6.0, 0, 0, 0, 0).scale(1, 1.25, 1) as THREE.BufferGeometry, 0x477a34, 0.15));
+   200→  parts.push(paint(tf(new THREE.SphereGeometry(1.2, 6, 5), 0.9, 5.0, 0.5), 0x3d6b2f, 0.15));
+   201→  return mergeGeometries(parts)!;
+   202→}
+   203→function bushGeo(): THREE.BufferGeometry {
+   204→  const parts: THREE.BufferGeometry[] = [];
+   205→  parts.push(paint(tf(new THREE.SphereGeometry(0.85, 6, 5), 0, 0.6, 0), 0x4a7032, 0.2));
+   206→  parts.push(paint(tf(new THREE.SphereGeometry(0.55, 6, 4), 0.6, 0.45, 0.3), 0x567b36, 0.2));
+   207→  return mergeGeometries(parts)!;
+   208→}
+   209→function bambooGeo(): THREE.BufferGeometry {
+   210→  const parts: THREE.BufferGeometry[] = [];
+   211→  const rng = new RNG(7);
+   212→  for (let i = 0; i < 5; i++) {
+   213→    const a = rng.range(0, Math.PI * 2), rr = rng.range(0, 0.5);
+   214→    parts.push(paint(tf(new THREE.CylinderGeometry(0.045, 0.07, 5.2, 4),
+   215→      Math.cos(a) * rr, 2.6, Math.sin(a) * rr, rng.range(-0.08, 0.08), 0, rng.range(-0.08, 0.08)), 0x8a9a3a, 0.1));
+   216→  }
+   217→  return mergeGeometries(parts)!;
+   218→}
+   219→function rockGeo(): THREE.BufferGeometry {
+   220→  return paint(new THREE.DodecahedronGeometry(1.3, 0), 0x7d7668, 0.1);
+   221→}
+   222→
+   223→// ---------- животные ----------
+   224→interface AnimalInst { mesh: THREE.InstancedMesh; count: number; }
+   225→interface Wanderer {
+   226→  x: number; z: number; dirA: number; speed: number;
+   227→  timer: number; phase: number; island: IslandDef;
+   228→}
+   229→interface Hopper { from: THREE.Vector3; to: THREE.Vector3; t: number; dur: number; island: IslandDef; }
+   230→interface Circler { island: IslandDef; a: number; r: number; speed: number; h: number; phase: number; }
+   231→
+   232→export class World {
+   233→  group = new THREE.Group();
+   234→  fishing: FishingVillage[] = []; // рыбацкий декор каждой гавани
+   235→  islands: IslandDef[] = ISLANDS;
+   236→  /** все гавани архипелага — по одной на каждом острове */
+   237→  ports: PortDef[] = [];
+   238→  /** главная гавань (остров 0) — прежнее имя поля для совместимости */
+   239→  get port(): PortDef { return this.ports[0]; }
+   240→  discovered = new Set<string>();
+   241→
+   242→  // животные
+   243→  private gullMesh!: THREE.InstancedMesh;
+   244→  private gullMat!: THREE.ShaderMaterial;
+   245→  private gulls: Circler[] = [];
+   246→  private crabMesh!: THREE.InstancedMesh;
+   247→  private crabs: Wanderer[] = [];
+   248→  private turtleMesh!: THREE.InstancedMesh;
+   249→  private turtles: Circler[] = [];
+   250→  private monkeyMesh!: THREE.InstancedMesh;
+   251→  private monkeys: Hopper[] = [];
+   252→  private boarMesh!: THREE.InstancedMesh;
+   253→  private boars: Wanderer[] = [];
+   254→  private sharkMesh!: THREE.InstancedMesh;
+   255→  private sharks: Circler[] = [];
+   256→  private dummy = new THREE.Object3D();
+   257→  private tmpQ = new THREE.Quaternion();
+   258→  private tmpE = new THREE.Euler();
+   259→
+   260→  // ломающаяся растительность: позиции инстансов по видам
+   261→  private vegSlots: {
+   262→    inst: THREE.InstancedMesh;
+   263→    positions: THREE.Vector3[];
+   264→    broken: boolean[];
+   265→    breakable: boolean;
+   266→    kind: string;         // вид: palm/ficus/jungle/bamboo/bush — рецепт разлома
+   267→    scales: number[];     // визуальная высота каждого экземпляра (множитель)
+   268→  }[] = [];
+   269→  /** счётчик поваленных деревьев (телеметрия) */
+   270→  treesBroken = 0;
+   271→
+   272→  constructor() {
+   273→    this.buildIslands();
+   274→    this.buildVegetation();
+   275→    this.buildPorts();
+   276→    this.buildAnimals();
+   277→  }
+   278→
+   279→  // ---------- острова ----------
+   280→  private buildIslands() {
+   281→    this.islands.forEach((isl, islIdx) => {
+   282→      // размер квадрата: с запасом за всю зону влияния рельефа
+   283→      // (rEff·1.5 до ~1.9r) — раньше 3.2r обрезали отмель НА КВАДРАТЕ,
+   284→      // и под водой читался «квадрат под островом»; теперь кромка
+   285→      // уходит на глубину -14 и не видна
+   286→      const size = isl.r * 4.3;
+   287→      const seg = 110;
+   288→      // у каждого острова своё дно с крошечным сдвигом: перекрывающиеся
+   289→      // плоскости не мерцают z-fight в открытом море
+   290→      const deep = -14 - islIdx * 0.06;
+   291→      const g = new THREE.PlaneGeometry(size, size, seg, seg);
+   292→      g.rotateX(-Math.PI / 2);
+   293→      const pos = g.getAttribute('position') as THREE.BufferAttribute;
+   294→      const colors = new Float32Array(pos.count * 3);
+   295→      const cUnder = new THREE.Color(0x9a8a66);
+   296→      const cSand = new THREE.Color(0xd9c28f);
+   297→      const cGrass = new THREE.Color(0x5f863d);
+   298→      const cJungle = new THREE.Color(0x33642e);
+   299→      const cRock = new THREE.Color(0x8a8378);
+   300→      const c = new THREE.Color();
+   301→      for (let i = 0; i < pos.count; i++) {
+   302→        const wx = pos.getX(i) + isl.cx;
+   303→        const wz = pos.getZ(i) + isl.cz;
+   304→        let h = heightAt(wx, wz);
+   305→        if (h < deep) h = deep;
+   306→        pos.setY(i, h);
+   307→        // цвет по высоте и уклону (уклон приблизим после)
+   308→        if (h < -0.4) c.copy(cUnder).lerp(cSand, clamp((h + 3) / 2.6, 0, 1));
+   309→        else if (h < 1.3) c.copy(cSand);
+   310→        else if (h < isl.maxH * 0.62) c.copy(cGrass).lerp(cJungle, fbm2(wx * 0.05, wz * 0.05, 3, WORLD_SEED + 9));
+   311→        else c.copy(cRock);
+   312→        colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+   313→      }
+   314→      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+   315→      g.computeVertexNormals();
+   316→      // скалы на крутых склонах
+   317→      const nrm = g.getAttribute('normal') as THREE.BufferAttribute;
+   318→      for (let i = 0; i < pos.count; i++) {
+   319→        if (nrm.getY(i) < 0.62 && pos.getY(i) > 0.3) {
+   320→          colors[i * 3] = cRock.r; colors[i * 3 + 1] = cRock.g; colors[i * 3 + 2] = cRock.b;
+   321→        }
+   322→      }
+   323→      (g.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
+   324→      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94, metalness: 0 });
+   325→      const mesh = new THREE.Mesh(g, mat);
+   326→      mesh.position.set(isl.cx, 0, isl.cz);
+   327→      mesh.receiveShadow = true;
+   328→      mesh.castShadow = true;
+   329→      this.group.add(mesh);
+   330→    });
+   331→  }
+   332→
+   333→  // ---------- растительность ----------
+   334→  // ДЕРЕВЬЯ ПО ОСТРОВУ: раньше все деревья всех островов сидели в
+   335→  // ОДНОМ InstancedMesh с frustumCulled=false (мелкий мир — ок);
+   336→  // с увеличенными островами это стало ~2× треугольников В КАЖДОМ
+   337→  // кадре (даже за спиной). Теперь инстансы ГО на остров — и
+   338→  // отсекаются по фрустуму: за бортом рисуются только близкие острова
+   339→  private buildVegetation() {
+   340→    interface Slot { geo: () => THREE.BufferGeometry; sway: number; }
+   341→    const types: Record<string, Slot> = {
+   342→      palm: { geo: palmGeo, sway: 0.05 },
+   343→      ficus: { geo: ficusGeo, sway: 0.028 },
+   344→      jungle: { geo: jungleGeo, sway: 0.035 },
+   345→      bush: { geo: bushGeo, sway: 0.05 },
+   346→      bamboo: { geo: bambooGeo, sway: 0.06 },
+   347→      rock: { geo: rockGeo, sway: 0 },
+   348→    };
+   349→    // placements[остров][порода] — отдельный инстанс-меш на пару
+   350→    const perIsland: { isl: IslandDef; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> }[] = [];
+   351→
+   352→    for (const isl of this.islands) {
+   353→      const density = isl.type === 'rock' ? 0.35 : isl.type === 'atoll' ? 1.0 : 1.25;
+   354→      const area = Math.PI * isl.r * isl.r;
+   355→      const target = Math.floor(area / 220 * density);
+   356→      const rng = new RNG(WORLD_SEED + isl.cx * 31 + isl.cz);
+   357→      const byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> = {};
+   358→      for (const k of Object.keys(types)) byKind[k] = [];
+   359→      let tries = 0;
+   360→      let placed = 0;
+   361→      while (placed < target && tries < target * 14) {
+   362→        tries++;
+   363→        const a = rng.range(0, Math.PI * 2);
+   364→        const rr = Math.sqrt(rng.next()) * isl.r * 1.25;
+   365→        const x = isl.cx + Math.cos(a) * rr;
+   366→        const z = isl.cz + Math.sin(a) * rr;
+   367→        const h = heightAt(x, z);
+   368→        if (h < 0.75 || h > isl.maxH * 0.9) continue;
+   369→        const sl = slopeAt(x, z);
+   370→        if (sl > 0.62) continue;
+   371→        // тип дерева по высоте и типу острова
+   372→        let kind: string;
+   373→        const roll = rng.next();
+   374→        if (isl.type === 'rock') kind = roll < 0.7 ? 'rock' : 'bush';
+   375→        else if (h < 4.2) kind = roll < 0.72 ? 'palm' : roll < 0.85 ? 'bush' : 'rock';
+   376→        else if (h < isl.maxH * 0.55) kind = roll < 0.42 ? 'jungle' : roll < 0.62 ? 'palm' : roll < 0.82 ? 'bamboo' : roll < 0.94 ? 'bush' : 'ficus';
+   377→        else kind = roll < 0.5 ? 'jungle' : roll < 0.75 ? 'bush' : 'rock';
+   378→        if (kind === 'rock' && h < 1.0 && roll < 0.5) kind = 'palm';
+   379→        const s = rng.range(0.7, 1.35);
+   380→        const m = new THREE.Matrix4().compose(
+   381→          new THREE.Vector3(x, h - 0.15, z),
+   382→          new THREE.Quaternion().setFromEuler(new THREE.Euler(rng.range(-0.06, 0.06), rng.range(0, Math.PI * 2), rng.range(-0.06, 0.06))),
+   383→          new THREE.Vector3(s, s * rng.range(0.85, 1.2), s));
+   384→        byKind[kind].push({ m, islandType: isl.type, h });
+   385→        placed++;
+   386→      }
+   387→      perIsland.push({ isl, byKind });
+   388→    }
+   389→
+   390→    for (const { byKind } of perIsland) {
+   391→      for (const [kind, list] of Object.entries(byKind)) {
+   392→        if (!list.length) continue;
+   393→        const geo = types[kind].geo();
+   394→        const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+   395→        if (types[kind].sway > 0) applySway(mat, types[kind].sway);
+   396→        const inst = new THREE.InstancedMesh(geo, mat, list.length);
+   397→        list.forEach((p, i) => inst.setMatrixAt(i, p.m));
+   398→        inst.castShadow = true;
+   399→        inst.receiveShadow = false;
+   400→        // по острову — фрустум отсекает далёкие/за спиной
+   401→        inst.frustumCulled = true;
+   402→        inst.computeBoundingSphere();
+   403→        this.group.add(inst);
+   404→        // позиции для ломания (камни не ломаются)
+   405→        const positions = list.map((p) => {
+   406→          const v = new THREE.Vector3();
+   407→          v.setFromMatrixPosition(p.m);
+   408→          return v;
+   409→        });
+   410→        this.vegSlots.push({
+   411→          inst, positions,
+   412→          broken: new Array(list.length).fill(false),
+   413→          breakable: kind !== 'rock',
+   414→          kind,
+   415→          scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
+   416→        });
+   417→      }
+   418→    }
+   419→  }
+   420→
+   421→  /** Ядро/книппель валят деревья: ломает экземпляры в радиусе
+   422→   *  (дерево разлетается на ТРИ части: пень + ствол + крона —
+   423→   *  гибы с гравитацией), возвращает количество поваленных */
+   424→  breakTrees(x: number, y: number, z: number, radius: number,
+   425→    fx?: { debris: (x: number, y: number, z: number, n?: number, power?: number) => void },
+   426→    gibs?: { spawnPart: (pos: THREE.Vector3, vel: THREE.Vector3, sx: number, sy: number, sz: number, hex: number, life?: number) => void }): number {
+   427→    let broke = 0;
+   428→    const r2 = radius * radius;
+   429→    for (const slot of this.vegSlots) {
+   430→      if (!slot.breakable) continue;
+   431→      for (let i = 0; i < slot.positions.length; i++) {
+   432→        if (slot.broken[i]) continue;
+   433→        const p = slot.positions[i];
+   434→        const dx = p.x - x, dz = p.z - z, dy = p.y - y;
+   435→        if (dx * dx + dz * dz > r2 || dy < -3 || dy > 9) continue;
+   436→        slot.broken[i] = true;
+   437→        // спрятать экземпляр: сдвинуть под дно + сжать в точку
+   438→        this.dummy.position.set(p.x, -40, p.z);
+   439→        this.dummy.quaternion.identity();
+   440→        this.dummy.scale.setScalar(0.001);
+   441→        this.dummy.updateMatrix();
+   442→        slot.inst.setMatrixAt(i, this.dummy.matrix);
+   443→        slot.inst.instanceMatrix.needsUpdate = true;
+   444→        // щепа и листва из точки удара
+   445→        fx?.debris(p.x, p.y + 1.6, p.z, 12, 1.2);
+   446→        // разлом на ТРИ части — куски летят от точки попадания
+   447→        if (gibs) this.gibTreePieces(gibs, slot.kind, p, slot.scales[i], { x, y, z });
+   448→        broke++;
+   449→      }
+   450→    }
+   451→    this.treesBroken += broke;
+   452→    return broke;
+   453→  }
+   454→
+   455→  /** рецепты разлома по видам: цвет ствола/кроны, ширина кроны, базовая высота */
+   456→  private static readonly TREE_PIECES: Record<string, {
+   457→    trunkHex: number; crownHex: number; crownW: number; baseH: number;
+   458→  }> = {
+   459→    palm: { trunkHex: 0x7a5a38, crownHex: 0x3f7d33, crownW: 2.4, baseH: 8.5 },
+   460→    ficus: { trunkHex: 0x6b4e2f, crownHex: 0x2f5e2b, crownW: 3.6, baseH: 7.0 },
+   461→    jungle: { trunkHex: 0x6e5230, crownHex: 0x477a34, crownW: 2.8, baseH: 6.8 },
+   462→    bamboo: { trunkHex: 0x8a9a3a, crownHex: 0x5c7a3a, crownW: 1.0, baseH: 5.2 },
+   463→    bush: { trunkHex: 0x4a7032, crownHex: 0x567b36, crownW: 1.1, baseH: 1.3 },
+   464→    rock: { trunkHex: 0x7d7668, crownHex: 0x7d7668, crownW: 1, baseH: 1 },
+   465→  };
+   466→
+   467→  /** Три куска вместо дерева: пень у корня, ствол по полёту,
+   468→   *  крона вверх; куст целиком — три кома листвы */
+   469→  private gibTreePieces(
+   470→    gibs: { spawnPart: (pos: THREE.Vector3, vel: THREE.Vector3, sx: number, sy: number, sz: number, hex: number, life?: number) => void },
+   471→    kind: string, p: THREE.Vector3, s: number,
+   472→    hit: { x: number; y: number; z: number }): void {
+   473→    const spec = World.TREE_PIECES[kind] ?? World.TREE_PIECES.jungle;
+   474→    const H = Math.max(0.8, spec.baseH * s);      // визуальная высота дерева
+   475→    // направление разлёта: от точки попадания к дереву
+   476→    const dir = new THREE.Vector3(p.x - hit.x, 0, p.z - hit.z);
+   477→    if (dir.lengthSq() < 0.04) dir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+   478→    dir.normalize();
+   479→    if (kind === 'bush') {
+   480→      // куст без ствола — три кома листвы разного размера
+   481→      for (let k = 0; k < 3; k++) {
+   482→        const w = (0.5 + k * 0.16) * s;
+   483→        gibs.spawnPart(
+   484→          new THREE.Vector3(p.x + (Math.random() - 0.5), p.y + 0.35 + k * 0.2, p.z + (Math.random() - 0.5)),
+   485→          new THREE.Vector3(dir.x * (2.2 + k * 0.7) + (Math.random() - 0.5) * 1.6,
+   486→            1.5 + Math.random() * 1.4, dir.z * (2.2 + k * 0.7) + (Math.random() - 0.5) * 1.6),
+   487→          w, w * 0.8, w, k === 1 ? spec.crownHex : spec.trunkHex, 2.4 + Math.random() * 0.8);
+   488→      }
+   489→      return;
+   490→    }
+   491→    // 1) ПЕНЬ: нижняя часть ствола оседает у корня
+   492→    gibs.spawnPart(
+   493→      new THREE.Vector3(p.x, p.y + H * 0.12, p.z),
+   494→      new THREE.Vector3(dir.x * 1.5, 0.5, dir.z * 1.5),
+   495→      Math.max(0.16, 0.24 * s), Math.max(0.5, H * 0.2), Math.max(0.16, 0.24 * s),
+   496→      spec.trunkHex, 3.2);
+   497→    // 2) СТВОЛ: средняя часть — по траектории снаряда
+   498→    gibs.spawnPart(
+   499→      new THREE.Vector3(p.x, p.y + H * 0.55, p.z),
+   500→      new THREE.Vector3(dir.x * 4.2 + (Math.random() - 0.5) * 1.6, 2.0 + Math.random(),
+   501→        dir.z * 4.2 + (Math.random() - 0.5) * 1.6),
+   502→      Math.max(0.13, 0.19 * s), Math.max(1.2, H * 0.33), Math.max(0.13, 0.19 * s),
+   503→      spec.trunkHex, 2.8);
+   504→    // 3) КРОНА: зелёная шапка вылетает вверх
+   505→    const cw = Math.max(0.5, spec.crownW * s);
+   506→    gibs.spawnPart(
+   507→      new THREE.Vector3(p.x, p.y + H * 0.92, p.z),
+   508→      new THREE.Vector3(dir.x * 3.0 + (Math.random() - 0.5) * 2, 3.1 + Math.random() * 1.2,
+   509→        dir.z * 3.0 + (Math.random() - 0.5) * 2),
+   510→      cw, Math.max(0.4, cw * 0.45), cw, spec.crownHex, 2.3);
+   511→  }
+   512→
+   513→  // ---------- порты: по одному на каждом острове, размер по острову ----------
+   514→  private buildPorts() {
+   515→    const rng = new RNG(WORLD_SEED + 4242);
+   516→    this.islands.forEach((isl, idx) => {
+   517→      const tier = tierForIsland(isl);
+   518→      // остров 0: прежнее направление пирса (гавань не двигаем — там
+   519→      // спавнится игрок); остальные — пирс в сторону открытого моря
+   520→      const dir = idx === 0
+   521→        ? new THREE.Vector3(-1, 0, 1).normalize()
+   522→        : new THREE.Vector3(isl.cx, 0, isl.cz).normalize();
+   523→      let shore = new THREE.Vector3(isl.cx, 0, isl.cz);
+   524→      for (let d = 0; d < isl.r * 1.4; d += 4) {
+   525→        const p = new THREE.Vector3(isl.cx, 0, isl.cz).addScaledVector(dir, d);
+   526→        if (heightAt(p.x, p.z) < 0.4) { shore = p; break; }
+   527→      }
+   528→      const dockLen = [26, 36, 46, 52][tier];
+   529→      const dockEnd = shore.clone().addScaledVector(dir, dockLen - 4);
+   530→      dockEnd.y = 0;
+   531→      // детерминированный множитель цен из имени острова (0.78..1.32)
+   532→      const hash = Array.from(isl.name).reduce((a, ch) => a + ch.charCodeAt(0) * 7, 3);
+   533→      const priceMul = +(0.78 + ((hash * 2654435761) % 1000) / 1000 * 0.54).toFixed(2);
+   534→      const population = [
+   535→        8 + Math.floor(rng.range(0, 18)),
+   536→        40 + Math.floor(rng.range(0, 120)),
+   537→        250 + Math.floor(rng.range(0, 450)),
+   538→        900 + Math.floor(rng.range(0, 1700)),
+   539→      ][tier];
+   540→      this.ports.push({
+   541→        island: isl, name: isl.name, tier, tierName: TIER_NAMES[tier],
+   542→        population, dockEnd, dir, priceMul,
+   543→      });
+   544→      this.buildPortStructs(this.ports[idx], rng);
+   545→      // рыбацкий декор: шлюпки у пирса, краболовки, вешала, поплавки
+   546→      this.fishing.push(buildFishingVillage(this.ports[idx], rng, heightAt));
+   547→      this.group.add(this.fishing[idx].group);
+   548→    });
+   549→  }
+   550→
+   551→  /** Геометрия гавани: пирс + фонари + хижины; деревня — 3 хижины;
+   552→   *  городок — рынок и амбар; город-крепость — церковь и ФОРТ с пушками.
+   553→   *  Пиратское логово — чёрный флаг на пирсе */
+   554→  private buildPortStructs(port: PortDef, rng: RNG) {
+   555→    const isl = port.island;
+   556→    const tier = port.tier;
+   557→    const dir = port.dir;
+   558→    const dockLen = [26, 36, 46, 52][tier];
+   559→    const shore = port.dockEnd.clone().addScaledVector(dir, -(dockLen - 4));
+   560→
+   561→    const wood = new THREE.MeshStandardMaterial({ color: 0x7a5c38, roughness: 0.85 });
+   562→    const dark = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
+   563→    const stone = new THREE.MeshStandardMaterial({ color: 0x8d867a, roughness: 0.95 });
+   564→    const stoneDark = new THREE.MeshStandardMaterial({ color: 0x6e6759, roughness: 0.95 });
+   565→    const iron = new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.5, metalness: 0.7 });
+   566→    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+   567→    const dirA = Math.atan2(dir.x, dir.z);
+   568→
+   569→    // --- пирс ---
+   570→    const dock = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.3, dockLen), wood);
+   571→    const mid = shore.clone().addScaledVector(dir, dockLen / 2 - 2);
+   572→    dock.position.set(mid.x, 1.15, mid.z);
+   573→    dock.rotation.y = dirA;
+   574→    dock.castShadow = true;
+   575→    this.group.add(dock);
+   576→    // сваи
+   577→    for (let i = 0; i <= 7; i++) {
+   578→      const p = shore.clone().addScaledVector(dir, i * (dockLen / 7));
+   579→      for (const side of [-1, 1]) {
+   580→        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 4.4, 6), dark);
+   581→        post.position.set(p.x + perp.x * side * 2.0, -0.8, p.z + perp.z * side * 2.0);
+   582→        this.group.add(post);
+   583→      }
+   584→    }
+   585→    // фонари на конце пирса
+   586→    for (const side of [-1, 1]) {
+   587→      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.4, 6), dark);
+   588→      const p = port.dockEnd.clone().add(new THREE.Vector3(perp.x * side * 1.9, 0, perp.z * side * 1.9));
+   589→      pole.position.set(p.x, 2.6, p.z);
+   590→      this.group.add(pole);
+   591→      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8),
+   592→        new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffb648, emissiveIntensity: 2.2 }));
+   593→      lamp.position.set(p.x, 4.4, p.z);
+   594→      this.group.add(lamp);
+   595→    }
+   596→
+   597→    // --- хижины на берегу (число — от уровня порта) ---
+   598→    const mkHut = (hp: THREE.Vector3, w: number, dpt: number, wallC: number, roofC: number) => {
+   599→      const hut = new THREE.Group();
+   600→      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, dpt),
+   601→        new THREE.MeshStandardMaterial({ color: wallC, roughness: 0.9 }));
+   602→      walls.position.y = 1.6;
+   603→      hut.add(walls);
+   604→      const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, dpt) * 0.82, 2.6, 4),
+   605→        new THREE.MeshStandardMaterial({ color: roofC, roughness: 0.95 }));
+   606→      roof.position.y = 4.4;
+   607→      roof.rotation.y = Math.PI / 4;
+   608→      hut.add(roof);
+   609→      const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.15), dark);
+   610→      door.position.set(0, 1.1, dpt / 2 + 0.05);
+   611→      hut.add(door);
+   612→      hut.position.set(hp.x, Math.max(heightAt(hp.x, hp.z), 0.8), hp.z);
+   613→      hut.rotation.y = dirA + (rng.next() - 0.5) * 0.5;
+   614→      hut.castShadow = true;
+   615→      this.group.add(hut);
+   616→    };
+   617→    const hutBase = shore.clone().addScaledVector(dir, -16);
+   618→    const nHuts = [1, 3, 5, 6][tier];
+   619→    const wallColors = [0xbfa27a, 0xc9ad84, 0xa8906a];
+   620→    const roofColors = [0xb09055, 0x8a5c38, 0x74553a];
+   621→    for (let i = 0; i < nHuts; i++) {
+   622→      const row = tier >= 2 ? i % 2 : 0; // город: два ряда
+   623→      const off = nHuts === 1 ? 0 : (i - (nHuts - 1) / 2) * (tier >= 2 ? 11 : 13);
+   624→      const hp = hutBase.clone()
+   625→        .addScaledVector(perp, off)
+   626→        .addScaledVector(dir, -row * 12);
+   627→      mkHut(hp, tier >= 2 ? 6 : 5.5, tier >= 2 ? 5 : 4.6,
+   628→        wallColors[i % 3], roofColors[i % 3]);
+   629→    }
+   630→
+   631→    // --- городок: рынок и амбар ---
+   632→    if (tier >= 2) {
+   633→      const market = hutBase.clone().addScaledVector(dir, -26).addScaledVector(perp, 14);
+   634→      for (let i = 0; i < 3; i++) {
+   635→        const st = new THREE.Group();
+   636→        const table = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.15, 1.6), wood);
+   637→        table.position.y = 0.95;
+   638→        st.add(table);
+   639→        for (const sx of [-1.4, 1.4]) {
+   640→          for (const sz of [0.6, -0.6]) {
+   641→            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.95, 0.12), dark);
+   642→            leg.position.set(sx, 0.48, sz);
+   643→            st.add(leg);
+   644→          }
+   645→        }
+   646→        const awn = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.1, 2.2),
+   647→          new THREE.MeshStandardMaterial({ color: i % 2 ? 0xa3362c : 0x3c6b8a, roughness: 0.9 }));
+   648→        awn.position.set(0, 2.3, 0);
+   649→        awn.rotation.x = 0.16;
+   650→        st.add(awn);
+   651→        for (const px of [-1.6, 1.6]) {
+   652→          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.3, 0.09), dark);
+   653→          pole.position.set(px, 1.15, 0.9);
+   654→          st.add(pole);
+   655→        }
+   656→        const mp = market.clone().addScaledVector(perp, i * 6 - 6);
+   657→        st.position.set(mp.x, Math.max(heightAt(mp.x, mp.z), 0.8), mp.z);
+   658→        st.rotation.y = dirA + Math.PI / 2;
+   659→        this.group.add(st);
+   660→      }
+   661→      // амбар (склад товаров)
+   662→      const wh = hutBase.clone().addScaledVector(dir, -24).addScaledVector(perp, -16);
+   663→      const warehouse = new THREE.Group();
+   664→      const whWalls = new THREE.Mesh(new THREE.BoxGeometry(9, 4.6, 6.5),
+   665→        new THREE.MeshStandardMaterial({ color: 0x8f7550, roughness: 0.92 }));
+   666→      whWalls.position.y = 2.3;
+   667→      warehouse.add(whWalls);
+   668→      const whRoof = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.4, 9.6, 3, 1),
+   669→        new THREE.MeshStandardMaterial({ color: 0x5c4128, roughness: 0.95 }));
+   670→      whRoof.rotation.z = Math.PI / 2;
+   671→      whRoof.scale.set(1, 1, 0.42);
+   672→      whRoof.position.y = 5.4;
+   673→      warehouse.add(whRoof);
+   674→      warehouse.position.set(wh.x, Math.max(heightAt(wh.x, wh.z), 0.8), wh.z);
+   675→      warehouse.rotation.y = dirA;
+   676→      warehouse.castShadow = true;
+   677→      this.group.add(warehouse);
+   678→    }
+   679→
+   680→    // --- город-крепость: церковь + ФОРТ с пушками ---
+   681→    if (tier >= 3) {
+   682→      const ch = hutBase.clone().addScaledVector(dir, -34).addScaledVector(perp, 24);
+   683→      const church = new THREE.Group();
+   684→      const nave = new THREE.Mesh(new THREE.BoxGeometry(5, 4, 9),
+   685→        new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
+   686→      nave.position.y = 2;
+   687→      church.add(nave);
+   688→      const nroof = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.1, 9.6, 3, 1),
+   689→        new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.9 }));
+   690→      nroof.rotation.z = Math.PI / 2;
+   691→      nroof.scale.set(1, 1, 0.46);
+   692→      nroof.position.y = 4.6;
+   693→      church.add(nroof);
+   694→      const tower = new THREE.Mesh(new THREE.BoxGeometry(3.2, 9.5, 3.2),
+   695→        new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
+   696→      tower.position.set(0, 4.75, 4.6);
+   697→      church.add(tower);
+   698→      const spire = new THREE.Mesh(new THREE.ConeGeometry(2.4, 3.4, 4),
+   699→        new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.85 }));
+   700→      spire.position.set(0, 11.2, 4.6);
+   701→      spire.rotation.y = Math.PI / 4;
+   702→      church.add(spire);
+   703→      church.position.set(ch.x, Math.max(heightAt(ch.x, ch.z), 0.8), ch.z);
+   704→      church.rotation.y = dirA;
+   705→      church.castShadow = true;
+   706→      this.group.add(church);
+   707→
+   708→      // ФОРТ: квадрат каменных стен, 4 угловые башни, 8 пушек
+   709→      const fb = hutBase.clone().addScaledVector(dir, -52);
+   710→      const fy = Math.max(heightAt(fb.x, fb.z), 1.0);
+   711→      const S = 15;
+   712→      const wallH = 5.2, wallT = 1.4;
+   713→      const fort = new THREE.Group();
+   714→      const wallsSpec: [number, number, number, number][] = [
+   715→        [0, S, S * 2, wallT], [0, -S, S * 2, wallT],
+   716→        [S, 0, wallT, S * 2], [-S, 0, wallT, S * 2],
+   717→      ];
+   718→      for (const [wx, wz, ww, wd] of wallsSpec) {
+   719→        const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, wallH, wd), stone);
+   720→        wall.position.set(wx, wallH / 2, wz);
+   721→        wall.castShadow = true;
+   722→        fort.add(wall);
+   723→        for (let k = -S + 1.5; k < S; k += 3) {
+   724→          const merlon = new THREE.Mesh(new THREE.BoxGeometry(
+   725→            ww > wallT ? 1.5 : wallT + 0.2, 1.1, wd > wallT ? 1.5 : wallT + 0.2), stoneDark);
+   726→          merlon.position.set(ww > wallT ? k : wx, wallH + 0.55, wd > wallT ? k : wz);
+   727→          fort.add(merlon);
+   728→        }
+   729→      }
+   730→      for (const [tx, tz] of [[S, S], [S, -S], [-S, S], [-S, -S]] as [number, number][]) {
+   731→        const ftower = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.4, wallH + 3.6, 8), stone);
+   732→        ftower.position.set(tx, (wallH + 3.6) / 2, tz);
+   733→        ftower.castShadow = true;
+   734→        fort.add(ftower);
+   735→        const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 2.4, 8), stoneDark);
+   736→        cap.position.set(tx, wallH + 3.6 + 1.2, tz);
+   737→        fort.add(cap);
+   738→      }
+   739→      // 8 пушек: по 2 на стену, стволы в сторону моря
+   740→      const mkCannon = (cx: number, cz: number, ry: number) => {
+   741→        const g = new THREE.Group();
+   742→        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.22, 2.0, 8), iron);
+   743→        barrel.rotation.z = Math.PI / 2;
+   744→        barrel.position.set(0, 0.62, 0.9);
+   745→        g.add(barrel);
+   746→        const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 1.3), dark);
+   747→        carriage.position.y = 0.25;
+   748→        g.add(carriage);
+   749→        for (const wx of [-0.34, 0.34]) {
+   750→          const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.05, 5, 10), dark);
+   751→          wheel.rotation.y = Math.PI / 2;
+   752→          wheel.position.set(wx, 0.26, 0);
+   753→          g.add(wheel);
+   754→        }
+   755→        g.position.set(cx, wallH + 0.3, cz);
+   756→        g.rotation.y = ry;
+   757→        fort.add(g);
+   758→      };
+   759→      for (let i = 0; i < 8; i++) {
+   760→        const side = i % 4;
+   761→        const k = i < 4 ? -6 : 6;
+   762→        if (side === 0) mkCannon(k, S - wallT / 2, dirA);
+   763→        else if (side === 1) mkCannon(k, -S + wallT / 2, dirA + Math.PI);
+   764→        else if (side === 2) mkCannon(S - wallT / 2, k, dirA + Math.PI / 2);
+   765→        else mkCannon(-S + wallT / 2, k, dirA - Math.PI / 2);
+   766→      }
+   767→      fort.position.set(fb.x, fy, fb.z);
+   768→      fort.rotation.y = dirA;
+   769→      this.group.add(fort);
+   770→    }
+   771→
+   772→    // --- пиратское логово: чёрный флаг на пирсе ---
+   773→    if (isl.name === 'Логово пиратов') {
+   774→      const c = document.createElement('canvas');
+   775→      c.width = 64; c.height = 40;
+   776→      const x2 = c.getContext('2d')!;
+   777→      x2.fillStyle = '#0d0a08'; x2.fillRect(0, 0, 64, 40);
+   778→      x2.fillStyle = '#e8e4d8';
+   779→      x2.beginPath(); x2.arc(32, 16, 8, 0, Math.PI * 2); x2.fill();
+   780→      x2.save(); x2.translate(32, 27); x2.rotate(0.5); x2.fillRect(-16, -1.5, 32, 3); x2.restore();
+   781→      x2.save(); x2.translate(32, 27); x2.rotate(-0.5); x2.fillRect(-16, -1.5, 32, 3); x2.restore();
+   782→      const tex = new THREE.CanvasTexture(c);
+   783→      tex.colorSpace = THREE.SRGBColorSpace;
+   784→      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 9, 6), dark);
+   785→      const fp = port.dockEnd.clone().addScaledVector(dir, -3).add(new THREE.Vector3(perp.x * 3.2, 0, perp.z * 3.2));
+   786→      pole.position.set(fp.x, 5.2, fp.z);
+   787→      this.group.add(pole);
+   788→      const banner = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.1),
+   789→        new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.9 }));
+   790→      banner.position.set(fp.x + 1.7, 8.6, fp.z);
+   791→      banner.rotation.y = dirA + Math.PI / 2;
+   792→      this.group.add(banner);
+   793→    }
+   794→
+   795→    // --- пальмы у гавани (гуще у больших портов) ---
+   796→    const nPalms = [3, 10, 16, 22][tier];
+   797→    for (let i = 0; i < nPalms; i++) {
+   798→      const a = rng.range(0, Math.PI * 2), rr = rng.range(16, 52);
+   799→      const x = hutBase.x + Math.cos(a) * rr, z = hutBase.z + Math.sin(a) * rr;
+   800→      const h = heightAt(x, z);
+   801→      if (h < 1.0 || h > 8) continue;
+   802→      const palm = new THREE.Mesh(palmGeo(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+   803→      const s = rng.range(0.8, 1.3);
+   804→      palm.scale.setScalar(s);
+   805→      palm.position.set(x, h - 0.1, z);
+   806→      palm.rotation.y = rng.range(0, 7);
+   807→      palm.castShadow = true;
+   808→      this.group.add(palm);
+   809→    }
+   810→  }
+   811→
+   812→  // ---------- животные ----------
+   813→  private buildAnimals() {
+   814→    const rng = new RNG(WORLD_SEED + 555);
+   815→
+   816→    // чайки: 3 стаи
+   817→    const gullGeo = new THREE.BufferGeometry();
+   818→    gullGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+   819→      0, 0, 0.55, 1.15, 0, -0.5, 1.15, 0, 0.5,   // правое крыло
+   820→      0, 0, 0.55, -1.15, 0, -0.5, -1.15, 0, 0.5,  // левое крыло
+   821→      0, 0, 0.9, 0.14, 0.05, -0.35, -0.14, 0.05, -0.35, // тельце
+   822→    ], 3));
+   823→    gullGeo.computeVertexNormals();
+   824→    const phases = new Float32Array(42);
+   825→    for (let i = 0; i < 42; i++) phases[i] = rng.range(0, Math.PI * 2);
+   826→    gullGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1));
+   827→    this.gullMat = new THREE.ShaderMaterial({
+   828→      uniforms: { uTime: { value: 0 } },
+   829→      vertexShader: /* glsl */`
+   830→        attribute float aPhase;
+   831→        uniform float uTime;
+   832→        void main() {
+   833→          vec3 p = position;
+   834→          p.y += sin(uTime * 9.0 + aPhase) * abs(p.x) * 0.55;
+   835→          #ifdef USE_INSTANCING
+   836→            vec4 mv = modelViewMatrix * instanceMatrix * vec4(p, 1.0);
+   837→          #else
+   838→            vec4 mv = modelViewMatrix * vec4(p, 1.0);
+   839→          #endif
+   840→          gl_Position = projectionMatrix * mv;
+   841→        }`,
+   842→      fragmentShader: /* glsl */`
+   843→        void main() { gl_FragColor = vec4(0.93, 0.93, 0.9, 1.0); }`,
+   844→      side: THREE.DoubleSide,
+   845→    });
+   846→    this.gullMesh = new THREE.InstancedMesh(gullGeo, this.gullMat, 42);
+   847→    const flockIslands = [this.islands[0], this.islands[0], this.islands[4]];
+   848→    for (let i = 0; i < 42; i++) {
+   849→      const isl = flockIslands[Math.floor(i / 14)];
+   850→      this.gulls.push({
+   851→        island: isl, a: rng.range(0, Math.PI * 2), r: rng.range(isl.r * 0.35, isl.r * 0.85),
+   852→        speed: rng.range(0.12, 0.3) * (rng.next() < 0.5 ? 1 : -1),
+   853→        h: rng.range(22, 48), phase: rng.range(0, Math.PI * 2),
+   854→      });
+   855→    }
+   856→    this.group.add(this.gullMesh);
+   857→
+   858→    // крабы
+   859→    const crabParts = [
+   860→      paint(tf(new THREE.BoxGeometry(0.5, 0.2, 0.36), 0, 0.12, 0), 0xc2542e),
+   861→      paint(tf(new THREE.BoxGeometry(0.16, 0.12, 0.22), 0.3, 0.14, 0.12, 0, 0, 0.5), 0xa8431f),
+   862→      paint(tf(new THREE.BoxGeometry(0.16, 0.12, 0.22), -0.3, 0.14, -0.12, 0, 0, -0.5), 0xa8431f),
+   863→    ];
+   864→    this.crabMesh = new THREE.InstancedMesh(mergeGeometries(crabParts)!,
+   865→      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }), 56);
+   866→    const crabIslands = [this.islands[0], this.islands[3], this.islands[7]];
+   867→    for (let i = 0; i < 56; i++) {
+   868→      const isl = crabIslands[i % crabIslands.length];
+   869→      const a = rng.range(0, Math.PI * 2);
+   870→      const r = isl.r * rng.range(0.75, 1.05);
+   871→      const x = isl.cx + Math.cos(a) * r, z = isl.cz + Math.sin(a) * r;
+   872→      this.crabs.push({ x, z, dirA: rng.range(0, Math.PI * 2), speed: rng.range(0.3, 0.9), timer: rng.range(0, 3), phase: rng.range(0, 7), island: isl });
+   873→    }
+   874→    this.group.add(this.crabMesh);
+   875→
+   876→    // черепахи
+   877→    const turtleParts = [
+   878→      paint(tf(new THREE.SphereGeometry(0.75, 8, 6), 0, 0, 0).scale(1, 0.42, 1.2) as THREE.BufferGeometry, 0x4d6b3a),
+   879→      paint(tf(new THREE.SphereGeometry(0.22, 6, 5), 0, 0.02, 0.86), 0x6d8a52),
+   880→      paint(tf(new THREE.SphereGeometry(0.12, 5, 4), 0.55, -0.05, 0), 0x6d8a52),
+   881→      paint(tf(new THREE.SphereGeometry(0.12, 5, 4), -0.55, -0.05, 0), 0x6d8a52),
+   882→    ];
+   883→    this.turtleMesh = new THREE.InstancedMesh(mergeGeometries(turtleParts)!,
+   884→      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }), 14);
+   885→    for (let i = 0; i < 14; i++) {
+   886→      const isl = this.islands[i % 2 === 0 ? 3 : 0];
+   887→      this.turtles.push({ island: isl, a: rng.range(0, Math.PI * 2), r: isl.r * rng.range(1.02, 1.25), speed: rng.range(0.015, 0.05), h: 0, phase: rng.range(0, 7) });
+   888→    }
+   889→    this.group.add(this.turtleMesh);
+   890→
+   891→    // обезьяны (прыгают в джунглях)
+   892→    const monkeyParts = [
+   893→      paint(tf(new THREE.BoxGeometry(0.32, 0.44, 0.26), 0, 0.32, 0), 0x4c3626),
+   894→      paint(tf(new THREE.SphereGeometry(0.17, 6, 5), 0, 0.68, 0.06), 0x5a4230),
+   895→      paint(tf(new THREE.CylinderGeometry(0.03, 0.05, 0.7, 4), 0, 0.45, -0.24, 0.7, 0, 0), 0x4c3626),
+   896→    ];
+   897→    this.monkeyMesh = new THREE.InstancedMesh(mergeGeometries(monkeyParts)!,
+   898→      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }), 22);
+   899→    const monkIslands = [this.islands[0], this.islands[1], this.islands[4]];
+   900→    for (let i = 0; i < 22; i++) {
+   901→      const isl = monkIslands[i % 3];
+   902→      let x = 0, z = 0, ok = false;
+   903→      for (let t = 0; t < 30 && !ok; t++) {
+   904→        const a = rng.range(0, Math.PI * 2), rr = rng.range(0, isl.r * 0.8);
+   905→        x = isl.cx + Math.cos(a) * rr; z = isl.cz + Math.sin(a) * rr;
+   906→        ok = heightAt(x, z) > 2.2;
+   907→      }
+   908→      this.monkeys.push({
+   909→        from: new THREE.Vector3(x, heightAt(x, z), z),
+   910→        to: new THREE.Vector3(x, heightAt(x, z), z),
+   911→        t: 1, dur: 1.2, island: isl,
+   912→      });
+   913→    }
+   914→    this.group.add(this.monkeyMesh);
+   915→
+   916→    // кабаны
+   917→    const boarParts = [
+   918→      paint(tf(new THREE.BoxGeometry(1.15, 0.62, 0.52), 0, 0.45, 0), 0x5d4a33),
+   919→      paint(tf(new THREE.BoxGeometry(0.42, 0.4, 0.34), 0.72, 0.42, 0), 0x51402c),
+   920→      paint(tf(new THREE.CylinderGeometry(0.07, 0.09, 0.3, 5), 0.95, 0.36, 0, 0, 0, Math.PI / 2), 0x3d2f1f),
+   921→    ];
+   922→    this.boarMesh = new THREE.InstancedMesh(mergeGeometries(boarParts)!,
+   923→      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }), 14);
+   924→    const boarIslands = [this.islands[0], this.islands[1], this.islands[4], this.islands[5]];
+   925→    for (let i = 0; i < 14; i++) {
+   926→      const isl = boarIslands[i % 4];
+   927→      let x = 0, z = 0, ok = false;
+   928→      for (let t = 0; t < 30 && !ok; t++) {
+   929→        const a = rng.range(0, Math.PI * 2), rr = rng.range(0, isl.r * 0.75);
+   930→        x = isl.cx + Math.cos(a) * rr; z = isl.cz + Math.sin(a) * rr;
+   931→        const h = heightAt(x, z);
+   932→        ok = h > 1.6 && h < isl.maxH * 0.7;
+   933→      }
+   934→      this.boars.push({ x, z, dirA: rng.range(0, Math.PI * 2), speed: rng.range(0.4, 1.0), timer: rng.range(0, 4), phase: rng.range(0, 7), island: isl });
+   935→    }
+   936→    this.group.add(this.boarMesh);
+   937→
+   938→    // акулы: плавники у рифов
+   939→    const finGeo = paint(tf(new THREE.ConeGeometry(0.34, 1.15, 4), 0, 0.5, 0).scale(1, 1, 0.45) as THREE.BufferGeometry, 0x5a6068);
+   940→    this.sharkMesh = new THREE.InstancedMesh(finGeo,
+   941→      new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }), 7);
+   942→    for (let i = 0; i < 7; i++) {
+   943→      const isl = this.islands[i % 2 === 0 ? 2 : 3];
+   944→      this.sharks.push({ island: isl, a: rng.range(0, Math.PI * 2), r: isl.r * rng.range(1.1, 1.5), speed: rng.range(0.06, 0.14), h: 0, phase: rng.range(0, 7) });
+   945→    }
+   946→    this.group.add(this.sharkMesh);
+   947→  }
+   948→
+   949→  update(time: number, dt: number, playerPos: THREE.Vector3, waterHeight: (x: number, z: number, t: number) => number) {
+   950→    windTimeUniform.value = time;
+   951→    this.gullMat.uniforms.uTime.value = time;
+   952→
+   953→    // рыбацкие деревни: лодки качаются на волнах / тонут, поплавки,
+   954→    // рыбаки покачиваются. Далёкие гавани (за туманом) — скрываем:
+   955→    // не тратим ни апдейт, ни draw calls
+   956→    for (const fv of this.fishing) {
+   957→      const anchor = fv.boats[0];
+   958→      const d = anchor
+   959→        ? Math.hypot(anchor.x - playerPos.x, anchor.z - playerPos.z)
+   960→        : 0;
+   961→      const vis = d < 4000;
+   962→      if (fv.group.visible !== vis) fv.group.visible = vis;
+   963→      if (vis) fv.update(time, dt, waterHeight);
+   964→    }
+   965→
+   966→    // чайки
+   967→    for (let i = 0; i < this.gulls.length; i++) {
+   968→      const g = this.gulls[i];
+   969→      g.a += g.speed * dt;
+   970→      const x = g.island.cx + Math.cos(g.a) * g.r;
+   971→      const z = g.island.cz + Math.sin(g.a) * g.r;
+   972→      const y = g.h + Math.sin(time * 1.7 + g.phase) * 2.2;
+   973→      this.dummy.position.set(x, y, z);
+   974→      const heading = g.a + (g.speed > 0 ? Math.PI / 2 : -Math.PI / 2);
+   975→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, heading, Math.sin(time * 9 + g.phase) * 0.14)));
+   976→      this.dummy.scale.setScalar(1.35);
+   977→      this.dummy.updateMatrix();
+   978→      this.gullMesh.setMatrixAt(i, this.dummy.matrix);
+   979→    }
+   980→    this.gullMesh.instanceMatrix.needsUpdate = true;
+   981→
+   982→    // крабы: суета по пляжу
+   983→    for (let i = 0; i < this.crabs.length; i++) {
+   984→      const c = this.crabs[i];
+   985→      c.timer -= dt;
+   986→      if (c.timer < 0) { c.timer = 1 + Math.random() * 3; c.dirA += (Math.random() - 0.5) * 2.4; }
+   987→      const nx = c.x + Math.cos(c.dirA) * c.speed * dt;
+   988→      const nz = c.z + Math.sin(c.dirA) * c.speed * dt;
+   989→      const h = heightAt(nx, nz);
+   990→      if (h > 0.15 && h < 1.8 && Math.hypot(nx - c.island.cx, nz - c.island.cz) < c.island.r * 1.15) { c.x = nx; c.z = nz; }
+   991→      else c.dirA += Math.PI * 0.6;
+   992→      this.dummy.position.set(c.x, h, c.z);
+   993→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, -c.dirA, 0))); // боком
+   994→      this.dummy.scale.setScalar(0.9 + Math.sin(time * 8 + c.phase) * 0.05);
+   995→      this.dummy.updateMatrix();
+   996→      this.crabMesh.setMatrixAt(i, this.dummy.matrix);
+   997→    }
+   998→    this.crabMesh.instanceMatrix.needsUpdate = true;
+   999→
+  1000→    // черепахи и акулы — медленные круги у берега
+  1001→    for (let i = 0; i < this.turtles.length; i++) {
+  1002→      const t = this.turtles[i];
+  1003→      t.a += t.speed * dt;
+  1004→      const x = t.island.cx + Math.cos(t.a) * t.r;
+  1005→      const z = t.island.cz + Math.sin(t.a) * t.r;
+  1006→      const wy = waterHeight(x, z, time);
+  1007→      this.dummy.position.set(x, wy - 0.12, z);
+  1008→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, -(t.a + Math.PI / 2) * Math.sign(t.speed), 0)));
+  1009→      this.dummy.scale.setScalar(1.1);
+  1010→      this.dummy.updateMatrix();
+  1011→      this.turtleMesh.setMatrixAt(i, this.dummy.matrix);
+  1012→    }
+  1013→    this.turtleMesh.instanceMatrix.needsUpdate = true;
+  1014→
+  1015→    for (let i = 0; i < this.sharks.length; i++) {
+  1016→      const s = this.sharks[i];
+  1017→      s.a += s.speed * dt;
+  1018→      const x = s.island.cx + Math.cos(s.a) * s.r;
+  1019→      const z = s.island.cz + Math.sin(s.a) * s.r;
+  1020→      const wy = waterHeight(x, z, time);
+  1021→      this.dummy.position.set(x, wy + 0.28, z);
+  1022→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, -(s.a + Math.PI / 2), 0)));
+  1023→      this.dummy.scale.setScalar(1);
+  1024→      this.dummy.updateMatrix();
+  1025→      this.sharkMesh.setMatrixAt(i, this.dummy.matrix);
+  1026→    }
+  1027→    this.sharkMesh.instanceMatrix.needsUpdate = true;
+  1028→
+  1029→    // обезьяны: прыжки
+  1030→    for (let i = 0; i < this.monkeys.length; i++) {
+  1031→      const mk = this.monkeys[i];
+  1032→      mk.t += dt / mk.dur;
+  1033→      if (mk.t >= 1) {
+  1034→        mk.t = 0;
+  1035→        mk.dur = 0.9 + Math.random() * 0.8;
+  1036→        mk.from.copy(mk.to);
+  1037→        let ok = false;
+  1038→        for (let t = 0; t < 20 && !ok; t++) {
+  1039→          const a = Math.random() * Math.PI * 2, rr = 2 + Math.random() * 7;
+  1040→          const x = mk.from.x + Math.cos(a) * rr, z = mk.from.z + Math.sin(a) * rr;
+  1041→          const h = heightAt(x, z);
+  1042→          if (h > 2.0 && h < mk.island.maxH * 0.85 && Math.hypot(x - mk.island.cx, z - mk.island.cz) < mk.island.r * 0.9) {
+  1043→            mk.to.set(x, h, z); ok = true;
+  1044→          }
+  1045→        }
+  1046→        if (!ok) mk.to.copy(mk.from);
+  1047→      }
+  1048→      const k = Math.min(1, mk.t);
+  1049→      const x = THREE.MathUtils.lerp(mk.from.x, mk.to.x, k);
+  1050→      const z = THREE.MathUtils.lerp(mk.from.z, mk.to.z, k);
+  1051→      const y = THREE.MathUtils.lerp(mk.from.y, mk.to.y, k) + Math.sin(k * Math.PI) * 1.35;
+  1052→      this.dummy.position.set(x, y, z);
+  1053→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, Math.atan2(mk.to.x - mk.from.x, mk.to.z - mk.from.z), 0)));
+  1054→      this.dummy.scale.setScalar(1);
+  1055→      this.dummy.updateMatrix();
+  1056→      this.monkeyMesh.setMatrixAt(i, this.dummy.matrix);
+  1057→    }
+  1058→    this.monkeyMesh.instanceMatrix.needsUpdate = true;
+  1059→
+  1060→    // кабаны: блуждание
+  1061→    for (let i = 0; i < this.boars.length; i++) {
+  1062→      const b = this.boars[i];
+  1063→      b.timer -= dt;
+  1064→      if (b.timer < 0) { b.timer = 2 + Math.random() * 4; b.dirA += (Math.random() - 0.5) * 1.8; }
+  1065→      const nx = b.x + Math.cos(b.dirA) * b.speed * dt;
+  1066→      const nz = b.z + Math.sin(b.dirA) * b.speed * dt;
+  1067→      const h = heightAt(nx, nz);
+  1068→      if (h > 1.4 && h < b.island.maxH * 0.75 && Math.hypot(nx - b.island.cx, nz - b.island.cz) < b.island.r * 0.85) { b.x = nx; b.z = nz; }
+  1069→      else b.dirA += Math.PI * 0.7;
+  1070→      this.dummy.position.set(b.x, h, b.z);
+  1071→      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, -b.dirA + Math.PI / 2, 0)));
+  1072→      this.dummy.scale.setScalar(1);
+  1073→      this.dummy.updateMatrix();
+  1074→      this.boarMesh.setMatrixAt(i, this.dummy.matrix);
+  1075→    }
+  1076→    this.boarMesh.instanceMatrix.needsUpdate = true;
+  1077→
+  1078→    // открытие островов
+  1079→    for (const isl of this.islands) {
+  1080→      if (this.discovered.has(isl.name)) continue;
+  1081→      const d = Math.hypot(playerPos.x - isl.cx, playerPos.z - isl.cz);
+  1082→      if (d < isl.r + 320) {
+  1083→        this.discovered.add(isl.name);
+  1084→        isl.discovered = true;
+  1085→        this.onDiscover?.(isl);
+  1086→      }
+  1087→    }
+  1088→  }
+  1089→
+  1090→  onDiscover?: (isl: IslandDef) => void;
+  1091→
+  1092→  /** Разрыв снаряда в точке (x,z): топит рыбацкие шлюпки всех гаваней
+  1093→   *  в радиусе r. Возвращает поражённые лодки (для щепы/сообщений). */
+  1094→  hitBoats(x: number, z: number, r: number): WorldBoat[] {
+  1095→    const out: WorldBoat[] = [];
+  1096→    for (const fv of this.fishing) out.push(...fv.hitBoats(x, z, r));
+  1097→    return out;
+  1098→  }
+  1099→
+  1100→  /** Сколько шлюпок на плаву (телеметрия/E2E) */
+  1101→  boatsFloating(): number {
+  1102→    let n = 0;
+  1103→    for (const fv of this.fishing) for (const b of fv.boats) if (!b.sinking) n++;
+  1104→    return n;
+  1105→  }
+  1106→
+  1107→  /** Всего шлюпок в архипелаге (телеметрия/E2E) */
+  1108→  boatsTotal(): number {
+  1109→    let n = 0;
+  1110→    for (const fv of this.fishing) n += fv.boats.length;
+  1111→    return n;
+  1112→  }
+  1113→}
+  1114→

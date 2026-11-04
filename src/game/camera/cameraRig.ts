@@ -83,7 +83,7 @@ export class CameraRig {
 
   // ---- отладочные сеттеры (E2E/съёмка): поза свободной камеры ----
   freeAzimSet(a: number) { this.freeAzim = a; }
-  freeElevSet(e: number) { this.freeElev = clamp(e, 0.08, 1.45); }
+  freeElevSet(e: number) { this.freeElev = clamp(e, 0.10, 1.45); }
   distSet(d: number) { this.dist.free = clamp(d, 14, 70); this.dist.iso = clamp(d, 35, 420); }
 
   update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean; arrowX?: number; arrowY?: number }) {
@@ -100,7 +100,7 @@ export class CameraRig {
     if (this.mode === 'free' && !ctx.active) {
       if (input.rmb) {
         this.freeAzim -= input.mouseDX * 0.005;
-        this.freeElev = clamp(this.freeElev + input.mouseDY * 0.004, 0.08, 1.45);
+        this.freeElev = clamp(this.freeElev + input.mouseDY * 0.004, 0.10, 1.45);
       }
     }
 
@@ -111,7 +111,7 @@ export class CameraRig {
       const ax = input.arrowX ?? 0, ay = input.arrowY ?? 0;
       if (this.mode === 'free' && !ctx.active) {
         this.freeAzim -= ax * spd;
-        this.freeElev = clamp(this.freeElev - ay * spd * 0.6, 0.08, 1.45);
+        this.freeElev = clamp(this.freeElev - ay * spd * 0.6, 0.10, 1.45);
       } else {
         this.userAzim -= ax * spd;
       }

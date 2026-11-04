@@ -13,6 +13,7 @@ import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
 import { World, heightAt, type PortDef } from './world/world';
+import { GLBPartSystem } from './glb/glbParts';
 import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
@@ -100,7 +101,7 @@ export interface HudState {
   figureOn: string | null;
   decoOn: string | null;
   messages: HudMessage[];
-  mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string }[];
+  mapIslands: { x: number; z: number; r: number; name: string; discovered: boolean; type: string; pts: { x: number; z: number }[] }[];
   mapShips: { x: number; z: number; kind: string; cat: 'war' | 'merchant'; surrendered: boolean }[];
   mapPlayer: { x: number; z: number; h: number };
   fps: number;
@@ -190,6 +191,8 @@ export class Game {
   sky: SkySystem;
   weather: WeatherSystem;
   world: World;
+  /** GLB-замена процедурных деталей (пальма — демо-конвейер) */
+  glbParts: GLBPartSystem;
   particles = new Particles(1400);
   /** куски тел, разорванных ядрами (мировые координаты) */
   gibs = new GibPool();
@@ -299,6 +302,10 @@ export class Game {
     this.updateParticleScale();
     this.world = new World();
     this.worldGroup.add(this.world.group);
+    // GLB-модели деталей: асинхронная замена с фолбэком на процедурные
+    // (реестр: описания + промпты генерации — вкладка «Графика»)
+    this.glbParts = new GLBPartSystem((id, geo) => this.world.swapVegetationModel(id, geo));
+    if (this.settings.graphics.useGLBModels) this.glbParts.loadAll();
     this.worldGroup.add(this.particles.points);
     this.worldGroup.add(this.particles.firePoints); // огонь — аддитивный пул
     this.gibs.addTo(this.worldGroup);
@@ -480,6 +487,13 @@ export class Game {
     this.input.setPreventCodes(this.preventCodes());
     this.combat.infiniteAmmo = s.gameplay.infiniteAmmo;
     this.applyFx(s.fx);
+    // GLB-модели деталей: включение/выключение на лету
+    if (prev.graphics.useGLBModels !== g.useGLBModels) {
+      if (g.useGLBModels) this.glbParts.enableAll(); else this.glbParts.disableAll();
+      this.pushMessage(g.useGLBModels
+        ? '3D-модели деталей: GLB (с фолбэком на процедурные)'
+        : '3D-модели деталей: процедурные');
+    }
     if (prev.weather.mode !== s.weather.mode
       || prev.weather.windSpeed !== s.weather.windSpeed
       || prev.weather.windDir !== s.weather.windDir) {
@@ -1653,7 +1667,12 @@ export class Game {
     h.cargoT = this.cargoUsedT();
     h.cargoMaxT = this.cargoMaxT();
     h.messages = [...this.messages];
-    h.mapIslands = this.world.islands.map(i => ({ x: i.cx, z: i.cz, r: i.r, name: i.name, discovered: this.world.discovered.has(i.name), type: i.type }));
+    // острова на карте: ПОЛИГОНЫ берега (неправильная форма), не круги
+    h.mapIslands = this.world.islands.map((i, idx) => ({
+      x: i.cx, z: i.cz, r: i.r, name: i.name,
+      discovered: this.world.discovered.has(i.name), type: i.type,
+      pts: this.world.outlines[idx] ?? [],
+    }));
     h.mapShips = this.aiShips.filter(a => !a.ship.sunk).map(a => ({
       x: a.ship.position.x, z: a.ship.position.z,
       kind: a.ship.preset.id, cat: a.ship.preset.category, surrendered: a.ship.surrendered,
@@ -1820,7 +1839,13 @@ export class Game {
     this.lastFrame = now;
     this.fpsSmooth += (1 / Math.max(dt, 1e-4) - this.fpsSmooth) * 0.05; // истинный FPS
     dt = Math.min(dt, 0.1);
+    this.stepFrame(dt);
+  };
 
+  /** Полный кадр симуляции (физика + системы + рендер).
+   *  Вызывается из RAF и напрямую из E2E (stepDebug): в headless-
+   *  браузере кадры душатся до ~0.4 fps — тесты гоняют мир сами. */
+  stepFrame(dt: number) {
     this.handleInput(dt);
 
     // физика фиксированным шагом
@@ -2008,6 +2033,61 @@ export class Game {
       decoOn: this.skinsOn.deco ?? 'deco.none',
       // острова: размеры/дистанции для E2E карты
       islandsBig: this.world.islands.map(i => ({ name: i.name, r: i.r, x: Math.round(i.cx), z: Math.round(i.cz) })),
+      // острова неправильной формы: полигоны + метрики (E2E)
+      islandsShape: this.world.islands.map((i, idx) => {
+        const pts = this.world.outlines[idx] ?? [];
+        let minR = Infinity, maxR = 0, per = 0;
+        const rs = pts.map(p => Math.hypot(p.x - i.cx, p.z - i.cz));
+        for (let k = 0; k < rs.length; k++) {
+          minR = Math.min(minR, rs[k]); maxR = Math.max(maxR, rs[k]);
+          const a = pts[k], b = pts[(k + 1) % pts.length];
+          per += Math.hypot(a.x - b.x, a.z - b.z);
+        }
+        const meanR = rs.reduce((s, v) => s + v, 0) / Math.max(1, rs.length);
+        return {
+          name: i.name, ratio: +(maxR / Math.max(1, minR)).toFixed(2),
+          rugosity: +(per / (2 * Math.PI * Math.max(1, meanR))).toFixed(2),
+          minR: Math.round(minR), maxR: Math.round(maxR),
+        };
+      }),
+      // мелководье у берега: ширина полосы h:0→−6 (не должно быть отмелей)
+      shelf: (() => {
+        const isl = this.world.islands[0];
+        let worst = 0;
+        for (let k = 0; k < 8; k++) {
+          const th = (k / 8) * Math.PI * 2;
+          const ux = Math.cos(th), uz = Math.sin(th);
+          // где h=0.3 и где h=-6: разница — ширина мелководья
+          let lo = 0, hi = isl.r * 2;
+          for (let it = 0; it < 16; it++) {
+            const mid = (lo + hi) / 2;
+            if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > 0.3) lo = mid; else hi = mid;
+          }
+          const rCoast = (lo + hi) / 2;
+          lo = rCoast; hi = isl.r * 2;
+          for (let it = 0; it < 16; it++) {
+            const mid = (lo + hi) / 2;
+            if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > -6) lo = mid; else hi = mid;
+          }
+          worst = Math.max(worst, (lo + hi) / 2 - rCoast);
+        }
+        return Math.round(worst);
+      })(),
+      // GLB-замена деталей: статусы и счётчики инстансов
+      glb: { use: this.settings.graphics.useGLBModels, parts: this.glbParts.info(), lastError: this.glbParts.lastError || null },
+      // растительность: виды/инстансы/источник геометрии
+      veg: this.world.vegStats(),
+      // чайки: режимы полёта и дистанции (E2E «чайки в полёте»)
+      gulls: (() => {
+        let ship = 0, island = 0, nearShip = 0, maxBank = 0;
+        const p = this.player.position;
+        for (const g of this.world.gullsPublic()) {
+          if (g.mode === 'ship') ship++; else island++;
+          if (Math.hypot(g.x - p.x, g.z - p.z) < 90) nearShip++;
+          maxBank = Math.max(maxBank, Math.abs(g.bank));
+        }
+        return { total: ship + island, ship, island, nearShip, maxBank: +maxBank.toFixed(2) };
+      })(),
       // экономика: груз, порты архипелага
       gold: Math.floor(p.gold),
       cargoT: this.cargoUsedT(),
@@ -2238,9 +2318,31 @@ export class Game {
     }
 
     this.updateHud();
-    this.renderer.render(this.scene, this.rig.camera);
+    if (!this.debugNoRender) this.renderer.render(this.scene, this.rig.camera);
     this.input.endFrame();
-  };
+  }
+
+  /** E2E: не рендерить кадры внутри stepDebug (гнать только физику) */
+  private debugNoRender = false;
+
+  /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ RAF
+   *  (порциями по 1/30 с — внутри фиксированный шаг 1/60).
+   *  Рендер пропускается, в конце — один свежий кадр (для скриншота). */
+  stepDebug(seconds: number) {
+    this.debugNoRender = true;
+    let left = seconds;
+    let guard = 0;
+    try {
+      while (left > 1e-6 && guard++ < 4000) {
+        const dt = Math.min(left, 1 / 30);
+        this.stepFrame(dt);
+        left -= dt;
+      }
+    } finally {
+      this.debugNoRender = false;
+    }
+    this.renderer.render(this.scene, this.rig.camera);
+  }
 
   private _v1 = new THREE.Vector3();
   private _v2 = new THREE.Vector3();

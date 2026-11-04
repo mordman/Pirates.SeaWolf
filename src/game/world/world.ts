@@ -99,26 +99,89 @@ function generateIslands(): IslandDef[] {
 
 export const ISLANDS: IslandDef[] = [...BASE_ISLANDS, ...generateIslands()];
 
-/** Высота суши в мировой точке. Открытое море = -14 (глубина), суша > 0 */
+// ---------- НЕПРАВИЛЬНАЯ ФОРМА БЕРЕГОВОЙ ЛИНИИ ----------
+// Остров — НЕ круг: радиус берега зависит от НАПРАВЛЕНИЯ от центра.
+// Форму задаают 3–4 угловые гармоники R(θ)=r·(1+Σaᵢ·cos(kᵢθ+φᵢ)):
+// k=2 — вытянутость (соотношение осей до ~2:1), k=3 — крупные лопасти
+// и бухты, k=4..5 — изрезанные мысы. Коэффициенты детерминированы по
+// сиду — архипелаг воспроизводим от запуска к запуску, а берега при
+// этом получаются «неправильными»: вытянутые, с заливами и косами.
+interface CoastHarm { k: number; a: number; ph: number }
+const COAST_HARMONICS: CoastHarm[][] = ISLANDS.map((isl, i) => {
+  const rng = new RNG(WORLD_SEED * 17 + i * 613 + 71);
+  // вытянутость зависит от ТИПА острова: атоллы — длинные подковы,
+  // скалы — коренастые с крупными лопастями, джунгли/порты — средние
+  const elong = isl.type === 'atoll' ? [0.26, 0.40]
+    : isl.type === 'rock' ? [0.13, 0.22] : [0.16, 0.33];
+  const lobe = isl.type === 'rock' ? [0.12, 0.2] : [0.08, 0.17];
+  const h: CoastHarm[] = [
+    { k: 2, a: rng.range(elong[0], elong[1]), ph: rng.range(0, Math.PI * 2) }, // вытянутость
+    { k: 3, a: rng.range(lobe[0], lobe[1]), ph: rng.range(0, Math.PI * 2) },   // лопасти/бухты
+  ];
+  if (rng.next() < 0.75) h.push({ k: 4, a: rng.range(0.04, 0.12), ph: rng.range(0, Math.PI * 2) });
+  if (rng.next() < 0.5) h.push({ k: 5, a: rng.range(0.03, 0.08), ph: rng.range(0, Math.PI * 2) });
+  return h;
+});
+/** Форма берега в направлении θ (доля от r): безразмерный множитель 0.58..1.42 */
+function coastShape(islandIdx: number, th: number): number {
+  let s = 1;
+  for (const h of COAST_HARMONICS[islandIdx]) s += h.a * Math.cos(h.k * th + h.ph);
+  return Math.min(1.42, Math.max(0.58, s));
+}
+
+/** Высота суши в мировой точке. Открытое море = -14 (глубина), суша > 0.
+ *  Берег «неправильный» (гармоники по направлению) и БЕЗ широких
+ *  отмелей: от кромки воды до глубины ~10% радиуса — судно подходит
+ *  к самому берегу, не цепляя мель за сотни метров. */
 export function heightAt(x: number, z: number): number {
   let h = -14; // дно открытого моря
-  for (const isl of ISLANDS) {
+  for (let i = 0; i < ISLANDS.length; i++) {
+    const isl = ISLANDS[i];
     const dx = x - isl.cx, dz = z - isl.cz;
     const d = Math.hypot(dx, dz);
-    if (d > isl.r * 2.0) continue;
-    // рваная береговая линия: радиус модулируется шумом
+    if (d > isl.r * 2.1) continue; // дальше — уже только дно (1.42·1.22·1.18 ≈ 2.05r)
+    // радиус берега в ЭТОМ направлении: форма × мелкий рваный шум кромки
+    const shape = coastShape(i, Math.atan2(dz, dx));
     const coastNoise = fbm2(x * 0.008, z * 0.008, 3, WORLD_SEED + isl.r);
-    const rEff = isl.r * (0.78 + 0.5 * coastNoise);
-    if (d > rEff * 1.5) continue;
-    const fall = smoothstep(1.18, 0.22, d / rEff);
+    const rEff = isl.r * shape * (0.80 + 0.42 * coastNoise);
+    if (d > rEff * 1.35) continue;
+    const fall = smoothstep(1.10, 0.30, d / rEff);
     const detail = 0.55 + 0.45 * fbm2(x * 0.02, z * 0.02, 4, WORLD_SEED + isl.cx);
     const ridge = isl.type === 'rock' ? Math.pow(fall, 1.6) : fall;
     let hi = isl.maxH * ridge * detail - 2.6;
-    // плавный склон к морскому дну за отмелью
-    hi = THREE.MathUtils.lerp(hi, -14, smoothstep(1.12, 1.5, d / rEff));
+    // обрыв к дну сразу за кромкой (узкая полоса мелководья)
+    hi = THREE.MathUtils.lerp(hi, -14, smoothstep(1.00, 1.18, d / rEff));
     if (hi > h) h = hi;
   }
   return h;
+}
+
+/** Радиус до береговой линии (h ≈ hLevel) в направлении th от центра
+ *  острова — двоичный поиск по лучу. Для карт (полигоны берега),
+ *  привязки животных и телеметрии формы. */
+export function coastRadiusAt(islandIdx: number, th: number, hLevel = 0.3): number {
+  const isl = ISLANDS[islandIdx];
+  if (!isl) return 0;
+  const ux = Math.cos(th), uz = Math.sin(th);
+  let lo = 0, hi = isl.r * 2.05;
+  for (let it = 0; it < 18; it++) {
+    const mid = (lo + hi) / 2;
+    if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > hLevel) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/** Полигон береговой линии острова (для карт и E2E-проверки формы) */
+export function islandOutline(islandIdx: number, steps = 72): { x: number; z: number }[] {
+  const isl = ISLANDS[islandIdx];
+  if (!isl) return [];
+  const pts: { x: number; z: number }[] = [];
+  for (let i = 0; i < steps; i++) {
+    const th = (i / steps) * Math.PI * 2;
+    const rr = coastRadiusAt(islandIdx, th);
+    pts.push({ x: Math.round(isl.cx + Math.cos(th) * rr), z: Math.round(isl.cz + Math.sin(th) * rr) });
+  }
+  return pts;
 }
 
 function slopeAt(x: number, z: number): number {
@@ -219,6 +282,29 @@ function bambooGeo(): THREE.BufferGeometry {
 function rockGeo(): THREE.BufferGeometry {
   return paint(new THREE.DodecahedronGeometry(1.3, 0), 0x7d7668, 0.1);
 }
+/** Сухой пень: обломанный ствол с корневым раструбом (мертвое дерево) */
+function stumpGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(paint(tf(new THREE.CylinderGeometry(0.32, 0.5, 1.5, 7), 0, 0.75, 0), 0x6a4c2e, 0.12));
+  // рваная наклонная верхушка — облом, не спил
+  parts.push(paint(tf(new THREE.CylinderGeometry(0.26, 0.32, 0.55, 7), 0.1, 1.65, 0.06, 0.24, 0, 0.2), 0x8a6a44, 0.15));
+  // корневые лапы у основания
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + 0.4;
+    parts.push(paint(tf(new THREE.CylinderGeometry(0.06, 0.12, 0.85, 5),
+      Math.cos(a) * 0.42, 0.22, Math.sin(a) * 0.42, Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5), 0x5c4226, 0.12));
+  }
+  return mergeGeometries(parts)!;
+}
+/** Валун: сплюснутый многогранник с соседом поменьше (камни побережья) */
+function boulderGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    paint(tf(new THREE.IcosahedronGeometry(1.5, 0), 0, 0.72, 0).scale(1.3, 0.78, 1.02) as THREE.BufferGeometry, 0x8d857a, 0.09),
+    paint(tf(new THREE.IcosahedronGeometry(0.72, 0), 1.6, 0.38, 0.55), 0x7c756a, 0.1),
+    paint(tf(new THREE.IcosahedronGeometry(0.45, 0), -1.35, 0.24, -0.7), 0x776f65, 0.1),
+  ];
+  return mergeGeometries(parts)!;
+}
 
 // ---------- животные ----------
 interface AnimalInst { mesh: THREE.InstancedMesh; count: number; }
@@ -228,6 +314,24 @@ interface Wanderer {
 }
 interface Hopper { from: THREE.Vector3; to: THREE.Vector3; t: number; dur: number; island: IslandDef; }
 interface Circler { island: IslandDef; a: number; r: number; speed: number; h: number; phase: number; }
+
+/** Чайка в ПОЛЁТЕ: своя скорость/курс, крен в повороте, высотная
+ *  «качка» и режим — кружит над островом ИЛИ ходит за кораблём
+ *  игрока (классические кормящиеся чайки за судном). */
+interface GullFlight {
+  mode: 'island' | 'ship';
+  island: IslandDef;       // якорь для mode=island (центр кружения)
+  x: number; z: number; y: number;
+  hdg: number;             // курс, рад (0 = +X)
+  spd: number;             // скорость полёта, м/с
+  turn: number;            // текущая скорость поворота, рад/с
+  bank: number;            // сглаженный крен, рад
+  retarget: number;        // сек до смены манёвра
+  orbit: 1 | -1;           // направление круга
+  orbitR: number;          // радиус кружения, м
+  baseY: number;           // крейсерская высота
+  phase: number;           // фаза вертикальной качки
+}
 
 export class World {
   group = new THREE.Group();
@@ -242,7 +346,7 @@ export class World {
   // животные
   private gullMesh!: THREE.InstancedMesh;
   private gullMat!: THREE.ShaderMaterial;
-  private gulls: Circler[] = [];
+  private gulls: GullFlight[] = [];
   private crabMesh!: THREE.InstancedMesh;
   private crabs: Wanderer[] = [];
   private turtleMesh!: THREE.InstancedMesh;
@@ -263,26 +367,31 @@ export class World {
     positions: THREE.Vector3[];
     broken: boolean[];
     breakable: boolean;
-    kind: string;         // вид: palm/ficus/jungle/bamboo/bush — рецепт разлома
+    kind: string;         // вид: palm/ficus/jungle/bamboo/bush/stump/boulder — рецепт разлома
     scales: number[];     // визуальная высота каждого экземпляра (множитель)
+    procGeo: THREE.BufferGeometry; // исходная процедурная геометрия (фолбэк GLB)
   }[] = [];
   /** счётчик поваленных деревьев (телеметрия) */
   treesBroken = 0;
+
+  /** полигоны береговой линии всех островов (для карт и телеметрии) */
+  outlines: { x: number; z: number }[][] = [];
 
   constructor() {
     this.buildIslands();
     this.buildVegetation();
     this.buildPorts();
     this.buildAnimals();
+    // полигоны берега (неправильная форма) — для карт: считаем раз
+    for (let i = 0; i < this.islands.length; i++) this.outlines.push(islandOutline(i, 56));
   }
 
   // ---------- острова ----------
   private buildIslands() {
     this.islands.forEach((isl, islIdx) => {
-      // размер квадрата: с запасом за всю зону влияния рельефа
-      // (rEff·1.5 до ~1.9r) — раньше 3.2r обрезали отмель НА КВАДРАТЕ,
-      // и под водой читался «квадрат под островом»; теперь кромка
-      // уходит на глубину -14 и не видна
+      // размер квадрата: с запасом за всю зону влияния рельефа —
+      // неправильная форма вытягивает берег до ~1.56r, обрыв к дну
+      // до ~2.05r (r·4.3/2 = 2.15r) — кромка уходит на глубину и не видна
       const size = isl.r * 4.3;
       const seg = 110;
       // у каждого острова своё дно с крошечным сдвигом: перекрывающиеся
@@ -304,19 +413,35 @@ export class World {
         let h = heightAt(wx, wz);
         if (h < deep) h = deep;
         pos.setY(i, h);
-        // цвет по высоте и уклону (уклон приблизим после)
-        if (h < -0.4) c.copy(cUnder).lerp(cSand, clamp((h + 3) / 2.6, 0, 1));
+        // цвет по высоте и уклону (уклон приблизим после).
+        // Узкая полоса прибоя: песчаный оттенок только в верхних 1.6 м
+        // воды — дальше сразу тёмная глубина (острова БЕЗ отмелей).
+        // Скальные острова и ПОД водой без песка — тёмный камень
+        if (h < -0.4) {
+          const tint = clamp((h + 1.6) / 1.4, 0, 1);
+          c.copy(cUnder).lerp(isl.type === 'rock' ? cUnder : cSand, isl.type === 'rock' ? 0 : tint);
+          if (isl.type === 'rock') c.lerp(cRock, tint * 0.35);
+        }
         else if (h < 1.3) c.copy(cSand);
-        else if (h < isl.maxH * 0.62) c.copy(cGrass).lerp(cJungle, fbm2(wx * 0.05, wz * 0.05, 3, WORLD_SEED + 9));
-        else c.copy(cRock);
+        // скальные острова — ГОЛЫЙ камень почти от уреза воды (травы
+        // только узкой каймой у пляжа), зелёные — до 62%; граница
+        // шумится (dither), чтобы не было «линии горизонта текстур»
+        else {
+          const rockFrom = isl.type === 'rock' ? 0.08 : 0.62;
+          const dith = (fbm2(wx * 0.03, wz * 0.03, 2, WORLD_SEED + 77) - 0.5) * 0.14;
+          if (h < isl.maxH * (rockFrom + dith))
+            c.copy(cGrass).lerp(cJungle, fbm2(wx * 0.05, wz * 0.05, 3, WORLD_SEED + 9));
+          else c.copy(cRock);
+        }
         colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
       }
       g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
       g.computeVertexNormals();
-      // скалы на крутых склонах
+      // скалы на крутых склонах (на скальных островах — охотнее)
       const nrm = g.getAttribute('normal') as THREE.BufferAttribute;
+      const steepMax = isl.type === 'rock' ? 0.74 : 0.62;
       for (let i = 0; i < pos.count; i++) {
-        if (nrm.getY(i) < 0.62 && pos.getY(i) > 0.3) {
+        if (nrm.getY(i) < steepMax && pos.getY(i) > 0.3) {
           colors[i * 3] = cRock.r; colors[i * 3 + 1] = cRock.g; colors[i * 3 + 2] = cRock.b;
         }
       }
@@ -345,6 +470,8 @@ export class World {
       bush: { geo: bushGeo, sway: 0.05 },
       bamboo: { geo: bambooGeo, sway: 0.06 },
       rock: { geo: rockGeo, sway: 0 },
+      stump: { geo: stumpGeo, sway: 0 },      // сухие пни
+      boulder: { geo: boulderGeo, sway: 0 },  // валуны побережья
     };
     // placements[остров][порода] — отдельный инстанс-меш на пару
     const perIsland: { isl: IslandDef; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> }[] = [];
@@ -368,13 +495,13 @@ export class World {
         if (h < 0.75 || h > isl.maxH * 0.9) continue;
         const sl = slopeAt(x, z);
         if (sl > 0.62) continue;
-        // тип дерева по высоте и типу острова
+        // тип дерева по высоте и типу острова (+ пни и валуны)
         let kind: string;
         const roll = rng.next();
-        if (isl.type === 'rock') kind = roll < 0.7 ? 'rock' : 'bush';
-        else if (h < 4.2) kind = roll < 0.72 ? 'palm' : roll < 0.85 ? 'bush' : 'rock';
-        else if (h < isl.maxH * 0.55) kind = roll < 0.42 ? 'jungle' : roll < 0.62 ? 'palm' : roll < 0.82 ? 'bamboo' : roll < 0.94 ? 'bush' : 'ficus';
-        else kind = roll < 0.5 ? 'jungle' : roll < 0.75 ? 'bush' : 'rock';
+        if (isl.type === 'rock') kind = roll < 0.42 ? 'rock' : roll < 0.72 ? 'boulder' : roll < 0.88 ? 'bush' : 'stump';
+        else if (h < 4.2) kind = roll < 0.60 ? 'palm' : roll < 0.74 ? 'bush' : roll < 0.88 ? 'boulder' : 'rock';
+        else if (h < isl.maxH * 0.55) kind = roll < 0.38 ? 'jungle' : roll < 0.56 ? 'palm' : roll < 0.72 ? 'bamboo' : roll < 0.84 ? 'bush' : roll < 0.92 ? 'ficus' : roll < 0.97 ? 'stump' : 'boulder';
+        else kind = roll < 0.42 ? 'jungle' : roll < 0.66 ? 'bush' : roll < 0.82 ? 'boulder' : roll < 0.92 ? 'rock' : 'stump';
         if (kind === 'rock' && h < 1.0 && roll < 0.5) kind = 'palm';
         const s = rng.range(0.7, 1.35);
         const m = new THREE.Matrix4().compose(
@@ -410,13 +537,48 @@ export class World {
         this.vegSlots.push({
           inst, positions,
           broken: new Array(list.length).fill(false),
-          breakable: kind !== 'rock',
+          breakable: kind !== 'rock' && kind !== 'boulder',
           kind,
           scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
+          procGeo: geo,   // процедурная геометрия — фолбэк GLB-замены
         });
       }
     }
   }
+
+  /** GLB-замена модели: подменить геометрию ВСЕХ инстансов вида
+   *  (например пальмы на загруженную .glb). null → вернуть процедурную.
+   *  Возвращает число затронутых инстансов. */
+  swapVegetationModel(kind: string, geo: THREE.BufferGeometry | null): number {
+    let n = 0;
+    for (const slot of this.vegSlots) {
+      if (slot.kind !== kind) continue;
+      const next = geo ?? slot.procGeo;
+      if (!next || next === slot.inst.geometry) continue;
+      slot.inst.geometry = next;
+      slot.inst.geometry.computeBoundingSphere();
+      slot.inst.computeBoundingSphere();
+      n += slot.positions.length;
+    }
+    return n;
+  }
+
+  /** Телеметрия растительности: вид → {инстансов, вершин, источник} */
+  vegStats(): Record<string, { n: number; verts: number; src: 'proc' | 'glb' }> {
+    const out: Record<string, { n: number; verts: number; src: 'proc' | 'glb' }> = {};
+    for (const slot of this.vegSlots) {
+      const v = slot.inst.geometry.getAttribute('position')?.count ?? 0;
+      const e = out[slot.kind] ?? { n: 0, verts: v, src: slot.inst.geometry === slot.procGeo ? 'proc' : 'glb' };
+      e.n += slot.positions.length;
+      e.verts = v;
+      e.src = slot.inst.geometry === slot.procGeo ? 'proc' : 'glb';
+      out[slot.kind] = e;
+    }
+    return out;
+  }
+
+  /** Чайки в полёте — телеметрия (E2E: режимы/крены/позиции) */
+  gullsPublic(): GullFlight[] { return this.gulls; }
 
   /** Ядро/книппель валят деревья: ломает экземпляры в радиусе
    *  (дерево разлетается на ТРИ части: пень + ствол + крона —
@@ -462,6 +624,8 @@ export class World {
     bamboo: { trunkHex: 0x8a9a3a, crownHex: 0x5c7a3a, crownW: 1.0, baseH: 5.2 },
     bush: { trunkHex: 0x4a7032, crownHex: 0x567b36, crownW: 1.1, baseH: 1.3 },
     rock: { trunkHex: 0x7d7668, crownHex: 0x7d7668, crownW: 1, baseH: 1 },
+    stump: { trunkHex: 0x6a4c2e, crownHex: 0x8a6a44, crownW: 0.9, baseH: 1.9 },
+    boulder: { trunkHex: 0x8d857a, crownHex: 0x7c756a, crownW: 2.2, baseH: 1.2 },
   };
 
   /** Три куска вместо дерева: пень у корня, ствол по полёту,
@@ -844,13 +1008,28 @@ export class World {
       side: THREE.DoubleSide,
     });
     this.gullMesh = new THREE.InstancedMesh(gullGeo, this.gullMat, 42);
+    // СТАИ: 30 чаек кружат над тремя островами, 12 — ХОДЯТ ЗА КОРАБЛЁМ
+    // игрока (кружат вокруг судна, снижаясь к корме — живая деталь)
     const flockIslands = [this.islands[0], this.islands[0], this.islands[4]];
     for (let i = 0; i < 42; i++) {
-      const isl = flockIslands[Math.floor(i / 14)];
+      const shipFollower = i >= 30;
+      const isl = shipFollower ? this.islands[0] : flockIslands[Math.floor(i / 10)];
+      const ang = rng.range(0, Math.PI * 2);
+      const orbitR = shipFollower ? rng.range(16, 40) : rng.range(isl.r * 0.45, isl.r * 1.0);
       this.gulls.push({
-        island: isl, a: rng.range(0, Math.PI * 2), r: rng.range(isl.r * 0.35, isl.r * 0.85),
-        speed: rng.range(0.12, 0.3) * (rng.next() < 0.5 ? 1 : -1),
-        h: rng.range(22, 48), phase: rng.range(0, Math.PI * 2),
+        mode: shipFollower ? 'ship' : 'island',
+        island: isl,
+        x: isl.cx + Math.cos(ang) * orbitR,
+        z: isl.cz + Math.sin(ang) * orbitR,
+        y: rng.range(16, 44),
+        hdg: ang + (rng.next() < 0.5 ? 1 : -1) * Math.PI / 2, // сразу по касательной
+        spd: rng.range(6.5, 11.5),
+        turn: 0, bank: 0,
+        retarget: rng.range(0.5, 6),
+        orbit: rng.next() < 0.5 ? 1 : -1,
+        orbitR,
+        baseY: rng.range(16, 42),
+        phase: rng.range(0, Math.PI * 2),
       });
     }
     this.group.add(this.gullMesh);
@@ -866,9 +1045,17 @@ export class World {
     const crabIslands = [this.islands[0], this.islands[3], this.islands[7]];
     for (let i = 0; i < 56; i++) {
       const isl = crabIslands[i % crabIslands.length];
-      const a = rng.range(0, Math.PI * 2);
-      const r = isl.r * rng.range(0.75, 1.05);
-      const x = isl.cx + Math.cos(a) * r, z = isl.cz + Math.sin(a) * r;
+      // крабы живут на ПЛЯЖЕ (h 0.15..1.8): с неправильной формой
+      // берега ищем подходящую точку блужданием от береговой линии
+      const islIdx = this.islands.indexOf(isl);
+      let x = isl.cx, z = isl.cz, ok = false;
+      for (let t = 0; t < 24 && !ok; t++) {
+        const a = rng.range(0, Math.PI * 2);
+        const rr = coastRadiusAt(islIdx, a) + rng.range(-6, 5); // чуть вглубь от кромки
+        x = isl.cx + Math.cos(a) * rr;
+        z = isl.cz + Math.sin(a) * rr;
+        ok = heightAt(x, z) > 0.15 && heightAt(x, z) < 1.8;
+      }
       this.crabs.push({ x, z, dirA: rng.range(0, Math.PI * 2), speed: rng.range(0.3, 0.9), timer: rng.range(0, 3), phase: rng.range(0, 7), island: isl });
     }
     this.group.add(this.crabMesh);
@@ -884,7 +1071,11 @@ export class World {
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }), 14);
     for (let i = 0; i < 14; i++) {
       const isl = this.islands[i % 2 === 0 ? 3 : 0];
-      this.turtles.push({ island: isl, a: rng.range(0, Math.PI * 2), r: isl.r * rng.range(1.02, 1.25), speed: rng.range(0.015, 0.05), h: 0, phase: rng.range(0, 7) });
+      const islIdx = this.islands.indexOf(isl);
+      // радиус круга — ЗА береговой линией в его направлении
+      // (острова неправильной формы: фиксированный r выходил бы на сушу)
+      const a0 = rng.range(0, Math.PI * 2);
+      this.turtles.push({ island: isl, a: a0, r: coastRadiusAt(islIdx, a0) + rng.range(12, 42), speed: rng.range(0.015, 0.05), h: 0, phase: rng.range(0, 7) });
     }
     this.group.add(this.turtleMesh);
 
@@ -963,16 +1154,52 @@ export class World {
       if (vis) fv.update(time, dt, waterHeight);
     }
 
-    // чайки
+    // чайки — НАСТОЯЩИЙ ПОЛЁТ: курс/скорость/крен, кружение над
+    // островом или за кораблём игрока, высотная качка, обход вершин
     for (let i = 0; i < this.gulls.length; i++) {
       const g = this.gulls[i];
-      g.a += g.speed * dt;
-      const x = g.island.cx + Math.cos(g.a) * g.r;
-      const z = g.island.cz + Math.sin(g.a) * g.r;
-      const y = g.h + Math.sin(time * 1.7 + g.phase) * 2.2;
-      this.dummy.position.set(x, y, z);
-      const heading = g.a + (g.speed > 0 ? Math.PI / 2 : -Math.PI / 2);
-      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, heading, Math.sin(time * 9 + g.phase) * 0.14)));
+      // якорь кружения: центр острова или позиция судна игрока
+      const ax = g.mode === 'ship' ? playerPos.x : g.island.cx;
+      const az = g.mode === 'ship' ? playerPos.z : g.island.cz;
+      // смена манёвра раз в несколько секунд (разворот/смена высоты)
+      g.retarget -= dt;
+      if (g.retarget < 0) {
+        g.retarget = 3 + Math.random() * 5;
+        if (Math.random() < 0.3) g.orbit = (g.orbit === 1 ? -1 : 1);
+        g.baseY = THREE.MathUtils.clamp(g.baseY + (Math.random() - 0.5) * 22, 12, 46);
+        if (g.mode === 'ship' && Math.random() < 0.4) g.orbitR = 14 + Math.random() * 26;
+      }
+      // руление: касательная к орбите + коррекция радиуса (ПО ЗНАКУ
+      // направления круга — иначе контр-орбита уходит от якоря).
+      // Далеко (dist > orbitR+35): снос −1.4 рад — курс почти ПРЯМО
+      // на якорь (стая доходит до судна за минуту); в кольце орбиты —
+      // чистая касательная (кружение); слишком близко — мягко наружу
+      const toAx = ax - g.x, toAz = az - g.z;
+      const dist = Math.max(1, Math.hypot(toAx, toAz));
+      const ang = Math.atan2(toAz, toAx);
+      const radial = THREE.MathUtils.clamp((g.orbitR - dist) / 25, -1.4, 0.3);
+      const want = ang + g.orbit * (Math.PI / 2 + radial);
+      let dH = want - g.hdg;
+      dH = Math.atan2(Math.sin(dH), Math.cos(dH));
+      // плавный поворот с ограничением (не «телепорт» курса)
+      const turnTarget = THREE.MathUtils.clamp(dH * 1.6, -1.05, 1.05);
+      g.turn += (turnTarget - g.turn) * Math.min(1, dt * 2.5);
+      g.hdg += g.turn * dt;
+      g.x += Math.cos(g.hdg) * g.spd * dt;
+      g.z += Math.sin(g.hdg) * g.spd * dt;
+      // высота: крейсерская ± медленная качка; за кораблём — ниже
+      const targetY = (g.mode === 'ship' ? Math.min(g.baseY, 26) : g.baseY)
+        + Math.sin(time * 0.6 + g.phase) * 3.2;
+      g.y += (targetY - g.y) * Math.min(1, dt * 0.9);
+      // не врезаться в склон: держим запас над рельефом
+      const th = heightAt(g.x, g.z);
+      if (g.y < th + 9) g.y = th + 9;
+      // крен в поворот (в сторону дуги)
+      const bankT = THREE.MathUtils.clamp(-g.turn * 0.85, -0.8, 0.8);
+      g.bank += (bankT - g.bank) * Math.min(1, dt * 3);
+      this.dummy.position.set(g.x, g.y, g.z);
+      // геометрия смотрит носом в +Z: курс (cos,sin) → yaw = π/2 − hdg
+      this.dummy.quaternion.copy(this.tmpQ.setFromEuler(this.tmpE.set(0, Math.PI / 2 - g.hdg, g.bank, 'YXZ')));
       this.dummy.scale.setScalar(1.35);
       this.dummy.updateMatrix();
       this.gullMesh.setMatrixAt(i, this.dummy.matrix);

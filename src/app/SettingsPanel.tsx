@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode } from '@/game/core/settings';
 import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS } from '@/game/core/settings';
+import { PART_REGISTRY } from '@/game/glb/glbParts';
 
 // ============================================================
 // Экран настроек: Графика (пресеты, дальность, вода, тени),
@@ -252,6 +253,36 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={v => update(d => { d.graphics.pixelRatio = v; })}
                     format={v => `×${v.toFixed(2)}`} />
                 </Row>
+                <Row label="3D-модели деталей (GLB)" hint="загруженные .glb-модели вместо процедурных деталей; при ошибке — процедурные">
+                  <input type="checkbox" checked={g.useGLBModels} onChange={e => update(d => { d.graphics.useGLBModels = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+              </div>
+              {/* Каталог заменяемых деталей: единые описания + промпты генерации */}
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Замена деталей на GLB-модели</div>
+                <div className="space-y-1.5">
+                  {PART_REGISTRY.map(p => (
+                    <details key={p.id} className="group rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5">
+                      <summary className="flex cursor-pointer list-none items-center justify-between text-[11px] font-semibold text-stone-300 group-open:text-amber-200">
+                        <span>{p.label}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                          p.file ? 'text-emerald-300 bg-emerald-950/60' : 'text-stone-400 bg-stone-800/60'}`}>
+                          {p.file ? '.glb готова' : 'процедурная'}
+                        </span>
+                      </summary>
+                      <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-stone-400">
+                        <div>{p.description}</div>
+                        <div className="text-stone-500">Куда встраивается: <span className="text-stone-400">{p.target}</span></div>
+                        <div className="rounded bg-black/40 p-1.5 font-mono text-[9px] text-stone-500">{p.prompt}</div>
+                      </div>
+                    </details>
+                  ))}
+                </div>
+                <div className="mt-1.5 text-[10px] text-stone-500">
+                  Промпт — для генерации модели внешним инструментом (текст→3D);
+                  готовый .glb кладётся в public/models и прописывается в реестре.
+                </div>
               </div>
             </div>
           )}
