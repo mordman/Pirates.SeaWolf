@@ -1,0 +1,673 @@
+  1800→      }
+  1801→      this.particles.debris(b.x, y + 0.35, b.z, 9, 1.0);
+  1802→      if (b.floating) this.particles.splash(b.x, 0.1, b.z, 1.15);
+  1803→    }
+  1804→    if (hit.length > 0) {
+  1805→      this.pushMessage(hit.length === 1
+  1806→        ? 'Рыбацкая шлюпка пошла ко дну'
+  1807→        : `Рыбацкие шлюпки пошли ко дну: ${hit.length}`);
+  1808→    }
+  1809→    return hit.length;
+  1810→  }
+  1811→
+  1812→  // ---------- пожары: перекидывание огня на соседей + дождь ----------
+  1813→  /** Шаг системы пожаров (вызывается из кадра с dt кадра; детерминирован
+  1814→   *  для E2E — можно дергать напрямую). Открытое пламя (I > 0.35) летит
+  1815→   *  на близкие корабли: ПО ВЕТРУ огонь перекидывается втрое охотнее */
+  1816→  updateFires(dt: number) {
+  1817→    const rain = this.proving ? 0 : this.weatherVis.rainI;
+  1818→    const ships: Ship[] = [this.player, ...this.aiShips.map(a => a.ship)];
+  1819→    if (this.pgTarget) ships.push(this.pgTarget.ship);
+  1820→    // дождь мочит все палубы
+  1821→    for (const s of ships) s.rainRate = rain;
+  1822→    // перекидывание: источник горит, цель рядом и не тонет
+  1823→    for (const src of ships) {
+  1824→      if (!src.onFire || src.fireIntensity < 0.35 || src.sinking || src.sunk) continue;
+  1825→      // направление КУДА дует ветер (откуда + PI)
+  1826→      const wdx = -Math.cos(this.wind.from), wdz = -Math.sin(this.wind.from);
+  1827→      for (const dst of ships) {
+  1828→        if (dst === src || dst.onFire || dst.sinking || dst.sunk) continue;
+  1829→        const dx = dst.position.x - src.position.x;
+  1830→        const dz = dst.position.z - src.position.z;
+  1831→        const dist = Math.hypot(dx, dz);
+  1832→        const reach = 26 + (src.preset.length + dst.preset.length) * 0.35;
+  1833→        if (dist > reach) continue;
+  1834→        const downwind = (dx * wdx + dz * wdz) / Math.max(1, dist); // −1..1
+  1835→        const chance = dt * 0.045 * src.fireIntensity
+  1836→          * (1 - dist / (reach * 1.05))
+  1837→          * (downwind > 0.2 ? 2.4 : downwind < -0.5 ? 0.25 : 1);
+  1838→        if (Math.random() < chance) {
+  1839→          dst.ignite(0.25 + Math.random() * 0.2);
+  1840→          this.pushMessage(`${dst === this.player ? 'Наш корабль' : dst.preset.name}: пламя перекинулось с ${src.preset.name}!`);
+  1841→        }
+  1842→      }
+  1843→    }
+  1844→  }
+  1845→
+  1846→  // ---------- кадр ----------
+  1847→  private frame = () => {
+  1848→    this.rafId = requestAnimationFrame(this.frame);
+  1849→    const now = performance.now();
+  1850→    let dt = (now - this.lastFrame) / 1000;
+  1851→    this.lastFrame = now;
+  1852→    this.fpsSmooth += (1 / Math.max(dt, 1e-4) - this.fpsSmooth) * 0.05; // истинный FPS
+  1853→    dt = Math.min(dt, 0.1);
+  1854→    this.stepFrame(dt);
+  1855→  };
+  1856→
+  1857→  /** Полный кадр симуляции (физика + системы + рендер).
+  1858→   *  Вызывается из RAF и напрямую из E2E (stepDebug): в headless-
+  1859→   *  браузере кадры душатся до ~0.4 fps — тесты гоняют мир сами. */
+  1860→  stepFrame(dt: number) {
+  1861→    this.handleInput(dt);
+  1862→
+  1863→    // физика фиксированным шагом
+  1864→    this.accum += dt;
+  1865→    const STEP = 1 / 60;
+  1866→    let steps = 0;
+  1867→    while (!this.paused && this.accum >= STEP && steps < 5) {
+  1868→      this.time += STEP;
+  1869→      this.updateWeather(STEP);
+  1870→      this.player.fixedStep(STEP, this.time);
+  1871→      for (const ai of this.aiShips) ai.ship.fixedStep(STEP, this.time);
+  1872→      if (this.pgTarget) this.pgTarget.ship.fixedStep(STEP, this.time);
+  1873→      this.updateFires(STEP);
+  1874→      for (const ai of this.aiShips) {
+  1875→        ai.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
+  1876→        // ИИ открывает порты входя в бой и задраивает вне боя
+  1877→        // (крышки анимируются, орудия выезжают — как у игрока)
+  1878→        const want = ai.state === 'combat';
+  1879→        if (ai.ship.visual.gunPorts.length && ai.ship.portsOpen !== want) {
+  1880→          ai.ship.portsOpen = want;
+  1881→        }
+  1882→      }
+  1883→      if (this.pgTarget) {
+  1884→        this.pgTarget.update(STEP, this.time, this.player, this.combat, (t) => this.pushMessage(t));
+  1885→        // мишень полигона с ответным огнём — порты открыты
+  1886→        if (this.pgTarget.ship.visual.gunPorts.length) this.pgTarget.ship.portsOpen = true;
+  1887→      }
+  1888→      this.shipCollisions();
+  1889→      this.accum -= STEP;
+  1890→      steps++;
+  1891→    }
+  1892→
+  1893→    // «зелёная вода» (Task 25): слишком большая волна накрыла палубу —
+  1894→    // сообщить игроку (не чаще раза в 12 с)
+  1895→    if (this.player.greenWater > this.lastGreenWater) {
+  1896→      if (this.time - this.lastGreenWaterMsgT > 12
+  1897→        && this.player.greenWaterT > this.lastGreenWaterMsgT) {
+  1898→        this.pushMessage('Волна накрыла палубу!');
+  1899→        this.lastGreenWaterMsgT = this.time;
+  1900→      }
+  1901→      this.lastGreenWater = this.player.greenWater;
+  1902→    }
+  1903→
+  1904→    // удар носом о вал (штормовой модуль, Task 29) — тряска камеры
+  1905→    if (this.player.stormSlams > this.lastStormSlam) {
+  1906→      this.lastStormSlam = this.player.stormSlams;
+  1907→      this.rig.addShake(0.3);
+  1908→    }
+  1909→
+  1910→    // телеметрия для отладки/E2E: window.__sea
+  1911→    const dbg = window as unknown as { __sea: Record<string, unknown> };
+  1912→    const sailsV = this.player.visual.sails.sails;
+  1913→    let furlSum = 0, furlMin = 1, furlMax = 0;
+  1914→    for (const sv of sailsV) {
+  1915→      furlSum += sv.furl;
+  1916→      furlMin = Math.min(furlMin, sv.furl);
+  1917→      furlMax = Math.max(furlMax, sv.furl);
+  1918→    }
+  1919→    // минимальный надводный борт: высота палубы у планширя минус вода
+  1920→    // по ВСЕЙ длине корпуса, включая оконечности (±0.46 полудлины —
+  1921→    // форштевень/корму) И ПО КРАЯМ ПАЛУБЫ (крен топит борт) —
+  1922→    // учитываем крен/дифферент кватернионом
+  1923→    let freeboard = Infinity;
+  1924→    const deckLocal = this.player.preset.freeboard * 0.82 - 1.0;
+  1925→    for (const lz of [-this.player.preset.length * 0.46, 0, this.player.preset.length * 0.46]) {
+  1926→      for (const lx of [0, -this.player.halfWidthAt(lz), this.player.halfWidthAt(lz)]) {
+  1927→        this._v3.set(lx, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
+  1928→        freeboard = Math.min(freeboard, this._v3.y - waterHeightAt(this._v3.x, this._v3.z, this.time));
+  1929→      }
+  1930→    }
+  1931→    // доля постановки парусов (0..1): уровень W/S, ограниченный фактическим ходом
+  1932→    const p = this.player;
+  1933→    const windPow = Math.pow(clamp(this.wind.speed / 8.0, 0.05, 1.6), 1.6);
+  1934→    const attainable = p.preset.maxSpeed * 0.85 * Math.sqrt(clamp(Ship.polar(p.apparentWindAngle()) * windPow, 0, 1.5));
+  1935→    const setTot = Math.min(p.sailFrac, attainable > 1.5 ? clamp(p.speed() / attainable, 0, 1) : 1);
+  1936→    const tgt = this.proving && this.pgTarget ? this.pgTarget.ship : null;
+  1937→    dbg.__sea = {
+  1938→      fps: this.fpsSmooth,
+  1939→      x: p.position.x, y: p.position.y, z: p.position.z,
+  1940→      waterY: waterHeightAt(p.position.x, p.position.z, this.time),
+  1941→      roll: p.euler.z, pitch: p.euler.x,
+  1942→      heading: p.heading,
+  1943→      rudder: p.rudder, angY: p.angular.y,
+  1944→      speed: p.speedKnots(),
+  1945→      sailLevel: p.sailTarget, sailFrac: p.sailFrac,
+  1946→      setTot,
+  1947→      furlAvg: furlSum / Math.max(1, sailsV.length), furlMin, furlMax,
+  1948→      sailSet: sailsV.filter(sv => sv.furl < 0.5).length,
+  1949→      freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
+  1950→      // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
+  1951→      greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
+  1952→      seaModel: SEA.model,
+  1953→      // Task 31: плавание/посадка/углы — для всех моделей моря
+  1954→      float: {
+  1955→        draftOffset: this.settings.buoyancy.draftOffset,
+  1956→        draftOffApplied: +p.draftOff.toFixed(2),   // перекалибровка колонн физ. модели
+  1957→        boatDraftMul: this.settings.buoyancy.boatDraftMul,
+  1958→        heelMaxDeg: this.settings.buoyancy.heelMaxDeg,
+  1959→        pitchMaxDeg: this.settings.buoyancy.pitchMaxDeg,
+  1960→        boatSmooth: this.settings.buoyancy.boatSmooth,
+  1961→        heelDeg: +(p.rideHeel * 180 / Math.PI).toFixed(1),   // крен от ветра (волна/шторм)
+  1962→        boatDraft: this.boatLaunch && this.boatLaunch.phase === 'afloat'
+  1963→          ? +(this.boatLaunch.state().draft ?? 0).toFixed(3) : -1,
+  1964→        boats: this.boatLaunch
+  1965→          ? { count: this.boatLaunch.boatCount(), active: this.boatLaunch.activeSide(), phase: this.boatLaunch.phase }
+  1966→          : null,
+  1967→      },
+  1968→      // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): телеметрия спектра/качки
+  1969→      storm: this.sea ? {
+  1970→        ...this.sea.stats(),
+  1971→        active: SEA.model === 'storm' ? 1 : 0,
+  1972→        waterHidden: this.water.group.visible ? 0 : 1,
+  1973→        buoy: {
+  1974→          y: +p.buoy.y.toFixed(2), vy: +p.buoy.vy.toFixed(2),
+  1975→          roll: +p.euler.z.toFixed(3), pitch: +p.euler.x.toFixed(3),
+  1976→          immersion: +p.buoy.vessel.immersion.toFixed(2),
+  1977→          slams: p.stormSlams, floods: p.stormFloods,
+  1978→          boatFloods: this.boatLaunch ? this.boatLaunch.stormFloods : 0,
+  1979→          cfg: {
+  1980→            stiff: +p.buoy.cfg.heaveStiffness.toFixed(1),
+  1981→            damp: +p.buoy.cfg.heaveDamping.toFixed(1),
+  1982→            orient: +p.buoy.cfg.orientResponse.toFixed(1),
+  1983→          },
+  1984→        },
+  1985→      } : null,
+  1986→      // погода (e2e/диагностика): режим, дождь, туман, молнии
+  1987→      weather: {
+  1988→        mode: this.weather.mode,
+  1989→        rain: this.weather.rainCount,
+  1990→        fogMul: +this.weatherVis.fogMul.toFixed(2),
+  1991→        cloud: +this.weatherVis.cloudiness.toFixed(2),
+  1992→        flash: +this.weather.flash.toFixed(2),
+  1993→        flashes: this.weather.flashes,
+  1994→        windDir: Math.round((this.wind.from * 180 / Math.PI + 360) % 360),
+  1995→        sunDim: +this.weatherVis.sunDim.toFixed(2),
+  1996→      },
+  1997→      proving: this.proving ? 1 : 0,
+  1998→      tgtDist: tgt ? +p.position.distanceTo(tgt.position).toFixed(1) : -1,
+  1999→      tgtHull: tgt ? +clamp(tgt.hullHP / tgt.hullMax, 0, 1).toFixed(3) : -1,
+  2000→      tgtWater: tgt ? +clamp(tgt.water / tgt.holdCap, 0, 1).toFixed(3) : -1,
+  2001→      tgtMastsBroken: tgt ? tgt.mastFall.filter(f => f >= 0).length : -1,
+  2002→      tgtHoles: tgt ? tgt.hullHoles.length : -1,
+  2003→      tgtCrew: tgt ? tgt.crew : -1,
+  2004→      tgtSinking: tgt && tgt.sinking ? 1 : 0,
+  2005→      tgtSinkPhase: tgt ? tgt.sinkPhase : -1,
+  2006→      tgtSinkT: tgt ? +tgt.sinkT.toFixed(1) : -1,
+  2007→      tgtSunk: tgt && tgt.sunk ? 1 : 0,
+  2008→      tgtFire: tgt ? +tgt.fireIntensity.toFixed(2) : -1,
+  2009→      playerFire: +p.fireIntensity.toFixed(2),
+  2010→      debrisAlive: debrisAlive(),
+  2011→      tgtShown: tgt ? tgt.crew3d.shown : -1,
+  2012→      tgtCrewDead: tgt ? tgt.crew3d.dead : -1,
+  2013→      // паруса мишени по мачтам: дыры/uDamage (проверка каскада ломания)
+  2014→      tgtSailHoles: tgt ? tgt.visual.sails.sails.map(s => ({
+  2015→        m: s.mastIndex,
+  2016→        n: s.mat.uniforms.uHoleN.value as number,
+  2017→        dmg: +(s.mat.uniforms.uDamage.value as number).toFixed(2),
+  2018→      })) : null,
+  2019→      gibsAlive: this.gibs.alive,
+  2020→      crewShown: p.crew3d.shown,
+  2021→      crewDead: p.crew3d.dead,
+  2022→      crewTotal: p.crew3d.total,
+  2023→      deckFor: deckCrewFor(p.crew),          // сколько ДОЛЖНО быть на палубе
+  2024→      rigSnapped: p.riggingSnapped(),         // обрывов такелажа (обвязка мачт)
+  2025→      lairFolk: this.lairFolk
+  2026→        ? { total: this.lairFolk.total, shown: this.lairFolk.shown, dead: this.lairFolk.dead }
+  2027→        : null,
+  2028→      treesBroken: this.world.treesBroken,
+  2029→      // вёсла игрока (гребные суда)
+  2030→      oars: p.preset.oars
+  2031→        ? { out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing, idle: +p.oarsIdleT.toFixed(1), phase: +p.strokePhase.toFixed(2) }
+  2032→        : null,
+  2033→      // пушечные порты игрока (закрытые батареи)
+  2034→      gunPorts: p.visual.gunPorts.length
+  2035→        ? { open: p.portsOpen, anim: +p.portsT.toFixed(2), count: p.visual.gunPorts.length,
+  2036→            lidsOpen: p.visual.gunPorts.filter(gp => gp.open > 0.85).length,
+  2037→            gunsOut: p.visual.gunPorts.filter(gp => gp.gun.position.x * Math.sign(gp.gun.userData.baseX) > Math.abs(gp.gun.userData.baseX) + 0.2).length }
+  2038→        : null,
+  2039→      // шлюпки на шлюпбалках (Task 22-24 + 31: ДВЕ — штирборт и порт,
+  2040→      // спускается любая из целых)
+  2041→      boats: (p.visual.boat || p.visual.boat2)
+  2042→        ? {
+  2043→            ok: true,
+  2044→            count: this.boatLaunch ? this.boatLaunch.boatCount() : 0,
+  2045→            active: this.boatLaunch ? this.boatLaunch.activeSide() : null,
+  2046→            stb: p.visual.boat
+  2047→              ? { visible: p.visual.boat.group.visible, x: +p.visual.boat.group.position.x.toFixed(1),
+  2048→                  rotY: +p.visual.boat.group.rotation.y.toFixed(2), len: +p.visual.boat.len.toFixed(2) }
+  2049→              : null,
+  2050→            port: p.visual.boat2
+  2051→              ? { visible: p.visual.boat2.group.visible, x: +p.visual.boat2.group.position.x.toFixed(1),
+  2052→                  rotY: +p.visual.boat2.group.rotation.y.toFixed(2), len: +p.visual.boat2.len.toFixed(2) }
+  2053→              : null,
+  2054→            phase: this.boatLaunch ? this.boatLaunch.phase : 'stowed',
+  2055→          }
+  2056→        : { ok: false },
+  2057→      // якоря игрока: отдача (F) — анимация 0..1 + буй на воде
+  2058→      anchors: p.visual.anchors?.length
+  2059→        ? {
+  2060→            n: p.visual.anchors.length, down: p.anchored, t: +p.anchorT.toFixed(2),
+  2061→            anchorY: p.visual.anchors.map(A => +A.anchor.position.y.toFixed(2)),
+  2062→            buoyY: p.visual.anchors.map(A => +A.buoy.position.y.toFixed(2)),
+  2063→            stowQuatX: p.visual.anchors.map(A => +(Math.abs(A.anchor.quaternion.x) + Math.abs(A.anchor.quaternion.z)).toFixed(2)),
+  2064→          }
+  2065→        : null,
+  2066→      figureOn: this.skinsOn.figure ?? 'figure.stock',
+  2067→      decoOn: this.skinsOn.deco ?? 'deco.none',
+  2068→      // острова: размеры/дистанции для E2E карты
+  2069→      islandsBig: this.world.islands.map(i => ({ name: i.name, r: i.r, x: Math.round(i.cx), z: Math.round(i.cz) })),
+  2070→      // острова неправильной формы: полигоны + метрики (E2E)
+  2071→      islandsShape: this.world.islands.map((i, idx) => {
+  2072→        const pts = this.world.outlines[idx] ?? [];
+  2073→        let minR = Infinity, maxR = 0, per = 0;
+  2074→        const rs = pts.map(p => Math.hypot(p.x - i.cx, p.z - i.cz));
+  2075→        for (let k = 0; k < rs.length; k++) {
+  2076→          minR = Math.min(minR, rs[k]); maxR = Math.max(maxR, rs[k]);
+  2077→          const a = pts[k], b = pts[(k + 1) % pts.length];
+  2078→          per += Math.hypot(a.x - b.x, a.z - b.z);
+  2079→        }
+  2080→        const meanR = rs.reduce((s, v) => s + v, 0) / Math.max(1, rs.length);
+  2081→        return {
+  2082→          name: i.name, ratio: +(maxR / Math.max(1, minR)).toFixed(2),
+  2083→          rugosity: +(per / (2 * Math.PI * Math.max(1, meanR))).toFixed(2),
+  2084→          minR: Math.round(minR), maxR: Math.round(maxR),
+  2085→        };
+  2086→      }),
+  2087→      // мелководье у берега: ширина полосы h:0→−6 (не должно быть отмелей)
+  2088→      shelf: (() => {
+  2089→        const isl = this.world.islands[0];
+  2090→        let worst = 0;
+  2091→        for (let k = 0; k < 8; k++) {
+  2092→          const th = (k / 8) * Math.PI * 2;
+  2093→          const ux = Math.cos(th), uz = Math.sin(th);
+  2094→          // где h=0.3 и где h=-6: разница — ширина мелководья
+  2095→          let lo = 0, hi = isl.r * 2;
+  2096→          for (let it = 0; it < 16; it++) {
+  2097→            const mid = (lo + hi) / 2;
+  2098→            if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > 0.3) lo = mid; else hi = mid;
+  2099→          }
+  2100→          const rCoast = (lo + hi) / 2;
+  2101→          lo = rCoast; hi = isl.r * 2;
+  2102→          for (let it = 0; it < 16; it++) {
+  2103→            const mid = (lo + hi) / 2;
+  2104→            if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > -6) lo = mid; else hi = mid;
+  2105→          }
+  2106→          worst = Math.max(worst, (lo + hi) / 2 - rCoast);
+  2107→        }
+  2108→        return Math.round(worst);
+  2109→      })(),
+  2110→      // GLB-замена деталей: статусы и счётчики инстансов
+  2111→      glb: { use: this.settings.graphics.useGLBModels, parts: this.glbParts.info(), lastError: this.glbParts.lastError || null },
+  2112→      // растительность: виды/инстансы/источник геометрии
+  2113→      veg: this.world.vegStats(),
+  2114→      // чайки: режимы полёта и дистанции (E2E «чайки в полёте»)
+  2115→      gulls: (() => {
+  2116→        let ship = 0, island = 0, nearShip = 0, maxBank = 0;
+  2117→        const p = this.player.position;
+  2118→        for (const g of this.world.gullsPublic()) {
+  2119→          if (g.mode === 'ship') ship++; else island++;
+  2120→          if (Math.hypot(g.x - p.x, g.z - p.z) < 90) nearShip++;
+  2121→          maxBank = Math.max(maxBank, Math.abs(g.bank));
+  2122→        }
+  2123→        return { total: ship + island, ship, island, nearShip, maxBank: +maxBank.toFixed(2) };
+  2124→      })(),
+  2125→      // экономика: груз, порты архипелага
+  2126→      gold: Math.floor(p.gold),
+  2127→      cargoT: this.cargoUsedT(),
+  2128→      cargoMaxT: this.cargoMaxT(),
+  2129→      dockedPort: this.dockedPort?.name ?? null,
+  2130→      ports: this.world.ports.map(pt => ({
+  2131→        name: pt.name, tier: pt.tier, pop: pt.population, mul: pt.priceMul,
+  2132→        x: Math.round(pt.dockEnd.x), z: Math.round(pt.dockEnd.z),
+  2133→      })),
+  2134→      // пиратское логово: сколько судов рядом с островом
+  2135→      piratesNearLair: (() => {
+  2136→        const isl = this.world.islands.find(i => i.name === 'Логово пиратов');
+  2137→        if (!isl) return -1;
+  2138→        return this.aiShips.filter(a => !a.ship.sunk
+  2139→          && Math.hypot(a.ship.position.x - isl.cx, a.ship.position.z - isl.cz) < isl.r + 400).length;
+  2140→      })(),
+  2141→      // сетка воды (e2e/диагностика «квадратов»): чанк + LOD-кольца
+  2142→      water: (() => {
+  2143→        const w = this.water.getInfo();
+  2144→        return {
+  2145→          chunk: w.chunkSize, segs: w.segs, step: +w.step.toFixed(3),
+  2146→          rings: w.rings.map(r => ({ i: Math.round(r.inner), o: Math.round(r.outer), c: +r.cell.toFixed(2), q: r.quads })),
+  2147→          farEff: Math.round(w.farEff),
+  2148→          pgDist: this.settings.gameplay.provingDistance,
+  2149→        };
+  2150→      })(),
+  2151→    };
+  2152→
+  2153→    // действия команды (R)
+  2154→    if (this.player.pumpAction && !this.docked) {
+  2155→      const msg = this.player.crewAction(dt);
+  2156→      if (msg && Math.random() < dt * 2) this.pushMessage(msg);
+  2157→    }
+  2158→
+  2159→    // вёсла без гребли дольше 5 с — убираются сами
+  2160→    // («достаются только когда гребут»)
+  2161→    if (this.player.preset.oars && this.player.oarsOut && this.player.rowing === 0) {
+  2162→      this.player.oarsIdleT += dt;
+  2163→      if (this.player.oarsIdleT > 5) {
+  2164→        this.player.oarsOut = false;
+  2165→        this.pushMessage('Вёсла убраны');
+  2166→      }
+  2167→    }
+  2168→
+  2169→    // sinking игрока
+  2170→    if (this.player.sinking && !this.dead && this.player.sinkT > 5) {
+  2171→      this.dead = true;
+  2172→      this.boatLaunch?.abort();
+  2173→      this.pushMessage('Корабль затонул...');
+  2174→    }
+  2175→
+  2176→    // floating origin
+  2177→    const playerScene = this._v1.copy(this.player.position).add(this.shift);
+  2178→    if (Math.hypot(playerScene.x, playerScene.z) > 2200) {
+  2179→      this.shift.x -= Math.round(playerScene.x / 50) * 50;
+  2180→      this.shift.z -= Math.round(playerScene.z / 50) * 50;
+  2181→      this.worldGroup.position.copy(this.shift);
+  2182→      this.pushMessage('Смена квадрата моря');
+  2183→    }
+  2184→    this.negShift.copy(this.shift).negate();
+  2185→
+  2186→    // визуал кораблей
+  2187→    this.player.updateVisual(this.time, dt, this.particles, this.negShift);
+  2188→    for (const ai of this.aiShips) ai.ship.updateVisual(this.time, dt, this.particles, this.negShift);
+  2189→    if (this.pgTarget) this.pgTarget.ship.updateVisual(this.time, dt, this.particles, this.negShift);
+  2190→
+  2191→    // шлюпка: спуск/подъём/гребля — после визуала корабля
+  2192→    this.boatLaunch?.update(dt, this.time, this.negShift);
+  2193→
+  2194→    // мелкие детали кораблей — только когда камера рядом (LOD)
+  2195→    const camPos = this.rig.camera.position;
+  2196→    const lodD = this.settings.graphics.detailLod;
+  2197→    this._v3.copy(this.player.position).add(this.shift);
+  2198→    this.setDetailLod(this.player, camPos, lodD);
+  2199→    for (const ai of this.aiShips) this.setDetailLod(ai.ship, camPos, lodD);
+  2200→    if (this.pgTarget) this.setDetailLod(this.pgTarget.ship, camPos, lodD);
+  2201→
+  2202→    // системы (земля: рельеф островов + повал деревьев от снарядов;
+  2203→    // картечь по берегу заодно косит пиратов логова; вода: разрывы
+  2204→    // у гаваней топят рыбацкие шлюпки)
+  2205→    this.combat.update(dt, this.time, waterHeightAt, heightAt,
+  2206→      (x, y, z, r, kind) => {
+  2207→        const trees = this.world.breakTrees(x, y, z, r, this.particles, this.gibs);
+  2208→        if (this.lairFolk) {
+  2209→          const folk = this.lairFolk.killNear(x, y, z, r * 1.25,
+  2210→            kind === 'ball' || kind === 'fire' ? 'ball' : 'grape');
+  2211→          if (folk > 0) this.pushMessage(`Берег логова: погибло пиратов ${folk}`);
+  2212→        }
+  2213→        this.sinkBoatsAt(x, z, r + 1.5); // выброшенные на песок шлюпки
+  2214→        return trees;
+  2215→      },
+  2216→      (x, _y, z, kind) => {
+  2217→        // радиус поражения шлюпок — от типа снаряда
+  2218→        const r = kind === 'ball' || kind === 'chain' ? 3.6
+  2219→          : kind === 'fire' ? 4.2 : 2.4;
+  2220→        this.sinkBoatsAt(x, z, r);
+  2221→      });
+  2222→    this.particles.update(dt);
+  2223→    this.gibs.update(dt);
+  2224→    updateDebris(dt, this.time, this.wind);
+  2225→    this.world.update(this.time, dt, this.player.position, waterHeightAt);
+  2226→    this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
+  2227→
+  2228→  // небо и свет (+ погода: облачность, приглушение, вспышки молний)
+  2229→    playerScene.copy(this.player.position).add(this.shift);
+  2230→    const wv = this.weatherVis;
+  2231→    this.sky.flash = this.weather.flash;
+  2232→    this.sky.setWeather(wv.sunDim, clamp((wv.fogMul - 1) / 2.4, 0, 1) * 0.85);
+  2233→    const { dayF } = this.sky.update(dt, this.time, this.rig.camera.position, playerScene, wv.cloudiness);
+  2234→    const env = this.sky.environmentColors(dayF, 0);
+  2235→    const fogD = this.fogBase() * (1 + (1 - dayF) * 0.18) * wv.fogMul;
+  2236→    // молния вспыхивает и в блеске воды
+  2237→    env.sun.multiplyScalar(1 + this.weather.flash * 5);
+  2238→    this.water.setEnvironment(this.sky.sunDir, env.sun, env.sky, env.horizon, env.fog, fogD);
+  2239→    // карта окружения для PBR-металла (орудия/фурнитура): панорама
+  2240→    // неба из тех же цветов, что и вода — обновляем нечасто
+  2241→    this.updateEnvMap(dayF, env);
+  2242→    (this.scene.fog as THREE.FogExp2).color.copy(env.fog);
+  2243→    (this.scene.fog as THREE.FogExp2).density = fogD;
+  2244→    // дым относит реальным ветром
+  2245→    this.particles.setWind(this.wind.from, this.wind.speed);
+  2246→    // реальное солнце — в материалы парусов (иначе «пузо» не заливается
+  2247→    // светом и паруса читаются плоскими при любом ветре)
+  2248→    {
+  2249→      const sd = this.sky.sunDir;
+  2250→      for (const ship of [this.player, ...this.aiShips.map(a => a.ship)]) {
+  2251→        for (const sv of ship.visual.sails.sails) {
+  2252→          (sv.mat.uniforms.uSunDir.value as THREE.Vector3).copy(sd);
+  2253→        }
+  2254→      }
+  2255→    }
+  2256→
+  2257→    // фонарь игрока ночью
+  2258→    if (this.player.visual.lantern) {
+  2259→      this.player.visual.lantern.intensity = dayF < 0.35 ? 5 : 0;
+  2260→    }
+  2261→
+  2262→    // камера
+  2263→    let camTarget = playerScene;
+  2264→    let camHeading = this.player.heading;
+  2265→    let camRoll = this.player.euler.z;
+  2266→    let camPitch = this.player.euler.x;
+  2267→    let camSpeedFrac = clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1);
+  2268→    if (this.boatLaunch && this.boatLaunch.phase === 'afloat') {
+  2269→      // камера — за шлюпкой, пока игрок в ней (замечание игрока:
+  2270→      // управлять шлюпкой, пока не вернёшься на борт); ял в 6 раз
+  2271→      // короче корабля — камера ПРИБЛИЖАЕТСЯ (дистанция × 0.35),
+  2272→      // иначе с корабельной дистанции шлюпку и её след не разглядеть
+  2273→      this.rig.distScale = 0.35;
+  2274→      camTarget = this._v3.copy(this.boatLaunch.pos).add(this.shift);
+  2275→      camHeading = this.boatLaunch.heading;
+  2276→      camRoll = this.boatLaunch.roll;
+  2277→      camPitch = this.boatLaunch.pitch;
+  2278→      camSpeedFrac = clamp(Math.abs(this.boatLaunch.vel) / 2, 0, 1);
+  2279→    } else {
+  2280→      this.rig.distScale = 1;
+  2281→    }
+  2282→    const shipInfo = {
+  2283→      scenePos: camTarget,
+  2284→      heading: camHeading,
+  2285→      roll: camRoll,
+  2286→      pitch: camPitch,
+  2287→      speedFrac: camSpeedFrac,
+  2288→    };
+  2289→    const aimDir = this.combat.aim.active ? this.combat.aimDirection(this._v2) : null;
+  2290→    // стрелки — вращение камеры (в свободном режиме напрямую,
+  2291→    // в остальных — отклонение с плавным возвратом за корму)
+  2292→    let arrX = 0, arrY = 0;
+  2293→    if (this.input.isDown('ArrowLeft')) arrX -= 1;
+  2294→    if (this.input.isDown('ArrowRight')) arrX += 1;
+  2295→    if (this.input.isDown('ArrowUp')) arrY -= 1;
+  2296→    if (this.input.isDown('ArrowDown')) arrY += 1;
+  2297→    this.rig.update(dt, {
+  2298→      active: this.combat.aim.active,
+  2299→      side: this.combat.aim.side,
+  2300→      dir: aimDir ?? this._v2.set(1, 0, 0),
+  2301→    }, shipInfo, {
+  2302→      mouseDX: this.input.mouseDX, mouseDY: this.input.mouseDY,
+  2303→      wheel: this.input.wheelDelta, rmb: this.input.rmb,
+  2304→      arrowX: arrX, arrowY: arrY,
+  2305→    });
+  2306→
+  2307→    // вода и ШТОРМОВОЙ МОДУЛЬ (Task 29): сетки следуют за судном
+  2308→    // игрока (или шлюпкой), пена — вокруг корпуса; окружение —
+  2309→    // из глобального неба (солнце/отражение/туман/день-ночь)
+  2310→    this.water.update(this.time, this.rig.camera.position, this.negShift);
+  2311→    if (this.sea && SEA.model === 'storm') {
+  2312→      let shipState: SeaShipState;
+  2313→      const bl = this.boatLaunch;
+  2314→      if (bl && bl.phase === 'afloat') {
+  2315→        // пена вокруг шлюпки, пока игрок в ней
+  2316→        shipState = {
+  2317→          x: bl.pos.x, z: bl.pos.z,
+  2318→          fx: Math.sin(bl.heading), fz: Math.cos(bl.heading),
+  2319→          speed: clamp(Math.abs(bl.vel) / 2, 0, 1),
+  2320→          beam: bl.buoy.vessel.beam, len: bl.buoy.vessel.len,
+  2321→          flood: bl.buoy.floodPulse,
+  2322→        };
+  2323→      } else {
+  2324→        const pf = this.player.forward;
+  2325→        shipState = {
+  2326→          x: this.player.position.x, z: this.player.position.z,
+  2327→          fx: pf.x, fz: pf.z,
+  2328→          speed: clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1),
+  2329→          beam: this.player.preset.beam, len: this.player.preset.length,
+  2330→          flood: this.player.buoy.floodPulse,
+  2331→        };
+  2332→      }
+  2333→      this.sea.update(this.time, dt, shipState, this.shift);
+  2334→      this.sea.setEnvironment(this.sky.sunDir, env.sky, env.fog, fogD,
+  2335→        0.25 + 0.75 * dayF);
+  2336→    }
+  2337→
+  2338→    // звук
+  2339→    this.audio.update(dt, {
+  2340→      windSpeed: this.wind.speed,
+  2341→      speed: this.player.speed(),
+  2342→      rollRate: this.player.angular.z,
+  2343→      nearLand: this.nearLand(),
+  2344→      dayF,
+  2345→      rain: this.proving ? 0 : wv.rainI,
+  2346→    });
+  2347→
+  2348→    // сообщения
+  2349→    for (let i = this.msgTtl.length - 1; i >= 0; i--) {
+  2350→      this.msgTtl[i] -= dt;
+  2351→      if (this.msgTtl[i] <= 0) { this.messages.splice(i, 1); this.msgTtl.splice(i, 1); }
+  2352→    }
+  2353→
+  2354→    this.updateHud();
+  2355→    if (!this.debugNoRender) this.renderer.render(this.scene, this.rig.camera);
+  2356→    this.input.endFrame();
+  2357→  }
+  2358→
+  2359→  /** E2E: не рендерить кадры внутри stepDebug (гнать только физику) */
+  2360→  private debugNoRender = false;
+  2361→
+  2362→  /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ RAF
+  2363→   *  (порциями по 1/30 с — внутри фиксированный шаг 1/60).
+  2364→   *  Рендер пропускается, в конце — один свежий кадр (для скриншота). */
+  2365→  stepDebug(seconds: number) {
+  2366→    this.debugNoRender = true;
+  2367→    let left = seconds;
+  2368→    let guard = 0;
+  2369→    try {
+  2370→      while (left > 1e-6 && guard++ < 4000) {
+  2371→        const dt = Math.min(left, 1 / 30);
+  2372→        this.stepFrame(dt);
+  2373→        left -= dt;
+  2374→      }
+  2375→    } finally {
+  2376→      this.debugNoRender = false;
+  2377→    }
+  2378→    this.renderer.render(this.scene, this.rig.camera);
+  2379→  }
+  2380→
+  2381→  private _v1 = new THREE.Vector3();
+  2382→  private _v2 = new THREE.Vector3();
+  2383→  private _v3 = new THREE.Vector3();
+  2384→
+  2385→  /** Мелкие детали корабля — только когда камера рядом (LOD) */
+  2386→  private setDetailLod(ship: Ship, camPos: THREE.Vector3, maxDist: number) {
+  2387→    const d = ship.visual.detail;
+  2388→    if (!d) return;
+  2389→    this._v3.copy(ship.position).add(this.shift);
+  2390→    d.visible = camPos.distanceTo(this._v3) < maxDist;
+  2391→  }
+  2392→
+  2393→  private nearLand(): boolean {
+  2394→    for (const isl of this.world.islands) {
+  2395→      if (Math.hypot(this.player.position.x - isl.cx, this.player.position.z - isl.cz) < isl.r + 260) return true;
+  2396→    }
+  2397→    return false;
+  2398→  }
+  2399→
+  2400→  respawn() {
+  2401→    if (this.proving) this.exitProving();
+  2402→    this.boatLaunch?.abort();
+  2403→    const p = this.player;
+  2404→    p.hullHP = p.hullMax;
+  2405→    p.sailHP = p.sailMax;
+  2406→    p.crew = Math.round(p.preset.maxCrew * 0.8);
+  2407→    p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0; p.fireIntensity = 0;
+  2408→    p.sinking = false; p.sinkT = 0; p.sunk = false;
+  2409→    p.mastsBroken = 0; p.mastAnim = -1;
+  2410→    for (let i = 0; i < p.mastHP.length; i++) { p.mastHP[i] = p.mastMaxHP; p.mastFall[i] = -1; }
+  2411→    for (const m of p.visual.masts) { m.rotation.set(0, 0, 0); m.position.y = 0; }
+  2412→    for (const h of p.hullHoles) { p.visual.group.remove(h.mesh); h.mesh.geometry.dispose(); }
+  2413→    p.hullHoles = [];
+  2414→    p.leakBias = 0;
+  2415→    p.visual.group.visible = true;
+  2416→    p.velocity.set(0, 0, 0);
+  2417→    p.angular.set(0, 0, 0);
+  2418→    p.position.copy(this.spawnPos);
+  2419→    p.position.y = 0;
+  2420→    p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(
+  2421→      this.spawnPos.x - this.world.islands[0].cx, this.spawnPos.z - this.world.islands[0].cz), 0));
+  2422→    p.gold = Math.floor(p.gold * 0.5);
+  2423→    p.cargo = { sugar: 0, rum: 0, timber: 0 };
+  2424→    p.oarsOut = false;
+  2425→    p.rowing = 0;
+  2426→    p.oarsIdleT = 0;
+  2427→    p.portsOpen = false;
+  2428→    p.portsT = 0;
+  2429→    // новый корабль — новый боекомплект (с недостачей, если включена)
+  2430→    p.ammo = this.settings.gameplay.ammoJitter
+  2431→      ? rollStartingAmmo(this.settings.gameplay.startingAmmo).ammo
+  2432→      : { ...this.settings.gameplay.startingAmmo };
+  2433→    p.sailTarget = 0;
+  2434→    this.dead = false;
+  2435→    this.pushMessage(`Новый корабль у гавани. Половина золота ушла на дно...`);
+  2436→  }
+  2437→
+  2438→  private onResize = () => {
+  2439→    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  2440→    this.rig.resize(window.innerWidth / window.innerHeight);
+  2441→    this.updateParticleScale();
+  2442→  };
+  2443→
+  2444→  /** пикселей на метр для спрайтов частиц (зависит от буфера и fov) */
+  2445→  private updateParticleScale() {
+  2446→    const size = new THREE.Vector2();
+  2447→    this.renderer.getDrawingBufferSize(size);
+  2448→    const fovRad = (this.rig.camera.fov * Math.PI) / 180;
+  2449→    this.particles.setScale(size.y / (2 * Math.tan(fovRad / 2)));
+  2450→  }
+  2451→
+  2452→  run() {
+  2453→    this.lastFrame = performance.now();
+  2454→    this.rafId = requestAnimationFrame(this.frame);
+  2455→  }
+  2456→
+  2457→  dispose() {
+  2458→    cancelAnimationFrame(this.rafId);
+  2459→    window.removeEventListener('resize', this.onResize);
+  2460→    this.input.dispose();
+  2461→    this.sea?.dispose();
+  2462→    setStormSea(null);
+  2463→    this.envRT?.dispose();
+  2464→    this.envTex?.dispose();
+  2465→    this.pmrem?.dispose();
+  2466→    this.renderer.dispose();
+  2467→    this.bus.clear();
+  2468→  }
+  2469→
+  2470→  setCameraMode(mode: CameraMode) { this.rig.mode = mode; }
+  2471→}
+  2472→
