@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
 import { waterHeightAt, SEA } from '../water/waves';
-import { ShipBuoyancy } from '../sea/shipPhysics';
+import { ShipBuoyancy, BUOYANCY_CONFIG } from '../sea/shipPhysics';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
 import type { GibPool } from '../fx/gibs';
@@ -28,10 +28,17 @@ export interface DamageInput {
 
 interface BuoyCol {
   x: number; z: number;   // точка колонны на ватерлинии (локально)
-  keelY: number;          // низ — киль (локально, < 0)
+  keelY: number;          // низ — киль (локально, < 0); сдвигается «осадкой ±»
   topY: number;           // верх — планширь: запас плавучести борта
   A: number;              // площадь ватерлинии колонны, м²
   c: number;              // вертикальный демпфер качки, кг/с
+  // Task 31 «осадка ±» для физ. модели — БАЗА калибровки (проектная
+  // посадка, off=0): сдвиг ССЫЛКИ киля/планширя на off м заставляет
+  // корабль сидеть ровно на off глубже/мельче — распределение
+  // объёма под водой НЕ меняется, ЦВ/ЦМ на месте: ровный киль сохраняется
+  keel0: number;          // киль при проектной осадке (до сдвига)
+  top0: number;           // планширь при проектной осадке
+  A0: number;             // площадь при проектной осадке (до компенсации развала)
 }
 
 /** Опции создания корабля (настройки игры) */
@@ -60,6 +67,9 @@ export class Ship {
   inertia = new THREE.Vector3(); // диагональ в связных осях (x=right, y=up, z=forward)
   private cols: BuoyCol[] = [];   // гидростатические колонны корпуса
   private zCom = 0;               // продольный ЦМ = ЦВ проектной ватерлинии
+  /** применённая осадка ± (Task 31; физ. модель — перекалибровкой
+   *  колонн; телеметрия/отладка) */
+  draftOff = 0;
   /** счётчик накрытий палубы волной («зелёная вода», Task 25) — HUD/E2E */
   greenWater = 0;
   /** время последнего накрытия палубы (для затухающих сообщений) */
@@ -255,6 +265,7 @@ export class Ship {
             x: xf * w, z,
             keelY: -prof.draft, topY: prof.bulwark,
             A: (2 * w * dz) / XF.length, c: 0,
+            keel0: -prof.draft, top0: prof.bulwark, A0: 0,   // база — заполнится при калибровке
           });
         }
       }
@@ -278,6 +289,11 @@ export class Ship {
       let aSum = 0;
       for (const c of this.cols) { c.A *= scale; aSum += c.A; }
       this.zCom = mz0 / Math.max(1e-6, v0);   // плечо ЦМ от миделя (< 0 — в корму)
+      // база калибровки для «осадки ±» (Task 31): keel0/top0/A0 —
+      // проектная посадка; applyDraftOffset сдвигает ССЫЛКУ киля/планширя
+      for (const c of this.cols) {
+        c.keel0 = c.keelY; c.top0 = c.topY; c.A0 = c.A;
+      }
       // демпферы качки: ζ≈0.50 на собственной частоте вертикальной
       // качки ω=√(ρg·A_wl/m) — корпус гасит качку, но живо всходит
       // на гребень (волновое демпфирование обнулять нельзя —
@@ -291,6 +307,9 @@ export class Ship {
     this.foam = new WaterlineFoam(this.visual.outline);
     this.wake.setWaterHeight(waterHeightAt);
     if (isPlayer) enableLantern(this.visual);
+    // применить ТЕКУЩУЮ осадку ± (Task 31): настройка могла быть
+    // выставлена до создания этого корабля
+    this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset);
 
     // качка штормового модуля: габариты корпуса; отсчёт высоты у
     // нашего корабля — КВЛ (position.y = ватерлиния), поэтому
@@ -535,12 +554,12 @@ export class Ship {
     this.angular.copy(ab.applyQuaternion(this.quaternion));
 
     // --- ограничение крена/дифферента (мягкие СТОПЫ-ПРЕДОХРАНИТЕЛИ) ---
-    // Дифферент 0.42 рад (24°) — корабль РЕЖЕТ волны: нос врезается
-    // в передний склон гребня и прорезает его (Task 25; раньше 0.30 —
-    // корпус искусственно всходил на гребень);
-    // крен 0.36 рад (20°) — подветренный борт остаётся над водой
+    // Дифферент — корабль РЕЖЕТ волны: нос врезается в передний
+    // склон гребня и прорезает его (Task 25); крен — подветренный
+    // борт остаётся над водой. Пределы — НАСТРОЙКА (Task 31,
+    // «углы наклона»: heelMax/pitchMax, дефолты = прежним 24°/20.6°)
     const roll = e.z, pitch = e.x;
-    const rollLim = 0.36, pitchLim = 0.42;
+    const rollLim = BUOYANCY_CONFIG.heelMax, pitchLim = BUOYANCY_CONFIG.pitchMax;
     if (Math.abs(roll) > rollLim) this.torque.z -= (roll - Math.sign(roll) * rollLim) * m * 9.0;
     if (Math.abs(pitch) > pitchLim) this.torque.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
     // затопление кренит корабль в сторону пробоин
@@ -574,6 +593,37 @@ export class Ship {
     // (слишком большая волна) отработана в updateVisual.
 
     this.stepHousekeeping(dt);
+  }
+
+  /** Применить настройку «осадка глубже/мельче» (Task 31) — ДЛЯ
+   *  ФИЗИЧЕСКОЙ модели: СДВИГ ССЫЛКИ киля/планширя колонн на off м.
+   *  Модель корпуса становится «мельче» на off → Архимед сажает корабль
+   *  ровно на off глубже (off<0 — глубже в модели, корабль выше водой);
+   *  в равновесии каждая колонна погружена на d0_i (как на проектной
+   *  осадке): подводный объём и ЦВ/ЦМ не тронуты — РОВНЫЙ КИЛЬ
+   *  сохраняется на любой осадке. Развал бортов над КВЛ (flare>0 на
+   *  глубокой посадке) компенсирован делением площади. off=0 —
+   *  точно проектная осадка (ссылки = база, площади = база). */
+  applyDraftOffset(off: number) {
+    if (!isFinite(off)) off = 0;
+    const o = clamp(off, -0.8, 0.8);
+    this.draftOff = o;
+    // «Развал бортов» над проектной ватерлинией (как в fixedStep) на
+    // глубокой посадке усиливает выталкивание (flare > 1) — делим
+    // площадь на flare(o), чтобы равновесие попало РОВНО на o
+    // (для мельче o<0 равновесие выше КВЛ: flare=1 — без компенсации)
+    const FFree = this.preset.freeboard;
+    const kRes = FFree >= 3.0 ? 1.0 : Math.max(0.32, 0.32 + 0.12 * (FFree - 2.5));
+    const flare = o > 0 ? 1 + kRes * 1.1 * Math.min(o / FFree, 1) : 1;
+    for (const c of this.cols) {
+      // сдвиг ССЫЛКИ киля/планширя на o: модель считает корпус
+      // мельче/глубже — Архимед сажает корабль ровно на o; подводный
+      // объём в равновесии = проектному (d_i = d0_i у каждой колонны),
+      // ЦВ/ЦМ не тронуты — ровный киль сохраняется на любой осадке
+      c.keelY = c.keel0 + o;
+      c.topY = c.top0 + o;
+      c.A = c.A0 / flare;
+    }
   }
 
   /** Хвост шага физики, ОБЩИЙ для обеих моделей моря: посадка на
@@ -647,7 +697,9 @@ export class Ship {
   // постоянна. Крен от ветра на парусах — целевой угол рамки.
   // ============================================================
   private rideVy = 0;                 // вертикальная скорость пружины
-  private rideHeel = 0;               // сглаженный крен от ветра
+  /** сглаженный крен от ветра/затопления (волна-опора и шторм) —
+   *  публичен для телеметрии: изолированная «креновая» часть наклона */
+  rideHeel = 0;
   private _rf = new THREE.Vector3();
   private _ru = new THREE.Vector3();
   private _rr = new THREE.Vector3();
@@ -744,18 +796,23 @@ export class Ship {
     const L = this.preset.length, B = this.preset.beam;
     const lateralStar = this.rideHorizontalStep(dt);
     const f = this._f, star = this._r;
+    // Настройки плавания (Task 31): замеры/пружина/доворот/посадка —
+    // те же поля, что у штормового модуля (дефолты = прежним
+    // «зашитым» значениям этой модели: 0.42/0.78, 5.0/2.4, 2.6)
+    const fa = BUOYANCY_CONFIG.sampleForeAft, sd = BUOYANCY_CONFIG.sampleSide;
+    const aF = L * fa, aS = B * sd;
 
     // --- 5 ТОЧЕК ЗАМЕРА на волнах (как в файле игрока) ---
-    const hBow = waterHeightAt(this.position.x + f.x * L * 0.42, this.position.z + f.z * L * 0.42, time);
-    const hStern = waterHeightAt(this.position.x - f.x * L * 0.42, this.position.z - f.z * L * 0.42, time);
-    const hStar = waterHeightAt(this.position.x + star.x * B * 0.78, this.position.z + star.z * B * 0.78, time);
-    const hPort = waterHeightAt(this.position.x - star.x * B * 0.78, this.position.z - star.z * B * 0.78, time);
+    const hBow = waterHeightAt(this.position.x + f.x * aF, this.position.z + f.z * aF, time);
+    const hStern = waterHeightAt(this.position.x - f.x * aF, this.position.z - f.z * aF, time);
+    const hStar = waterHeightAt(this.position.x + star.x * aS, this.position.z + star.z * aS, time);
+    const hPort = waterHeightAt(this.position.x - star.x * aS, this.position.z - star.z * aS, time);
     const hMid = waterHeightAt(this.position.x, this.position.z, time);
 
     // рамка: forward с уклоном нос-корма, up из векторного произведения
-    const slopeZ = (hBow - hStern) / (L * 0.84);
-    this._rv1.set(f.x * L * 0.84, hBow - hStern, f.z * L * 0.84);
-    this._rv2.set(star.x * B * 1.56, hStar - hPort, star.z * B * 1.56);
+    const slopeZ = (hBow - hStern) / (L * 2 * fa);
+    this._rv1.set(f.x * L * 2 * fa, hBow - hStern, f.z * L * 2 * fa);
+    this._rv2.set(star.x * B * 2 * sd, hStar - hPort, star.z * B * 2 * sd);
     const u = this._ru.copy(this._rv1).cross(this._rv2).normalize();
     const ff = this._rf.set(f.x, slopeZ, f.z).normalize();
     const rr = this._rr.copy(u).cross(ff).normalize();
@@ -763,23 +820,31 @@ export class Ship {
     this._rq.setFromRotationMatrix(this._rm);
 
     // крен от ветра на парусах + затопления — целевой УГОЛ рамки
-    // (в физической модели это torque.z; здесь — доворот вокруг ДП)
+    // (в физической модели это torque.z; здесь — доворот вокруг ДП).
+    // Предел крена — настройка «углы наклона» (Task 31)
+    const heelMax = BUOYANCY_CONFIG.heelMax;
     const heelTarget = clamp(
       -lateralStar * this.sailFrac * 0.012
       + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
-      -0.34, 0.34);
+      -heelMax, heelMax);
     this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
     this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
     this._rq.multiply(this._rHeelQ);
-    // плавный доворот к рамке волны (как slerp в файле игрока, 1−e^−2.6t)
-    this.quaternion.slerp(this._rq, 1 - Math.exp(-2.6 * dt));
+    // плавный доворот к рамке волны (как slerp в файле игрока,
+    // 1−e^−orientResponse·t — настройка «наклон к склону волны»)
+    this.quaternion.slerp(this._rq, 1 - Math.exp(-BUOYANCY_CONFIG.orientResponse * dt));
 
     // --- вертикаль: пружина к средневзвешенной поверхности ---
-    // (замер в 5 точках + притопление от наклона и хода — из файла
-    //  игрока; гарантирует ПОСТОЯННУЮ осадку — корабль не ныряет)
-    const sink = -(1 - u.y) * 2.0 - Math.min(Math.abs(this.speed()) * 0.02, 0.2);
+    // (замер в 5 точках + притопление от наклона и хода; пружина/
+    // демпфер — настройки «вертикальная качка»). Гарантирует
+    // ПОСТОЯННУЮ осадку — корабль не ныряет. «Осадка ±» (Task 31)
+    // сдвигает посадку глубже/мельче без потери ровного киля
+    const sink = -(1 - u.y) * BUOYANCY_CONFIG.sinkHeel
+      - Math.min(Math.abs(this.speed()) * BUOYANCY_CONFIG.sinkSpeed, BUOYANCY_CONFIG.sinkSpeedMax)
+      - BUOYANCY_CONFIG.draftOffset;
     const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 + sink;
-    this.rideVy += ((targetY - this.position.y) * 5.0 - this.rideVy * 2.4) * dt;
+    this.rideVy += ((targetY - this.position.y) * BUOYANCY_CONFIG.heaveStiffness
+      - this.rideVy * BUOYANCY_CONFIG.heaveDamping) * dt;
     this.position.y += this.rideVy * dt;
 
     // мел / течь / пожар / сдача — общий хвост обеих моделей
@@ -808,17 +873,22 @@ export class Ship {
     }, waterHeightAt);
 
     // вертикаль: buoy.y = средневзвешенная поверхность + притопления;
-    // immersion (настройка «Посадка…») поднимает/опускает корпус
+    // immersion (настройка «Посадка…») поднимает/опускает корпус,
+    // «осадка ±» (Task 31) — дополнительный сдвиг посадки (те же
+    // настройки плавания, что у физ. модели и «волны-опоры»)
     const hullDepth = this.preset.draft + this.preset.freeboard;
     this.position.y = this.buoy.y
-      + (this.buoy.vessel.immersion - 0.5) * hullDepth;
+      + (this.buoy.vessel.immersion - 0.5) * hullDepth
+      - BUOYANCY_CONFIG.draftOffset;
 
     // крен от ветра на парусах + затопления — целевой угол (как в
-    // riding), затем доворот вокруг ДП поверх кватерниона модуля
+    // riding), затем доворот вокруг ДП поверх кватерниона модуля.
+    // Предел крена — настройка «углы наклона» (Task 31)
+    const heelMax = BUOYANCY_CONFIG.heelMax;
     const heelTarget = clamp(
       -lateralStar * this.sailFrac * 0.012
       + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
-      -0.34, 0.34);
+      -heelMax, heelMax);
     this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
     const heelQ = this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
     // ориентация: кватернион модуля (уже сглажен orientResponse) × крен

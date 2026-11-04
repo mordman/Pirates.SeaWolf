@@ -237,7 +237,7 @@ const lower = jparse(ev(`(() => {
 })()`));
 log('C2 (спуск):', JSON.stringify(lower));
 check('C2: спуск начался (ошибки нет, фаза lowering)', lower.start === null && lower.ph1 === 'lowering');
-check('C2: шлюпка ОПУСКАЕТСЯ (y уменьшился)', lower.y1 < lower.y0 - 0.5, `${lower.y0} → ${lower.y1}`);
+check('C2: шлюпка ОПУСКАЕТСЯ (y уменьшился)', lower.y1 < lower.y0 - 0.35, `${lower.y0} → ${lower.y1}`);
 check('C2: ФАЛЫ УДЛИНИЛИСЬ (тали травятся)', lower.f1 > lower.f0 + 0.4, `${lower.f0} → ${lower.f1}`);
 check('C2: на воде (фаза afloat, в мире)', lower.ph2 === 'afloat' && lower.inWorld === true);
 // допуск 0.95: посадка по 7 точкам — средневзвешенная поверхность

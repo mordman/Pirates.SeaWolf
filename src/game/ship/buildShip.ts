@@ -408,9 +408,12 @@ export interface ShipVisual {
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   /** материал обшивки (для покупки украшений бортов) */
   hullMat: THREE.MeshStandardMaterial;
-  /** Шлюпка-ял за кормой на шлюпбалках (носом от корабля) — ломаемая;
-   *  спускается на воду и управляется (launch.ts, клавиша B) */
+  /** Шлюпка-ял на шлюпбалках — ломаемая; спускается на воду
+   *  и управляется (launch.ts, клавиша B) */
   boat?: BoatVis;
+  /** Task 31 «добавь еще одну»: ВТОРОЙ ял на шлюпбалках левого
+   *  борта (порт) — запасная; спуск той, что цела (launch.ts) */
+  boat2?: BoatVis;
   /** Якоря у скул: убраны — лежат ВДОЛЬ борта; отдача (Ship.anchored)
    *  вываливает якорь и опускает его под воду на цепи */
   anchors?: AnchorVis[];
@@ -1913,6 +1916,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   group: THREE.Group;
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   boat?: BoatVis;
+  boat2?: BoatVis;
   anchors?: AnchorVis[];
 } {
   const L = P.length;
@@ -1971,12 +1975,14 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   //     шлюпки. Спуск — вертикально за борт (launch.ts). Ломаемая:
   //     попадание рядом — разлетается щепой, clearDamage
   //     восстанавливает ---
-  let boat: BoatVis | undefined;
-  {
+  const boats: BoatVis[] = [];
+  // Task 31 «добавь еще одну»: ДВЕ шлюпки — по ялу на КАЖДОМ борту:
+  // штирборт (правый, как раньше) и порт (левый, запасная);
+  // кранбалки/фалы зеркальны, спускается любая из целых (launch.ts)
+  for (const SIDE of [1, -1] as const) {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
     const bg = buildDeckBoat(bl);
     bg.rotation.y = 0;              // нос шлюпки — к носу корабля (вдоль борта)
-    const SIDE = 1;                 // штирборт: шлюпбалки правого борта
     const sternZb = -L / 2 + Math.max(0.35, L * 0.012);
     // транец яла — у кормового среза, нос идёт вперёд вдоль борта
     const zB = sternZb + bl * 0.52 + 0.25;
@@ -2031,7 +2037,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
       beam: number; gunY: number; gunX: number; hangZ: number; rowZ: number;
       oars: THREE.Object3D[]; outline: THREE.Vector2[];
     };
-    boat = {
+    const oneBoat: BoatVis = {
       group: bg, len: bl, beam: ud.beam,
       davitHeads,
       stowPos: new THREE.Vector3(xB, yB, zB),
@@ -2040,8 +2046,11 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
       falls, oars: ud.oars, rowZ: ud.rowZ,
       outline: ud.outline,
     };
-    updateBoatFalls(boat);
+    boats.push(oneBoat);
+    updateBoatFalls(oneBoat);
   }
+  const boat: BoatVis | undefined = boats[0];   // штирборт (право)
+  const boat2: BoatVis | undefined = boats[1];   // порт (лево) — Task 31
 
   // --- НАСТОЯЩИЕ ЯКОРЯ У СКУЛ: убраны — лежат ВДОЛЬ борта (по
   //     замечанию игрока), шток с ЖЁЛТОЙ окраской-меткой; жёлтый
@@ -2208,7 +2217,7 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
     mg.setAttribute('position', new THREE.Float32BufferAttribute(miscPts, 3));
     group.add(new THREE.LineSegments(mg, ropeMat));
   }
-  return { group, detailRigs, boat, anchors };
+  return { group, detailRigs, boat, boat2, anchors };
 }
 
 /** Вёсла гребных судов (шебека, галера): вальные порты по борту +
@@ -2862,6 +2871,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   // шлюпка — тоже ломаемая: прямое попадание разлетается щепой
   const breakables: THREE.Object3D[] = [wheelAsm, capstan, sternLantern, figurehead, rudderMesh];
   if (detailRes.boat) breakables.push(detailRes.boat.group);
+  if (detailRes.boat2) breakables.push(detailRes.boat2.group);
 
   // материалы дерева для скина «цвет корабля» (собираем ДО того, как
   // в группу добавится экипаж с общим CREW_MAT — его тонировать нельзя)
@@ -2881,7 +2891,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
     masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
     gunPorts, detailRigs: detailRes.detailRigs, hullMat,
-    boat: detailRes.boat, anchors: detailRes.anchors,
+    boat: detailRes.boat, boat2: detailRes.boat2, anchors: detailRes.anchors,
     figurehead, binnacleNeedle, quarter: quarterVis,
   };
 }

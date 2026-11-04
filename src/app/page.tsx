@@ -507,7 +507,7 @@ export default function Home() {
               <span><b className="text-amber-200">Колесо</b> — зум</span>
               <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">S</b> — назад · <b className="text-amber-200">O</b> — вывалить · <b className="text-amber-200">P</b> — порты</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
-              <span><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить шлюпку на воду (на якоре/малым ходом)</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить шлюпку на воду (на якоре/малым ходом); на судне ДВЕ шлюпки — правого и левого борта, спускается первая целая</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
             </div>
@@ -1157,7 +1157,7 @@ export default function Home() {
               <div><b className="text-amber-200">Alt+W / Alt+S</b> — вёсла вперёд/назад (гребные суда)</div>
               <div><b className="text-amber-200">P</b> — открыть/закрыть пушечные порты (закрытые батареи молчат — стреляют только палубные орудия)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить/поднять шлюпку: на воде W/S — вёсла, A/D — поворот вёслами, {keyLabel(settings.controls.boat)} у борта — на борт</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить/поднять шлюпку (две: правого и левого борта): на воде W/S — вёсла, A/D — поворот вёслами, {keyLabel(settings.controls.boat)} у борта — на борт</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>

@@ -44,6 +44,17 @@ export interface BuoyancyConfig {
   /* Удар носом о волну (для брызг) */
   slamImmersion: number;  // насколько нос погрузился ниже воды
   slamSpeedMin: number;   // минимальный ход для удара
+
+  /* Плавание/посадка/углы — ДЛЯ ВСЕХ моделей моря (Task 31).
+     Значения живут здесь (как «все тюнинги» исходного файла) и
+     читаются Ship.ts / launch.ts; в настройках — градусы, сюда
+     game.ts кладет радианы. Дефолты = прежние «зашитые» значения
+     моделей — поведение по умолчанию не меняется. */
+  draftOffset: number;   // ±м — осадка глубже(+)/мельче(−): физ. модель перекалибровкой колонн, волна-опора и шторм — сдвигом посадки
+  boatDraftMul: number;  // осадка шлюпки × (физ. и волна-опора — визуальный офсет посадки яла)
+  heelMax: number;       // рад — предел крена: стопы физ. модели, кромка крена от ветра (волна/шторм), крен шлюпки
+  pitchMax: number;      // рад — предел дифферента: стопы физ. модели, дифферент шлюпки
+  boatSmooth: number;    // 1/с — плавность посадки шлюпки на волны (физ. и волна-опора)
 }
 
 export const BUOYANCY_CONFIG: BuoyancyConfig = {
@@ -66,6 +77,14 @@ export const BUOYANCY_CONFIG: BuoyancyConfig = {
 
   slamImmersion: 0.35,
   slamSpeedMin: 2.0,
+
+  // Task 31: плавание для всех моделей моря (дефолты = прежние
+  // «зашитые» значения: стопы физ. 0.36/0.42 рад, шлюпка 13/с)
+  draftOffset: 0,
+  boatDraftMul: 1,
+  heelMax: 0.36,
+  pitchMax: 0.42,
+  boatSmooth: 13,
 };
 
 /** Применить настройки (Настройки → Качка корпуса) к глобальному
@@ -86,6 +105,12 @@ export function applyBuoyancyConfig(
   if (typeof src.floodPulseDecay === 'number') BUOYANCY_CONFIG.floodPulseDecay = src.floodPulseDecay;
   if (typeof src.slamImmersion === 'number') BUOYANCY_CONFIG.slamImmersion = src.slamImmersion;
   if (typeof src.slamSpeedMin === 'number') BUOYANCY_CONFIG.slamSpeedMin = src.slamSpeedMin;
+  // Task 31: плавание/посадка/углы — все модели моря
+  if (typeof src.draftOffset === 'number') BUOYANCY_CONFIG.draftOffset = src.draftOffset;
+  if (typeof src.boatDraftMul === 'number') BUOYANCY_CONFIG.boatDraftMul = src.boatDraftMul;
+  if (typeof src.heelMax === 'number') BUOYANCY_CONFIG.heelMax = src.heelMax;
+  if (typeof src.pitchMax === 'number') BUOYANCY_CONFIG.pitchMax = src.pitchMax;
+  if (typeof src.boatSmooth === 'number') BUOYANCY_CONFIG.boatSmooth = src.boatSmooth;
   if (src.immersion) {
     const { immersion } = BUOYANCY_CONFIG;
     if (typeof src.immersion.frigate === 'number') immersion.frigate = src.immersion.frigate;

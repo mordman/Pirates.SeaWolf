@@ -351,7 +351,8 @@ export class Game {
     });
   }
 
-  /** Настройки качки (shipPhysics.js) → конфиг модуля */
+  /** Настройки качки/плавания → конфиг модуля (Task 29 + 31:
+   *  углы в радианах; новые поля плавания — тоже сюда) */
   private mapBuoyancy(b: BuoyancySettings) {
     return {
       heaveStiffness: b.heaveStiffness,
@@ -363,15 +364,26 @@ export class Game {
       sampleSide: b.sampleSide,
       floodCooldown: b.floodCooldown,
       immersion: { frigate: b.immersionFrigate, boat: b.immersionBoat, default: b.immersionDefault },
+      // Task 31: плавание для ВСЕХ моделей моря (углы — в радианы)
+      draftOffset: b.draftOffset,
+      boatDraftMul: b.boatDraftMul,
+      heelMax: b.heelMaxDeg * Math.PI / 180,
+      pitchMax: b.pitchMaxDeg * Math.PI / 180,
+      boatSmooth: b.boatSmooth,
     };
   }
 
-  /** Применить настройки качки ко ВСЕМ судам (включая шлюпку) */
+  /** Применить настройки качки/плавания ко ВСЕМ судам (включая шлюпку) */
   private applyBuoyancySettings(b: BuoyancySettings) {
     const mapped = this.mapBuoyancy(b);
     const all: Ship[] = [this.player, ...this.aiShips.map(a => a.ship)];
     if (this.pgTarget) all.push(this.pgTarget.ship);
-    for (const s of all) s.buoy.applySettings(mapped);
+    for (const s of all) {
+      s.buoy.applySettings(mapped);
+      // «осадка ±» (Task 31): физ. модель — перекалибровка колонн
+      // (волновая/штормовая читают BUOYANCY_CONFIG напрямую)
+      s.applyDraftOffset(b.draftOffset);
+    }
     this.boatLaunch?.buoy.applySettings(mapped);
   }
 
@@ -1938,6 +1950,21 @@ export class Game {
       // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
       greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
       seaModel: SEA.model,
+      // Task 31: плавание/посадка/углы — для всех моделей моря
+      float: {
+        draftOffset: this.settings.buoyancy.draftOffset,
+        draftOffApplied: +p.draftOff.toFixed(2),   // перекалибровка колонн физ. модели
+        boatDraftMul: this.settings.buoyancy.boatDraftMul,
+        heelMaxDeg: this.settings.buoyancy.heelMaxDeg,
+        pitchMaxDeg: this.settings.buoyancy.pitchMaxDeg,
+        boatSmooth: this.settings.buoyancy.boatSmooth,
+        heelDeg: +(p.rideHeel * 180 / Math.PI).toFixed(1),   // крен от ветра (волна/шторм)
+        boatDraft: this.boatLaunch && this.boatLaunch.phase === 'afloat'
+          ? +(this.boatLaunch.state().draft ?? 0).toFixed(3) : -1,
+        boats: this.boatLaunch
+          ? { count: this.boatLaunch.boatCount(), active: this.boatLaunch.activeSide(), phase: this.boatLaunch.phase }
+          : null,
+      },
       // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): телеметрия спектра/качки
       storm: this.sea ? {
         ...this.sea.stats(),
@@ -2009,14 +2036,21 @@ export class Game {
             lidsOpen: p.visual.gunPorts.filter(gp => gp.open > 0.85).length,
             gunsOut: p.visual.gunPorts.filter(gp => gp.gun.position.x * Math.sign(gp.gun.userData.baseX) > Math.abs(gp.gun.userData.baseX) + 0.2).length }
         : null,
-      // шлюпка за кормой (Task 22-24): разворот, видимость, спуск
-      boat: p.visual.boat
+      // шлюпки на шлюпбалках (Task 22-24 + 31: ДВЕ — штирборт и порт,
+      // спускается любая из целых)
+      boats: (p.visual.boat || p.visual.boat2)
         ? {
-            ok: true, visible: p.visual.boat.group.visible,
-            rotY: +p.visual.boat.group.rotation.y.toFixed(2),
-            len: +p.visual.boat.len.toFixed(2),
-            x: +p.visual.boat.group.position.x.toFixed(1),
-            z: +p.visual.boat.group.position.z.toFixed(1),
+            ok: true,
+            count: this.boatLaunch ? this.boatLaunch.boatCount() : 0,
+            active: this.boatLaunch ? this.boatLaunch.activeSide() : null,
+            stb: p.visual.boat
+              ? { visible: p.visual.boat.group.visible, x: +p.visual.boat.group.position.x.toFixed(1),
+                  rotY: +p.visual.boat.group.rotation.y.toFixed(2), len: +p.visual.boat.len.toFixed(2) }
+              : null,
+            port: p.visual.boat2
+              ? { visible: p.visual.boat2.group.visible, x: +p.visual.boat2.group.position.x.toFixed(1),
+                  rotY: +p.visual.boat2.group.rotation.y.toFixed(2), len: +p.visual.boat2.len.toFixed(2) }
+              : null,
             phase: this.boatLaunch ? this.boatLaunch.phase : 'stowed',
           }
         : { ok: false },

@@ -384,46 +384,82 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                 </div>
               )}
 
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
+                  Плавание и посадка (все модели моря)
+                </div>
+                <div className="mb-1 text-[10px] text-stone-500">
+                  Плавание, осадка и углы наклона — ЕДИНЫЕ настройки для всех трёх моделей
+                  моря. У физической осадка меняется перекалибровкой гидростатики (ровный
+                  киль сохраняется), у «волны-опоры» и штормовой — сдвигом посадки.
+                </div>
+                <Row label="Осадка: глубже / мельче" hint="±м: физ. модель — корабль сидит глубже/мельче с тем же ровным килем; волна-опора и шторм — сдвиг посадки. Для шторма есть ещё «Посадка» ниже">
+                  <Slider value={s.buoyancy.draftOffset} min={-0.8} max={0.8} step={0.05}
+                    onChange={v => update(d => { d.buoyancy.draftOffset = v; })}
+                    format={v => `${v > 0 ? '+' : ''}${v.toFixed(2)} м`} />
+                </Row>
+                <Row label="Осадка шлюпки" hint="множитель посадки яла на воде (физ. и волна-опора: планширь ближе/дальше от воды); в шторме — отдельная «Посадка: шлюпка» ниже">
+                  <Slider value={s.buoyancy.boatDraftMul} min={0.5} max={3} step={0.1}
+                    onChange={v => update(d => { d.buoyancy.boatDraftMul = v; })}
+                    format={v => `×${v.toFixed(1)}`} />
+                </Row>
+                <Row label="Макс. крен" hint="предел наклона бортами, °: стопы физической модели, кромка крена от ветра (волна-опора/шторм), крен шлюпки — во всех моделях">
+                  <Slider value={s.buoyancy.heelMaxDeg} min={6} max={35} step={0.5}
+                    onChange={v => update(d => { d.buoyancy.heelMaxDeg = v; })}
+                    format={v => `${v.toFixed(1)}°`} />
+                </Row>
+                <Row label="Макс. дифферент" hint="предел наклона носом/кормой, °: стопы физической модели и дифферент шлюпки на волне">
+                  <Slider value={s.buoyancy.pitchMaxDeg} min={8} max={35} step={0.5}
+                    onChange={v => update(d => { d.buoyancy.pitchMaxDeg = v; })}
+                    format={v => `${v.toFixed(1)}°`} />
+                </Row>
+                <Row label="Жёсткость качки" hint="пружина вертикальной качки (волна-опора и шторм): больше — резче подскакивает на волне">
+                  <Slider value={s.buoyancy.heaveStiffness} min={1} max={12} step={0.5}
+                    onChange={v => update(d => { d.buoyancy.heaveStiffness = v; })}
+                    format={v => v.toFixed(1)} />
+                </Row>
+                <Row label="Демпфер качки" hint="как быстро гаснет вертикальная качка (волна-опора и шторм)">
+                  <Slider value={s.buoyancy.heaveDamping} min={0.5} max={6} step={0.1}
+                    onChange={v => update(d => { d.buoyancy.heaveDamping = v; })}
+                    format={v => v.toFixed(1)} />
+                </Row>
+                <Row label="Отзывчивость корпуса" hint="скорость доворота к склону волны (волна-опора и шторм): меньше — лениво переваливается, больше — липнет к волне">
+                  <Slider value={s.buoyancy.orientResponse} min={0.5} max={8} step={0.1}
+                    onChange={v => update(d => { d.buoyancy.orientResponse = v; })}
+                    format={v => `${v.toFixed(1)} 1/с`} />
+                </Row>
+                <Row label="Заглубление от крена" hint="сколько корпус садится при наклоне поверхности, м (волна-опора и шторм)">
+                  <Slider value={s.buoyancy.sinkHeel} min={0} max={3} step={0.1}
+                    onChange={v => update(d => { d.buoyancy.sinkHeel = v; })}
+                    format={v => `${v.toFixed(1)} м`} />
+                </Row>
+                <Row label="Заглубление от хода" hint="динамическое погружение на скорости (м/м·с⁻¹; волна-опора и шторм)">
+                  <Slider value={s.buoyancy.sinkSpeed} min={0} max={0.08} step={0.005}
+                    onChange={v => update(d => { d.buoyancy.sinkSpeed = v; })}
+                    format={v => v.toFixed(3)} />
+                </Row>
+                <Row label="Замер: нос/корма" hint="доля длины корпуса для точек замера воды (волна-опора и шторм)">
+                  <Slider value={s.buoyancy.sampleForeAft} min={0.2} max={0.6} step={0.02}
+                    onChange={v => update(d => { d.buoyancy.sampleForeAft = v; })}
+                    format={v => v.toFixed(2)} />
+                </Row>
+                <Row label="Замер: борта" hint="доля полуширины для точек замера воды (волна-опора и шторм)">
+                  <Slider value={s.buoyancy.sampleSide} min={0.4} max={1} step={0.02}
+                    onChange={v => update(d => { d.buoyancy.sampleSide = v; })}
+                    format={v => v.toFixed(2)} />
+                </Row>
+                <Row label="Плавность посадки шлюпки" hint="скорость сглаживания посадки яла на волны, 1/с (физ. и волна-опора): меньше — ял мягче всходит на гребень">
+                  <Slider value={s.buoyancy.boatSmooth} min={6} max={25} step={1}
+                    onChange={v => update(d => { d.buoyancy.boatSmooth = v; })}
+                    format={v => `${v} 1/с`} />
+                </Row>
+              </div>
+
               {s.weather.seaModel === 'storm' && (
                 <div className="py-2">
                   <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
-                    Качка корпуса (shipPhysics.js)
+                    Штормовой модуль: посадка (shipPhysics.js)
                   </div>
-                  <Row label="Жёсткость качки" hint="пружина вертикальной качки: больше — резче подскакивает на волне">
-                    <Slider value={s.buoyancy.heaveStiffness} min={1} max={12} step={0.5}
-                      onChange={v => update(d => { d.buoyancy.heaveStiffness = v; })}
-                      format={v => v.toFixed(1)} />
-                  </Row>
-                  <Row label="Демпфер качки" hint="как быстро гаснет вертикальная качка">
-                    <Slider value={s.buoyancy.heaveDamping} min={0.5} max={6} step={0.1}
-                      onChange={v => update(d => { d.buoyancy.heaveDamping = v; })}
-                      format={v => v.toFixed(1)} />
-                  </Row>
-                  <Row label="Отзывчивость корпуса" hint="скорость доворота к склону волны: меньше — лениво переваливается, больше — липнет к волне">
-                    <Slider value={s.buoyancy.orientResponse} min={0.5} max={8} step={0.1}
-                      onChange={v => update(d => { d.buoyancy.orientResponse = v; })}
-                      format={v => `${v.toFixed(1)} 1/с`} />
-                  </Row>
-                  <Row label="Заглубление от крена" hint="сколько корпус садится при наклоне поверхности, м">
-                    <Slider value={s.buoyancy.sinkHeel} min={0} max={3} step={0.1}
-                      onChange={v => update(d => { d.buoyancy.sinkHeel = v; })}
-                      format={v => `${v.toFixed(1)} м`} />
-                  </Row>
-                  <Row label="Заглубление от хода" hint="динамическое погружение на скорости (м/м·с⁻¹)">
-                    <Slider value={s.buoyancy.sinkSpeed} min={0} max={0.08} step={0.005}
-                      onChange={v => update(d => { d.buoyancy.sinkSpeed = v; })}
-                      format={v => v.toFixed(3)} />
-                  </Row>
-                  <Row label="Замер: нос/корма" hint="доля длины корпуса для точек замера воды">
-                    <Slider value={s.buoyancy.sampleForeAft} min={0.2} max={0.6} step={0.02}
-                      onChange={v => update(d => { d.buoyancy.sampleForeAft = v; })}
-                      format={v => v.toFixed(2)} />
-                  </Row>
-                  <Row label="Замер: борта" hint="доля полуширины для точек замера воды">
-                    <Slider value={s.buoyancy.sampleSide} min={0.4} max={1} step={0.02}
-                      onChange={v => update(d => { d.buoyancy.sampleSide = v; })}
-                      format={v => v.toFixed(2)} />
-                  </Row>
                   <Row label="Посадка: крупные суда" hint="0.5 — проектная осадка; больше — сидит выше (фрегаты и линейные)">
                     <Slider value={s.buoyancy.immersionFrigate} min={0.25} max={0.75} step={0.05}
                       onChange={v => update(d => { d.buoyancy.immersionFrigate = v; })}

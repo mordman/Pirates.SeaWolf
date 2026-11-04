@@ -5,7 +5,7 @@ import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
 import type { Particles } from '../fx/particles';
 import { WakeTrail, WaterlineFoam } from '../water/wake';
-import { ShipBuoyancy } from '../sea/shipPhysics';
+import { ShipBuoyancy, BUOYANCY_CONFIG } from '../sea/shipPhysics';
 
 // ============================================================
 // СПУСК ШЛЮПКИ НА ВОДУ (по замечанию игрока: «можно спустить
@@ -73,7 +73,14 @@ export class BoatLaunch {
   private islands: () => { cx: number; cz: number; r: number }[];
   private msg?: (text: string) => void;
   private onSplash?: () => void;
-  private vis: BoatVis | null;
+  // Task 31 «добавь еще одну»: ВСЕ ялы судна (штирборт + порт);
+  // vis — АКТИВНЫЙ (спускается/на воде/поднимается), null = все
+  // на шлюпбалках. Спуск берёт первую ЦЕЛУЮ (штирборт, потом порт),
+  // разбитая пропускается
+  private boats: BoatVis[] = [];
+  private active: BoatVis | null = null;
+  // гребцы — на банках СВОЕГО яла (Task 31: у каждого свой экипаж)
+  private rowersByBoat = new Map<BoatVis, THREE.Group[]>();
 
   // --- состояние на воде (мировые координаты контейнера) ---
   pos = new THREE.Vector3();
@@ -91,8 +98,8 @@ export class BoatLaunch {
   /** счётчик заливаний шлюпки (телеметрия) */
   stormFloods = 0;
 
-  // гребцы в шлюпке (видны только на воде)
-  rowers: THREE.Group[] = [];
+  // гребцы в шлюпке (видны только на воде) — по списку на ял (Task 31)
+  // (создаются в конструкторе для КАЖДОГО яла, см. rowersByBoat)
   // СЛЕД ОТ ШЛЮПКИ (Task 26: «сделай след от лодки»): узкая пенная
   // дорожка за транцем яла на ходу под вёслами — та же лента, что и
   // кильватер корабля, но в масштабе шлюпки; пена Заметная (широкая
@@ -131,39 +138,70 @@ export class BoatLaunch {
     this.islands = d.islands;
     this.msg = d.msg;
     this.onSplash = d.onSplash;
-    this.vis = d.ship.visual.boat ?? null;
+    // Task 31: ялы обоих бортов (штирборт как раньше + порт — новая)
+    this.boats = [d.ship.visual.boat, d.ship.visual.boat2]
+      .filter((b): b is BoatVis => !!b);
+    this.active = null;
     // след пены за шлюпкой — в контейнер мира (координаты те же, что pos)
     this.wake.setWaterHeight(waterHeightAt);
     this.worldGroup.add(this.wake.mesh);
-    // пенный воротник по ватерлинии (масштаб лодки)
-    if (this.vis) {
-      this.foam = new WaterlineFoam(this.vis.outline, {
-        width: Math.max(0.4, this.vis.beam * 0.34),
-        size: this.vis.len,
+    // пенный воротник по ватерлинии (масштаб лодки; ялы одинаковые)
+    if (this.boats.length) {
+      this.foam = new WaterlineFoam(this.boats[0].outline, {
+        width: Math.max(0.4, this.boats[0].beam * 0.34),
+        size: this.boats[0].len,
       });
       this.foam.mesh.visible = false;
       this.worldGroup.add(this.foam.mesh);
     }
-    if (this.vis) {
-      // два гребца на банке (появляются при спуске): сидят лицом
-      // к корме, качаются в такт гребков
-      const rnd = mulberry32(20240);
+    // два гребца на банке каждого яла (появляются при спуске):
+    // сидят лицом к корме, качаются в такт гребков
+    for (const bt of this.boats) {
+      const rnd = mulberry32(20240 + bt.stowPos.x * 1000); // свой сид на борт
+      const list: THREE.Group[] = [];
       for (const side of [-1, 1] as const) {
         const f = buildFigure('rower', rollTraits(rnd, 'rower'), Math.floor(rnd() * 99999));
-        const thY = this.vis.gunY - 0.235;
-        f.group.position.set(side * this.vis.beam * 0.17, thY - 0.26, this.vis.rowZ + 0.3);
+        const thY = bt.gunY - 0.235;
+        f.group.position.set(side * bt.beam * 0.17, thY - 0.26, bt.rowZ + 0.3);
         f.group.rotation.y = Math.PI;      // лицом к корме
         f.group.scale.y = 0.78;
         f.group.visible = false;
         f.group.userData.isBoatRower = true;
-        this.vis.group.add(f.group);
-        this.rowers.push(f.group);
+        bt.group.add(f.group);
+        list.push(f.group);
       }
+      this.rowersByBoat.set(bt, list);
     }
   }
 
   /** игрок в шлюпке (управление кораблём отключено)? */
   inBoat(): boolean { return this.phase !== 'stowed'; }
+
+  /** гребцы АКТИВНОГО яла (нет активного — штирбортного: все убраны,
+   *  фигуры скрыты). Обратная совместимость: HUD/E2E Task 22–30
+   *  читали именно поле rowers */
+  get rowers(): THREE.Group[] {
+    const bt = this.vis;   // активный, при stowed — штирборт (скрыт)
+    return bt ? (this.rowersByBoat.get(bt) ?? []) : [];
+  }
+
+
+  /** АКТИВНЫЙ ял, а когда все убраны — штирбортный (BoatVis никогда
+   *  не null, если ялы есть). Обратная совместимость: HUD/E2E
+   *  Task 22–30 читали именно bl.vis (внутренняя логика работает
+   *  со СТРОГИМ this.active — null = «на шлюпбалках») */
+  get vis(): BoatVis | null {
+    return this.active ?? this.boats[0] ?? null;
+  }
+
+  /** сколько ялов на судне и какой сейчас активен (HUD/E2E, Task 31).
+   *  side: 'stb' — штирборт (право), 'port' — порт (лево) */
+  boatCount(): number { return this.boats.length; }
+  activeSide(): 'stb' | 'port' | null {
+    const bt = this.active;
+    if (!bt) return null;
+    return bt.stowPos.x >= 0 ? 'stb' : 'port';
+  }
 
   /** убрать за собой: след пены и воротник снимаются со сцены (смена корабля) */
   dispose() {
@@ -174,26 +212,30 @@ export class BoatLaunch {
 
   /** расстояние от шлюпки до шлюпбалок борта (для HUD/подъёма) */
   distToHoist(): number {
-    if (!this.vis) return Infinity;
+    if (!this.active) return Infinity;
     if (this.phase === 'afloat') {
-      this._v.copy(this.vis.stowPos)
+      this._v.copy(this.active.stowPos)
         .applyQuaternion(this.ship.quaternion).add(this.ship.position);
       return Math.hypot(this.pos.x - this._v.x, this.pos.z - this._v.z);
     }
     return 0;
   }
 
-  /** ПОПЫТКА СПУСКА. Возвращает текст ошибки или null (успех) */
+  /** ПОПЫТКА СПУСКА. Возвращает текст ошибки или null (успех).
+   *  Task 31: из двух ялов спускается первая ЦЕЛАЯ — штирборт,
+   *  за ним порт (запасная); разбитая пропускается */
   tryLaunch(docked: boolean): string | null {
-    if (!this.vis) return 'На этом судне нет шлюпки';
+    if (!this.boats.length) return 'На этом судне нет шлюпки';
     if (this.phase !== 'stowed') return null;
-    if (!this.vis.group.visible) return 'Шлюпка разбита — в море не починить';
+    const pick = this.boats.find(b => b.group.visible);
+    if (!pick) return 'Обе шлюпки разбиты — в море не починить';
     if (this.ship.sinking || this.ship.sunk) return 'Корабль тонет — не до шлюпки!';
     if (docked) return 'В порту шлюпка не нужна — причал рядом';
     if (this.ship.crew < 1) return 'Некому грести — нужен хоть один человек команды';
     if (!this.ship.anchored && this.ship.speedKnots() > 2.6) {
       return 'Слишком большой ход — уберите паруса или отдайте якорь (F)';
     }
+    this.active = pick;
     this.phase = 'lowering';
     this.t = 0;
     this.splashed = false;
@@ -203,14 +245,14 @@ export class BoatLaunch {
 
   /** ПОПЫТКА ПОДЪЁМА (когда шлюпка на воде). Ошибка или null */
   tryHoist(): string | null {
-    if (this.phase !== 'afloat' || !this.vis) return null;
+    if (this.phase !== 'afloat' || !this.active) return null;
     if (this.ship.sunk) return 'Корабль ушёл под воду — подниматься некуда…';
     const d = this.distToHoist();
     if (d > 15) return `Далеко от шлюпбалок (${Math.round(d)} м) — подойдите к борту`;
     if (Math.abs(this.vel) > 1.25) return 'Замрите ход перед подъёмом';
     // старт подтяжки
-    this.pullFrom.copy(this.vis.group.position);
-    this.pullQuat.copy(this.vis.group.quaternion);
+    this.pullFrom.copy(this.active.group.position);
+    this.pullQuat.copy(this.active.group.quaternion);
     this.phase = 'raising';
     this.raiseStage = 0;
     this.t = 0;
@@ -219,34 +261,42 @@ export class BoatLaunch {
 
   /** Немедленно вернуть шлюпку на шлюпбалки (смена корабля/смерть) */
   abort() {
-    if (!this.vis || this.phase === 'stowed') return;
-    const b = this.vis.group;
-    if (b.parent !== this.vis.falls.parent) {
+    if (!this.active || this.phase === 'stowed') return;
+    const b = this.active.group;
+    if (b.parent !== this.active.falls.parent) {
       // шлюпка была в мире — вернуть в группу мелких деталей
-      this.vis.falls.parent?.add(b);
+      this.active.falls.parent?.add(b);
     }
-    b.position.copy(this.vis.stowPos);
-    b.rotation.set(0, this.vis.stowRotY, 0);
-    b.quaternion.setFromEuler(new THREE.Euler(0, this.vis.stowRotY, 0));
+    b.position.copy(this.active.stowPos);
+    b.rotation.set(0, this.active.stowRotY, 0);
+    b.quaternion.setFromEuler(new THREE.Euler(0, this.active.stowRotY, 0));
     this.setRowersVisible(false);
     this.oarDeploy = 0;
     this.stowOars();
     this.phase = 'stowed';
+    this.active = null;               // Task 31: активного больше нет
     this.t = 0;
     this.vel = 0;
     this.yawRate = 0;
     this.row = 0;
     this.steer = 0;
-    updateBoatFalls(this.vis);
+    const av = this.boats.find(x => x.group === b) ?? this.boats[0];
+    updateBoatFalls(av);
   }
 
   private setRowersVisible(v: boolean) {
-    for (const r of this.rowers) r.visible = v;
+    // Task 31: гребцы — только АКТИВНОГО яла (у каждого свой экипаж)
+    const list = this.active ? this.rowersByBoat.get(this.active) : null;
+    if (list) for (const r of list) r.visible = v;
+    else if (!this.active) {
+      // убраны — спрятать всех (после подъёма/аварии)
+      for (const l of this.rowersByBoat.values()) for (const r of l) r.visible = false;
+    }
   }
 
   private stowOars() {
-    if (!this.vis) return;
-    for (const o of this.vis.oars) {
+    if (!this.active) return;
+    for (const o of this.active.oars) {
       const sq = o.userData.stowQ as THREE.Quaternion;
       if (sq) o.quaternion.copy(sq);
     }
@@ -254,95 +304,104 @@ export class BoatLaunch {
 
   update(dt: number, time: number, negShift?: THREE.Vector3) {
     this._negShift = negShift;
-    if (!this.vis) return;
-    const b = this.vis.group;
-    // шлюпку разбило прямо во время спуска/на воде — подобрать игрока
-    if (!b.visible && this.phase !== 'stowed') {
+    if (!this.boats.length) return;
+    // активный ял разбило прямо во время спуска/на воде — подобрать
+    // игрока на борт; следующий спуск возьмёт целую запасную (port)
+    if (this.active && !this.active.group.visible && this.phase !== 'stowed') {
+      const done = this.active;
       this.abort();
-      this.msg?.('Шлюпку разнесло щепой! Вас подобрали на борт');
+      this.msg?.('Шлюпку разнесло щепой! Вас подобрали на борт'
+        + (this.boats.some(b => b !== done && b.group.visible) ? ' (запасная на шлюпбалках)' : ''));
       return;
     }
     // воротник показывается ТОЛЬКО на воде (не на талях/шлюпбалках)
     if (this.foam && this.phase !== 'afloat') this.foam.mesh.visible = false;
-    switch (this.phase) {
-      case 'stowed': {
-        // фалы слегка тянутся от качки корабля
-        if (Math.random() < dt * 4) updateBoatFalls(this.vis);
-        break;
-      }
-      case 'lowering': {
-        this.t += dt / LOWER_DUR;
-        const k = sm(this.t);
-        // цель: планширь шлюпки на уровень воды (в локалах корабля)
-        this._v.copy(b.position).applyQuaternion(this.ship.quaternion).add(this.ship.position);
-        const wy = waterHeightAt(this._v.x, this._v.z, time);
-        const targetY = this.vis.stowPos.y + (wy + 0.12 - this._v.y);
-        b.position.y = THREE.MathUtils.lerp(this.vis.stowPos.y, targetY, k);
-        // лёгкий дрейф ОТ обшивки — чистый спуск за борт
-        b.position.x = THREE.MathUtils.lerp(this.vis.stowPos.x, this.vis.stowPos.x + Math.sign(this.vis.stowPos.x || 1) * 0.35, k);
-        b.rotation.z = Math.sin(k * Math.PI) * 0.05;   // покачивание на талях
-        updateBoatFalls(this.vis);
-        if (this.t >= 1) this.detachToWater(time);
-        break;
-      }
-      case 'afloat': {
-        this.floatUpdate(dt, time);
-        break;
-      }
-      case 'raising': {
-        if (this.raiseStage === 0) {
-          // подтяжка: шлюпка в МИРЕ подтягивается под шлюпбалки борта
-          this.t += dt / PULL_DUR;
-          const k = sm(this.t);
-          this._v.set(this.vis.stowPos.x * 0.8, this.vis.stowPos.y * 0.55, this.vis.stowPos.z)
-            .applyQuaternion(this.ship.quaternion).add(this.ship.position);
-          this._v.y = Math.max(this._v.y, waterHeightAt(this._v.x, this._v.z, time) + 0.9);
-          b.position.lerpVectors(this.pullFrom, this._v, k);
-          // доворот к курсу корабля — по кратчайшей дуге, крен/дифферент
-          // гаснут (никаких переворотов через борт на ~180°)
-          this._e.setFromQuaternion(b.quaternion, 'YXZ');
-          const dy = wrapPi(this.ship.heading - this._e.y);
-          this._e.set(this._e.x * (1 - k), this._e.y + dy * k, this._e.z * (1 - k), 'YXZ');
-          b.quaternion.setFromEuler(this._e);
-          // фалы тянутся к поднимаемой шлюпке (мировые → локальные корабля)
-          this.fallsToBoat();
-          if (this.t >= 1) {
-            // репарент в группу мелких деталей (мировая поза сохранится)
-            this.vis.falls.parent?.attach(b);
-            this.raiseStage = 1;
-            this.t = 0;
-            this.pullY = b.position.y;
-            this.pullPos.copy(b.position);
-            this.setRowersVisible(false);
-          }
-        } else {
-          // выборка талов: подъём от борта до шлюпбалок
+    // Task 31: активный ял (в фазах спуска/воды/подъёма он всегда
+    // есть — tryLaunch назначает, abort снимает вместе с фазой)
+    const vis = this.active;
+    if (vis && this.phase !== 'stowed') {
+      const b = vis.group;
+      switch (this.phase) {
+        case 'lowering': {
           this.t += dt / LOWER_DUR;
           const k = sm(this.t);
-          b.position.lerpVectors(this.pullPos, this.vis.stowPos, k);
-          b.rotation.z = Math.sin(k * Math.PI) * 0.05;
-          // курс — к stowRotY по кратчайшей дуге, качка гаснет
-          this._e.setFromQuaternion(b.quaternion, 'YXZ');
-          const k2 = Math.min(1, dt * 2.5);
-          const dy = wrapPi(this.vis.stowRotY - this._e.y);
-          this._e.set(this._e.x * (1 - k2), this._e.y + dy * k2, this._e.z * (1 - k2), 'YXZ');
-          b.quaternion.setFromEuler(this._e);
-          // вёсла убираются на планширь по мере подъёма
-          this.oarDeploy = Math.max(0, 1 - k * 1.6);
-          this.animateOars(0, false);
-          updateBoatFalls(this.vis);
-          if (this.t >= 1) {
-            b.position.copy(this.vis.stowPos);
-            this._q.setFromEuler(this._e.set(0, this.vis.stowRotY, 0));
-            b.quaternion.copy(this._q);
-            b.rotation.set(0, this.vis.stowRotY, 0);
-            this.stowOars();
-            this.phase = 'stowed';
-            this.oarDeploy = 0;
-            updateBoatFalls(this.vis);
-          }
+          // цель: планширь шлюпки на уровень воды (в локалах корабля)
+          this._v.copy(b.position).applyQuaternion(this.ship.quaternion).add(this.ship.position);
+          const wy = waterHeightAt(this._v.x, this._v.z, time);
+          const targetY = vis.stowPos.y + (wy + 0.12 - this._v.y);
+          b.position.y = THREE.MathUtils.lerp(vis.stowPos.y, targetY, k);
+          // лёгкий дрейф ОТ обшивки — чистый спуск за борт
+          b.position.x = THREE.MathUtils.lerp(vis.stowPos.x, vis.stowPos.x + Math.sign(vis.stowPos.x || 1) * 0.35, k);
+          b.rotation.z = Math.sin(k * Math.PI) * 0.05;   // покачивание на талях
+          updateBoatFalls(vis);
+          if (this.t >= 1) this.detachToWater(time);
+          break;
         }
-        break;
+        case 'afloat': {
+          this.floatUpdate(dt, time);
+          break;
+        }
+        case 'raising': {
+          if (this.raiseStage === 0) {
+            // подтяжка: шлюпка в МИРЕ подтягивается под шлюпбалки борта
+            this.t += dt / PULL_DUR;
+            const k = sm(this.t);
+            this._v.set(vis.stowPos.x * 0.8, vis.stowPos.y * 0.55, vis.stowPos.z)
+              .applyQuaternion(this.ship.quaternion).add(this.ship.position);
+            this._v.y = Math.max(this._v.y, waterHeightAt(this._v.x, this._v.z, time) + 0.9);
+            b.position.lerpVectors(this.pullFrom, this._v, k);
+            // доворот к курсу корабля — по кратчайшей дуге, крен/дифферент
+            // гаснут (никаких переворотов через борт на ~180°)
+            this._e.setFromQuaternion(b.quaternion, 'YXZ');
+            const dy = wrapPi(this.ship.heading - this._e.y);
+            this._e.set(this._e.x * (1 - k), this._e.y + dy * k, this._e.z * (1 - k), 'YXZ');
+            b.quaternion.setFromEuler(this._e);
+            // фалы тянутся к поднимаемой шлюпке (мировые → локальные корабля)
+            this.fallsToBoat();
+            if (this.t >= 1) {
+              // репарент в группу мелких деталей (мировая поза сохранится)
+              vis.falls.parent?.attach(b);
+              this.raiseStage = 1;
+              this.t = 0;
+              this.pullY = b.position.y;
+              this.pullPos.copy(b.position);
+              this.setRowersVisible(false);
+            }
+          } else {
+            // выборка талов: подъём от борта до шлюпбалок
+            this.t += dt / LOWER_DUR;
+            const k = sm(this.t);
+            b.position.lerpVectors(this.pullPos, vis.stowPos, k);
+            b.rotation.z = Math.sin(k * Math.PI) * 0.05;
+            // курс — к stowRotY по кратчайшей дуге, качка гаснет
+            this._e.setFromQuaternion(b.quaternion, 'YXZ');
+            const k2 = Math.min(1, dt * 2.5);
+            const dy = wrapPi(vis.stowRotY - this._e.y);
+            this._e.set(this._e.x * (1 - k2), this._e.y + dy * k2, this._e.z * (1 - k2), 'YXZ');
+            b.quaternion.setFromEuler(this._e);
+            // вёсла убираются на планширь по мере подъёма
+            this.oarDeploy = Math.max(0, 1 - k * 1.6);
+            this.animateOars(0, false);
+            updateBoatFalls(vis);
+            if (this.t >= 1) {
+              b.position.copy(vis.stowPos);
+              this._q.setFromEuler(this._e.set(0, vis.stowRotY, 0));
+              b.quaternion.copy(this._q);
+              b.rotation.set(0, vis.stowRotY, 0);
+              this.stowOars();
+              this.phase = 'stowed';
+              this.active = null;           // Task 31: ял убран, активного нет
+              this.oarDeploy = 0;
+              updateBoatFalls(vis);
+            }
+          }
+          break;
+        }
+      }
+    } else {
+      // убраны: фалы слегка тянутся от качки корабля (у КАЖДОГО яла)
+      for (const bt of this.boats) {
+        if (bt.group.visible && Math.random() < dt * 4) updateBoatFalls(bt);
       }
     }
     // лента следа живёт всегда: точки стареют и тают и после подъёма
@@ -353,24 +412,24 @@ export class BoatLaunch {
    *  пересчитанная в локальные координаты корабля. Носовая балка —
    *  к планширю НОСА, кормовая — к планширю кормы (±gunX) */
   private fallsToBoat() {
-    if (!this.vis) return;
-    const b = this.vis.group;
-    const attr = this.vis.falls.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!this.active) return;
+    const b = this.active.group;
+    const attr = this.active.falls.geometry.getAttribute('position') as THREE.BufferAttribute;
     this._qi.copy(this.ship.quaternion).invert();
     // центр шлюпки в локалах корабля
     const c = this._v2.copy(b.position).sub(this.ship.position).applyQuaternion(this._qi);
-    const rotY = this.vis.stowRotY;   // шлюпка выровнена вдоль борта
+    const rotY = this.active.stowRotY;   // шлюпка выровнена вдоль борта
     const cos = Math.cos(rotY), sin = Math.sin(rotY);
     let i = 0;
-    for (let hi = 0; hi < this.vis.davitHeads.length; hi++) {
-      const head = this.vis.davitHeads[hi];
-      const zo = (hi === 0 ? 1 : -1) * this.vis.hangZ;
-      for (const xs of [this.vis.gunX, -this.vis.gunX]) {
+    for (let hi = 0; hi < this.active.davitHeads.length; hi++) {
+      const head = this.active.davitHeads[hi];
+      const zo = (hi === 0 ? 1 : -1) * this.active.hangZ;
+      for (const xs of [this.active.gunX, -this.active.gunX]) {
         // точка планширя шлюпки (xs, gunY, zo), поворот на rotY
         const px = xs * cos + zo * sin;
         const pz = -xs * sin + zo * cos;
         attr.setXYZ(i, head.x, head.y, head.z);
-        attr.setXYZ(i + 1, c.x + px, c.y + this.vis.gunY, c.z + pz);
+        attr.setXYZ(i + 1, c.x + px, c.y + this.active.gunY, c.z + pz);
         i += 2;
       }
     }
@@ -379,8 +438,8 @@ export class BoatLaunch {
 
   /** отдача талов: шлюпка — самостоятельная сущность на воде */
   private detachToWater(time: number) {
-    if (!this.vis) return;
-    const b = this.vis.group;
+    if (!this.active) return;
+    const b = this.active.group;
     this.worldGroup.attach(b);
     // шлюпка висела носом вдоль корпуса (к носу корабля) —
     // курс на воде = курсу корабля
@@ -392,14 +451,14 @@ export class BoatLaunch {
     this.phase = 'afloat';
     this.splashed = false;
     this.setRowersVisible(true);
-    updateBoatFalls(this.vis, true);   // хвосты талов у шлюпбалок
+    updateBoatFalls(this.active, true);   // хвосты талов у шлюпбалок
     this.msg?.('Шлюпка на воде! W/S — вёсла, A/D — поворот вёслами. B у борта — подняться на борт');
   }
 
   /** жизнь на воде: гребля, руль, качка, коллизии */
   private floatUpdate(dt: number, time: number) {
-    if (!this.vis) return;
-    const b = this.vis.group;
+    if (!this.active) return;
+    const b = this.active.group;
     // --- гребля: импульс только в рабочей фазе (sin φ > 0) ---
     const rowing = this.row !== 0;
     if (rowing) {
@@ -458,8 +517,10 @@ export class BoatLaunch {
     // (shipPhysics.js игрока): 4+1 замер, нормаль, пружинный гейв.
     // Отсчёт высоты — планширь яла ≈ КВЛ, поэтому depth=0, а
     // immersion (настройка «посадка шлюпки») смещает её ±0.5.
-    const L = this.vis.len, B = this.vis.beam;
-    const draft = L * 0.155 * 0.15;            // осадка яла (визуальный офсет воротника)
+    // Task 31: осадка/пределы наклона/плавность — из настроек
+    // «Плавание и качка» (действуют во ВСЕХ моделях моря)
+    const L = this.active.len, B = this.active.beam;
+    const draft = L * 0.155 * 0.15 * BUOYANCY_CONFIG.boatDraftMul;  // осадка яла (настройка ×)
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
     if (!this.splashed) {
       this.particles.splash(this.pos.x, waterHeightAt(this.pos.x, this.pos.z, time), this.pos.z, 1.5);
@@ -474,10 +535,11 @@ export class BoatLaunch {
       }, waterHeightAt);
       this.pos.y = this.buoy.y + (this.buoy.vessel.immersion - 0.5) * hullDepth;
       b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
-      // наклон — кватернион модуля + лёгкая качка от гребков
+      // наклон — кватернион модуля + лёгкая качка от гребков;
+      // пределы — настройки «углы наклона» (Task 31)
       this._e.setFromQuaternion(this.buoy.q, 'YXZ');
-      this.pitch = THREE.MathUtils.clamp(this._e.x, -0.35, 0.35);
-      this.roll = THREE.MathUtils.clamp(this._e.z, -0.4, 0.4)
+      this.pitch = THREE.MathUtils.clamp(this._e.x, -BUOYANCY_CONFIG.pitchMax, BUOYANCY_CONFIG.pitchMax);
+      this.roll = THREE.MathUtils.clamp(this._e.z, -BUOYANCY_CONFIG.heelMax, BUOYANCY_CONFIG.heelMax)
         + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
       b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
       if (this.buoy.events.floodPort || this.buoy.events.floodStar) this.stormFloods++;
@@ -506,14 +568,15 @@ export class BoatLaunch {
       const targetY = hMid * 0.30
         + (hBow + hStern) * 0.11 + (hPort + hStar) * 0.095
         + (hBowM + hSternM) * 0.145 - draft;
-      this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * 13.0);
+      this.pos.y += (targetY - this.pos.y) * Math.min(1, dt * BUOYANCY_CONFIG.boatSmooth);
       b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
       // наклон по УКЛОНАМ воды между точками (нос-корма, борт-борт) +
-      // лёгкая бортовая качка от гребков
+      // лёгкая бортовая качка от гребков; пределы — настройки
+      // «углы наклона» (Task 31)
       const pitchSlope = (hBow - hStern) / (L * 0.84);
       const rollSlope = (hStar - hPort) / (B * 1.0);
-      this.pitch = THREE.MathUtils.clamp(-pitchSlope, -0.35, 0.35);
-      this.roll = THREE.MathUtils.clamp(rollSlope, -0.4, 0.4)
+      this.pitch = THREE.MathUtils.clamp(-pitchSlope, -BUOYANCY_CONFIG.pitchMax, BUOYANCY_CONFIG.pitchMax);
+      this.roll = THREE.MathUtils.clamp(rollSlope, -BUOYANCY_CONFIG.heelMax, BUOYANCY_CONFIG.heelMax)
         + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
       b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
     }
@@ -528,10 +591,12 @@ export class BoatLaunch {
     }
 
     // --- вёсла: разворот на воду + гребок; гребцы в такт ---
+    // (Task 31: гребцы — АКТИВНОГО яла, список из rowersByBoat)
     this.oarDeploy += ((this.phase === 'afloat' ? 1 : 0) - this.oarDeploy) * Math.min(1, dt * 1.4);
     this.animateOars(0, true);
-    for (let i = 0; i < this.rowers.length; i++) {
-      const r = this.rowers[i];
+    const rowerList = this.rowersByBoat.get(this.active);
+    if (rowerList) for (let i = 0; i < rowerList.length; i++) {
+      const r = rowerList[i];
       r.rotation.x = -0.22 * (rowing ? Math.sin(this.strokePhase) * Math.sign(this.row || 1) : 0)
         + Math.sin(time * 1.2 + i * 2.1) * 0.02;
       r.rotation.z = Math.sin(time * 1.6 + i) * 0.025;
@@ -540,9 +605,9 @@ export class BoatLaunch {
     if (Math.abs(this.vel) > 0.12) {
       const spdFrac = Math.min(1, Math.abs(this.vel) / MAX_FWD);
       this._v2.set(
-        this.pos.x - Math.sin(this.heading) * this.vis.len * 0.48,
+        this.pos.x - Math.sin(this.heading) * this.active.len * 0.48,
         0,
-        this.pos.z - Math.cos(this.heading) * this.vis.len * 0.48);
+        this.pos.z - Math.cos(this.heading) * this.active.len * 0.48);
       this.wake.push(this._v2, spdFrac, dt, time);
     }
 
@@ -562,13 +627,13 @@ export class BoatLaunch {
 
   /** вёсла: стowed → на воде, гребок/погружение */
   private animateOars(_dt: number, rowing: boolean) {
-    if (!this.vis) return;
+    if (!this.active) return;
     const rowDir = this.row < 0 ? -1 : 1;
     const sweep = rowing && this.row !== 0
       ? -Math.cos(this.strokePhase) * SWEEP * rowDir : 0.1;
     const dip = rowing && this.row !== 0
       ? Math.max(0, Math.sin(this.strokePhase)) * DIP : 0;
-    for (const o of this.vis.oars) {
+    for (const o of this.active.oars) {
       const side = o.userData.side as number;
       const stowQ = o.userData.stowQ as THREE.Quaternion;
       const yaw = new THREE.Quaternion().setFromAxisAngle(UP, side * sweep);
@@ -580,6 +645,7 @@ export class BoatLaunch {
 
   /** для HUD/E2E */
   state() {
+    const rowerList = this.active ? this.rowersByBoat.get(this.active) : null;
     return {
       phase: this.phase, t: +this.t.toFixed(2),
       x: +this.pos.x.toFixed(1), y: +this.pos.y.toFixed(1), z: +this.pos.z.toFixed(1),
@@ -587,10 +653,13 @@ export class BoatLaunch {
       row: this.row, steer: this.steer,
       dist: +this.distToHoist().toFixed(1),
       oarDeploy: +this.oarDeploy.toFixed(2),
-      rowersVisible: this.rowers.length > 0 && this.rowers[0].visible,
+      rowersVisible: !!rowerList && rowerList.length > 0 && rowerList[0].visible,
       wakePts: this.wake.count(),
       foamCollar: !!this.foam && this.foam.mesh.visible,
-      draft: this.vis ? +(this.vis.len * 0.155 * 0.15).toFixed(3) : 0,
+      draft: this.active ? +(this.active.len * 0.155 * 0.15 * BUOYANCY_CONFIG.boatDraftMul).toFixed(3) : 0,
+      // Task 31: два яла — какой на воде
+      boats: this.boats.length,
+      side: this.activeSide(),
     };
   }
 }

@@ -35,7 +35,9 @@ export interface SeaModuleSettings {
   nearSize: number;     // 260..500 — сторона ближней сетки, м
 }
 
-/** Качка корпуса (shipPhysics.js) — пружины/ориентация/посадка */
+/** Плавание судов и качка — для ВСЕХ моделей моря (Task 31):
+ *  пружины/замеры/углы применяются физической, «волной-опорой»
+ *  и штормовым модулем (у штормового свои «посадки»-immersion) */
 export interface BuoyancySettings {
   heaveStiffness: number;    // 1..12 — жёсткость пружины вертикальной качки
   heaveDamping: number;      // 0.5..6 — демпфер вертикальной качки
@@ -44,10 +46,16 @@ export interface BuoyancySettings {
   sinkSpeed: number;         // 0..0.08 — заглубление от хода, м/м·с⁻¹
   sampleForeAft: number;     // 0.2..0.6 — доля длины: точки замера нос/корма
   sampleSide: number;        // 0.4..1 — доля полуширины: точки замера бортов
-  immersionFrigate: number;  // 0.25..0.75 — посадка крупных судов
-  immersionBoat: number;     // 0.25..0.85 — посадка шлюпки
-  immersionDefault: number;  // 0.25..0.75 — посадка остальных судов
+  immersionFrigate: number;  // 0.25..0.75 — посадка крупных судов (шторм)
+  immersionBoat: number;     // 0.25..0.85 — посадка шлюпки (шторм)
+  immersionDefault: number;  // 0.25..0.75 — посадка остальных судов (шторм)
   floodCooldown: number;     // 0.5..6 — пауза между событиями заливания, с
+  // --- Task 31: плавание/посадка/углы для ВСЕХ моделей моря ---
+  draftOffset: number;      // −0.8..0.8 м — осадка глубже(+)/мельче(−): физ. (перекалибровка колонн), волна-опора и шторм (сдвиг посадки)
+  boatDraftMul: number;     // 0.5..3 — осадка шлюпки × (физ. и волна-опора)
+  heelMaxDeg: number;       // 6..35° — предел крена: стопы физ. модели, кромка крена от ветра (волна/шторм), крен шлюпки
+  pitchMaxDeg: number;      // 8..35° — предел дифферента: стопы физ. модели, дифферент шлюпки
+  boatSmooth: number;       // 6..25 — плавность посадки шлюпки на воду (физ. и волна-опора), 1/с
 }
 
 export interface WeatherSettings {
@@ -169,6 +177,11 @@ export const DEFAULT_SETTINGS: GameSettings = {
     sinkHeel: 1.2, sinkSpeed: 0.02, sampleForeAft: 0.42, sampleSide: 0.78,
     immersionFrigate: 0.45, immersionBoat: 0.65, immersionDefault: 0.5,
     floodCooldown: 1.4,
+    // Task 31: дефолты = прежние «зашитые» значения моделей — поведение
+    // по умолчанию не меняется (0.36 рад = 20.6° крен, 0.42 рад = 24.1°
+    // дифферент, «волна-опора»: пружина 5/2.4, slerp 2.6, замеры 0.42/0.78)
+    draftOffset: 0, boatDraftMul: 1,
+    heelMaxDeg: 20.6, pitchMaxDeg: 24.1, boatSmooth: 13,
   },
 };
 
@@ -189,7 +202,12 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 // v4 (Task 29): новые разделы sea (штормовой модуль sea.js) и
 //     buoyancy (качка shipPhysics.js) + модель моря 'storm'.
 //     Старые сохранения: боезапас сбрасывается только если версия < 3.
-const SCHEMA_VER = 4;
+// v5 (Task 31): плавание/посадка/углы — ДЛЯ ВСЕХ моделей моря:
+//     draftOffset (осадка ±м), boatDraftMul (осадка шлюпки ×),
+//     heelMaxDeg/pitchMaxDeg (пределы наклона), boatSmooth; поля
+//     пружины/замеров теперь действуют и на «волну-опору».
+//     Дефолты равны прежним «зашитым» значениям — поведение не меняется.
+const SCHEMA_VER = 5;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -279,6 +297,12 @@ export function loadSettings(): GameSettings {
       if (typeof b.immersionBoat === 'number') s.buoyancy.immersionBoat = Math.min(0.85, Math.max(0.25, b.immersionBoat));
       if (typeof b.immersionDefault === 'number') s.buoyancy.immersionDefault = Math.min(0.75, Math.max(0.25, b.immersionDefault));
       if (typeof b.floodCooldown === 'number') s.buoyancy.floodCooldown = Math.min(6, Math.max(0.5, b.floodCooldown));
+      // v5 (Task 31): плавание для всех моделей моря
+      if (typeof b.draftOffset === 'number') s.buoyancy.draftOffset = Math.min(0.8, Math.max(-0.8, b.draftOffset));
+      if (typeof b.boatDraftMul === 'number') s.buoyancy.boatDraftMul = Math.min(3, Math.max(0.5, b.boatDraftMul));
+      if (typeof b.heelMaxDeg === 'number') s.buoyancy.heelMaxDeg = Math.min(35, Math.max(6, b.heelMaxDeg));
+      if (typeof b.pitchMaxDeg === 'number') s.buoyancy.pitchMaxDeg = Math.min(35, Math.max(8, b.pitchMaxDeg));
+      if (typeof b.boatSmooth === 'number') s.buoyancy.boatSmooth = Math.min(25, Math.max(6, b.boatSmooth));
     }
     if (isObj(data.fx)) {
       const f = data.fx;
@@ -348,7 +372,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   help: 'Помощь',
   oars: 'Вёсла: вывалить/убрать',
   gunports: 'Пушечные порты: открыть/закрыть',
-  boat: 'Шлюпка: спустить/поднять (на воде — вёсла/руль)',
+  boat: 'Шлюпка: спустить/поднять (две — правого и левого борта; на воде — вёсла/руль)',
   ammo: 'Боеприпасы 1–4',
 };
 
