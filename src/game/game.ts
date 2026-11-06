@@ -277,7 +277,6 @@ export class Game {
       far: g.drawDistance,
       lodSkip: g.waterLodStep,
     });
-    this.water.setFoamQuality(g.foamQuality);
     this.scene.add(this.water.group);
     this.sky = new SkySystem(this.scene);
     this.sky.setShadowRes(g.shadowRes);
@@ -434,7 +433,6 @@ export class Game {
       if (this.pgTarget) rescale(this.pgTarget.ship);
       this.pushMessage(`Прочность кораблей: ×${s.gameplay.hullDurability.toFixed(2)}`);
     }
-    this.water.setFoamQuality(g.foamQuality);
     this.rig.camera.far = g.drawDistance * 2 + 4000;
     this.rig.camera.updateProjectionMatrix();
     this.sky.setDomeScale(g.drawDistance / 6500 * 1.12);

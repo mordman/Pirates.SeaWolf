@@ -12,14 +12,15 @@ export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 // ============================================================
 export type WeatherMode = 'clear' | 'rain' | 'storm' | 'fog';
 
-/** Режим физики корабля (Task 33): «реалистичная» — Архимед по
- *  точкам корпуса (корабль режет волны, кренят моменты) и
- *  «простая» — корабль скользит по поверхности волн (нос всходит
- *  на гребень и спускается, глубоких нырков нет) */
+/** Режим физики корабля (Task 33/34): обе модели — корабль ПЛЫВЁТ
+ *  ПО ПОВЕРХНОСТИ волн (не проваливается внутрь вала);
+ *  «реалистичная» — крен/дифферент от честных моментов (ветер,
+ *  поворот, затопление, склон волны), «простая» — кинематическая
+ *  рамка по 5 точкам замера */
 export type PhysicsMode = 'realistic' | 'simple';
 
 export const PHYSICS_MODE_LABELS: Record<PhysicsMode, string> = {
-  realistic: 'Реалистичная (Архимед — корабль режет волны)',
+  realistic: 'Реалистичная (крен/дифферент от моментов — корабль идёт по волне)',
   simple: 'Простая (корабль скользит по поверхности волн)',
 };
 
@@ -67,7 +68,6 @@ export interface GraphicsSettings {
   shadows: boolean;
   shadowRes: number;      // 512 | 1024 | 2048
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
-  foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
   useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
   wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
@@ -125,10 +125,10 @@ export interface PhysicsSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, detailLod: 150, useGLBModels: true },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, detailLod: 210, useGLBModels: true },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, detailLod: 270, useGLBModels: true },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, detailLod: 340, useGLBModels: true },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  detailLod: 340, useGLBModels: true },
 };
 
 export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };
@@ -205,7 +205,11 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     graphics.wireframe (треугольники без текстур по категориям).
 //     Старые сохранения v5 и ниже: боезапас сбрасывается только если
 //     версия < 3; прочие старые поля игнорируются, новые — дефолты.
-const SCHEMA_VER = 6;
+// v7 (Task 34): ПЕНА НА ВОЛНАХ УДАЛЕНА (открытое море — чистая
+//     вода, белое — только прибой у островов): настройка
+//     graphics.foamQuality больше не существует и игнорируется.
+//     Обе физики плывут ПО поверхности волн.
+const SCHEMA_VER = 7;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -228,7 +232,6 @@ export function loadSettings(): GameSettings {
       if (typeof g.shadows === 'boolean') s.graphics.shadows = g.shadows;
       if (typeof g.shadowRes === 'number') s.graphics.shadowRes = [512, 1024, 2048].includes(g.shadowRes) ? g.shadowRes : 1024;
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
-      if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
       if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
       if (isObj(g.wireframe)) {

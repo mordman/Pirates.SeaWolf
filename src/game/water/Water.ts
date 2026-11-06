@@ -60,15 +60,10 @@ export class Water {
       uShallowColor: { value: new THREE.Color(0.06, 0.38, 0.42) },
       uFogColor: { value: new THREE.Color(0.72, 0.82, 0.86) },
       uFogDensity: { value: 0.00035 },
-      uFoamTex: { value: null },
-      uFoamQ: { value: 2.0 },                       // качество/сложность пены 0..2
       uFarFade: { value: new THREE.Vector2(600, 4600) }, // диапазон затухания зыби
       uHiFade: { value: new THREE.Vector2(270, 440) },   // затухание коротких волн (к краю чанка)
       uEdge: { value: 7200 },                       // дистанция кромки воды (растворение в небо)
     };
-
-    // Процедурная текстура пены
-    this.uniforms.uFoamTex.value = makeFoamTexture();
 
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -77,7 +72,6 @@ export class Water {
         varying vec3 vScenePos;
         varying vec3 vNormal;
         varying float vDist;
-        varying float vFoamWave;
         varying vec2 vWorldXZ;
         ${gerstnerGLSL()}
         uniform vec3 uShift; // = -worldGroup.position (сцена -> мир)
@@ -114,7 +108,6 @@ export class Water {
           vWorldPos = vec3(worldXZ.x + disp.x, disp.y, worldXZ.y + disp.z);
           vWorldXZ = worldXZ + disp.xz;
           vDist = d;
-          vFoamWave = fadeLo;
           gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
         }
       `,
@@ -123,12 +116,10 @@ export class Water {
         varying vec3 vScenePos;
         varying vec3 vNormal;
         varying float vDist;
-        varying float vFoamWave;
         varying vec2 vWorldXZ;
         varying float vDepth;
         uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uFogColor;
-        uniform float uTime, uFogDensity, uFoamQ, uEdge, uWind01;
-        uniform sampler2D uFoamTex;
+        uniform float uTime, uFogDensity, uEdge, uWind01;
         ${NOISE_GLSL}
 
         void main() {
@@ -157,79 +148,38 @@ export class Water {
           float glint = pow(max(dot(R, normalize(uSunDir)), 0.0), 24.0) * 0.25;
           col += uSunColor * (spec * 1.4 + glint);
 
-          // ===== ПЕНА: независимые слои + сильная пятнистость =====
-          // (1) «поля пятнистости»: крупные медленные области, где пена
-          //     вообще появляется — часть гребней пенная, часть чистых;
-          //     контраст усилен (0..1.25): есть «пустыни» и «кипящие» зоны
-          float foamPatch = fbm(vWorldXZ * 0.011 + vec2(uTime * 0.011, -uTime * 0.008));
-          foamPatch = 0.15 + smoothstep(0.26, 0.74, foamPatch) * 1.10;
-          // (1b) пятнистость СРЕДНЕГО масштаба (~6 м) — читается на дистанции,
-          //      где мелкая рябь пены уже сливается
-          float foamPatchM = fbm(vWorldXZ * 0.16 + vec2(uTime * 0.05, -uTime * 0.033) + 5.1);
-          foamPatchM = smoothstep(0.28, 0.72, foamPatchM) * 0.9;
-          // (2) гребень: высота волны + крутизна (нормаль)
-          float crest = smoothstep(0.94, 1.3, vWorldPos.y * 0.42 + 0.5) * vFoamWave;
-          float steep = clamp(1.0 - vNormal.y, 0.0, 1.0);
-          // (3) три слоя шума разного масштаба и скорости
-          float fn1 = fbm(vWorldXZ * 0.9 + vec2(uTime * 0.32, uTime * -0.21));
-          float fn2 = fbm(vWorldXZ * 2.9 + vec2(-uTime * 0.5, uTime * 0.36) + 17.3);
-          float fn3 = fbm(vWorldXZ * 0.055 + vec2(uTime * 0.1, uTime * 0.07) + 31.7);
-          // (4) «прожилки» — анизотропный шум, вытянутый вдоль главной волны
-          vec2 wdir = normalize(vec2(1.0, 0.25));
-          vec2 sp = vec2(dot(vWorldXZ, wdir) * 0.030, dot(vWorldXZ, vec2(-wdir.y, wdir.x)) * 0.40);
-          float streak = fbm(sp + vec2(uTime * 0.05, uTime * 0.022));
-          float streakFoam = smoothstep(0.78, 1.04, streak * 0.5 + crest * 0.5 + fn2 * 0.25)
-                             * clamp(foamPatch, 0.0, 1.0) * crest * 1.7;
-          // (5) основная пена гребней: порог гуляет от пятнистости обоих
-          //     масштабов, fn1 и медленного fn3 — рисунок всё время разный
-          float crestFoam = smoothstep(0.58, 0.97,
-            crest * (0.50 + 0.85 * clamp(foamPatch, 0.0, 1.2))
-            + fn1 * 0.30 * (0.40 + 0.60 * clamp(foamPatch, 0.0, 1.0))
-            + fn3 * 0.22 * foamPatchM
-            + steep * 0.5);
-          crestFoam *= 0.55 + 0.45 * foamPatchM + 0.25; // средние пятна дают «дыры» в пене
-          // качество 0 — упрощённая пена (без прожилок и с одним слоем)
-          if (uFoamQ < 0.5) {
-            crestFoam = smoothstep(0.72, 0.98, crest * 0.8 + fn1 * 0.32);
-            streakFoam = 0.0;
-          } else if (uFoamQ < 1.5) {
-            streakFoam *= 0.6;
-            crestFoam *= 0.8;
-          }
-          // (6) пузырьковая текстура в ДВА масштаба с разными скоростями
-          float ft = texture2D(uFoamTex, vWorldXZ * 0.11 + vec2(uTime * 0.021, uTime * -0.014)).r;
-          float ft2 = texture2D(uFoamTex, vWorldXZ * 0.037 - vec2(uTime * 0.012, uTime * 0.017)).r;
-          float texFoam = smoothstep(0.66, 1.05, ft * 0.6 + ft2 * 0.6 + crest * 0.35) * (0.10 + 0.14 * clamp(foamPatch, 0.0, 1.2));
-          float foamAmt = crestFoam * (0.55 + 0.45 * fn2) + streakFoam * 0.65 + texFoam;
-          foamAmt = clamp(foamAmt, 0.0, 1.0) * (0.35 + 0.65 * vFoamWave);
+          // ===== ПЕНА НА ВОЛНАХ УДАЛЕНА (по жалобе игрока: «море
+          // покрывается всё какой-то пеной — убери пену на волнах»):
+          // открытое море — чистая вода (цвет + френель + блик +
+          // FBM-микронормали). Белое осталось ТОЛЬКО у берегов —
+          // прибой, где волны разбиваются об острова =====
 
           // ===== ПРИБОЙ: волны РАЗБИВАЮТСЯ об острова =====
           // (1) кромка воды — белая полоса у самого берега
-          float surfEdge = 1.0 - smoothstep(0.0, 7.0, vDepth);
+          float surfEdge = 1.0 - smoothstep(0.0, 5.0, vDepth);
           // (2) ЛОМАЮЩИЕСЯ ВАЛЫ: полосы пены ВДОЛЬ изолиний глубины
           //     (const vDepth = параллельно берегу), накатываются на
           //     отмель (полоса ползёт к берегу), шум рвёт их в гребни;
-          //     с ветром прибой злее, гребни привязаны к волнам
-          float surfZone = 1.0 - smoothstep(0.0, 34.0, vDepth);
+          //     с ветром прибой злее, гребни привязаны к волнам.
+          //     ЗОНА УЗКАЯ (до ~16 м глубины): прибой — кромка у
+          //     берега, а не «пенное поле» вокруг острова
+          float surfZone = 1.0 - smoothstep(0.0, 16.0, vDepth);
           float brk = fbm(vWorldXZ * vec2(0.14, 0.14) - vec2(uTime * 0.22, uTime * 0.17) + 7.7);
           float crestNear = smoothstep(0.12, 0.9, vWorldPos.y * 0.55 + 0.32);
           float rollPhase = vDepth * 0.55 - uTime * 1.35 + brk * 2.6;
           float roller = smoothstep(0.42, 0.92, sin(rollPhase) * 0.5 + 0.5);
           float surfBreak = surfZone * (0.55 + 0.45 * uWind01)
                           * roller * (0.7 + 0.3 * crestNear);
-          float surfFoam = clamp(surfEdge * 1.15 + surfBreak * 1.25, 0.0, 1.0);
-          foamAmt = clamp(foamAmt + surfFoam, 0.0, 1.0);
-          // цвет пены: от голубовато-серой «отработанной» до свежей белой,
-          // яркость следует солнцу (ночью пена тускнеет)
+          float surfFoam = clamp(surfEdge * 1.15 + surfBreak * 1.0, 0.0, 1.0);
+          // цвет прибоя: от голубовато-серой «отработанной» пены до
+          // свежей белой, яркость следует солнцу (ночью тускнеет)
+          float foamColN = fbm(vWorldXZ * 1.7 + vec2(uTime * 0.3, -uTime * 0.2) + 3.3);
           vec3 foamCol = mix(vec3(0.78, 0.84, 0.88), vec3(0.97, 0.99, 1.0),
-                             clamp(fn2 * 0.55 + foamPatchM * 0.45, 0.0, 1.0));
+                             clamp(foamColN, 0.0, 1.0));
           foamCol *= (uSunColor * 0.35 + 0.65);
-          // пена с лёгким перебором: ACES-тонмаппинг съедает 0.97-белый
-          // до серого — белые барашки шторма должны читаться ЯРКО
-          col = mix(col, foamCol * 1.15, foamAmt * 0.85);
           // прибой — ОТДЕЛЬНЫЙ проход ярче: переярченный цвет даёт
           // ЧИСТО БЕЛУЮ полосу ломающихся валов у берега
-          col = mix(col, foamCol * 1.32, clamp(surfFoam, 0.0, 1.0) * 0.92);
+          col = mix(col, foamCol * 1.32, surfFoam * 0.92);
 
           // туман
           float fog = 1.0 - exp(-uFogDensity * uFogDensity * vDist * vDist);
@@ -314,10 +264,6 @@ export class Water {
     };
   }
 
-  setFoamQuality(q: number) {
-    this.uniforms.uFoamQ.value = q;
-  }
-
   setEnvironment(sunDir: THREE.Vector3, sunColor: THREE.Color, sky: THREE.Color, horizon: THREE.Color, fogColor: THREE.Color, fogDensity: number) {
     (this.uniforms.uSunDir.value as THREE.Vector3).copy(sunDir);
     (this.uniforms.uSunColor.value as THREE.Color).copy(sunColor);
@@ -362,7 +308,6 @@ export class Water {
     this.detail.geometry.dispose();
     for (const r of this.rings) r.geometry.dispose();
     this.material.dispose();
-    (this.uniforms.uFoamTex.value as THREE.Texture | null)?.dispose();
   }
 }
 
@@ -407,38 +352,4 @@ function makeRingGeometry(inner: number, outer: number, cell: number): THREE.Buf
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setIndex(idx);
   return g;
-}
-
-/** Текстура пены: тайлящийся шум */
-function makeFoamTexture(): THREE.Texture {
-  const S = 256;
-  const data = new Uint8Array(S * S * 4);
-  const rnd = (x: number, y: number) => {
-    let h = Math.imul(x, 374761393) + Math.imul(y, 668265263);
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-  };
-  const grid = (x: number, y: number) => {
-    const xi = Math.floor(x), yi = Math.floor(y);
-    const xf = x - xi, yf = y - yi;
-    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-    const a = rnd(xi, yi), b = rnd(xi + 1, yi), c = rnd(xi, yi + 1), d = rnd(xi + 1, yi + 1);
-    return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
-  };
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      let s = 0, amp = 0.5, f = 4;
-      for (let o = 0; o < 4; o++) {
-        s += amp * grid((x / S) * f, (y / S) * f);
-        amp *= 0.5; f *= 2;
-      }
-      const v = Math.floor(s * 255);
-      const i = (y * S + x) * 4;
-      data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.needsUpdate = true;
-  return tex;
 }

@@ -221,17 +221,10 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={v => update(d => { d.graphics.detailLod = v; })}
                     format={v => `${v} м`} />
                 </Row>
-                <Row label="Качество пены" hint="слои шума и прожилки на гребнях">
-                  <select value={g.foamQuality} onChange={e => update(d => { d.graphics.foamQuality = Number(e.target.value); })}
-                    className={inputCls}>
-                    <option value={0}>Простая</option>
-                    <option value={1}>Обычная</option>
-                    <option value={2}>Богатая</option>
-                  </select>
-                </Row>
                 <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
                   🌊 Высота волн зависит только от силы ветра (вкладка «Погода»):
-                  штиль — рябь, штормовой ветер — высокие гребни.
+                  штиль — рябь, штормовой ветер — высокие гребни. Открытое море
+                  чистое, без пены — белая пена только у берегов (прибой).
                 </div>
               </div>
               <div className="py-1">
@@ -390,11 +383,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
             <div className="divide-y divide-stone-800/60">
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Физика корабля</div>
-                <Row label="Режим физики" hint="реалистичная: честный Архимед по точкам корпуса — корабль кренится/дифферентится и режет волны носом; простая: корабль скользит ПО поверхности волн — нос всходит на гребень и спускается, глубоких нырков нет">
+                <Row label="Режим физики" hint="обе плывут ПО поверхности волн; реалистичная — крен/дифферент от честных моментов (ветер, поворот, затопление, склон волны), простая — лёгкая кинематическая рамка">
                   <select value={s.physics.mode}
                     onChange={e => update(d => { d.physics.mode = e.target.value as 'realistic' | 'simple'; })}
                     className={inputCls}>
-                    <option value="realistic">Реалистичная (Архимед, режет волны)</option>
+                    <option value="realistic">Реалистичная (моменты: крен/дифферент)</option>
                     <option value="simple">Простая (по поверхности волн)</option>
                   </select>
                 </Row>
@@ -442,7 +435,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   Большая волна заливает палубу (зелёная вода) — и может СМЫТЬ
                   матроса за борт. Пока палуба над водой — никого не смывает.
                 </div>
-                <Row label="Вероятность смыва матроса" hint="шанс унести человека за борт при глубоком залитии палубы (> 0.3 м воды над кромкой); 0% — никогда, 100% — каждое залитие">
+                <Row label="Вероятность смыва матроса" hint="шанс унести человека за борт при глубоком залитии палубы (волна по палубе, > 0.15 м воды над кромкой); 0% — никогда, 100% — каждое залитие">
                   <Slider value={s.physics.buoyancy.washProbabilityPct} min={0} max={100} step={5}
                     onChange={v => update(d => { d.physics.buoyancy.washProbabilityPct = v; })}
                     format={v => `${v}%`} />
