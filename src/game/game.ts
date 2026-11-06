@@ -7,7 +7,7 @@ import { SEA, waterHeightAt, setStormSea } from './water/waves';
 import { SeaModule, type SeaShipState } from './sea/sea';
 import { applyBuoyancyConfig } from './sea/shipPhysics';
 import { Ship } from './ship/Ship';
-import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, type FlagKind } from './ship/buildShip';
+import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, type FlagKind } from './ship/buildShip';
 import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
@@ -422,17 +422,12 @@ export class Game {
     const stormOn = model === 'storm';
     this.water.group.visible = !stormOn;
     this.sea?.setVisible(stormOn);
-    // сброс вертикальной динамики кораблей (пружина качки модуля
-    // подхватит посадку сама; у физической — Архимед). Засев —
-    // текущая высота воды под корпусом, чтобы шторм начинался
-    // без длинного транзиента просадки
+    // сброс вертикальной динамики кораблей — БЕЗ транзиента: посадить
+    // на текущую поверхность (пружина «волны-опоры»/шторма стартует
+    // с нулевой скоростью; у физической — Архимед подхватит)
     if (this.player) {
-      this.player.velocity.y = 0;
-      for (const a of this.aiShips) a.ship.velocity.y = 0;
-      this.player.buoy.reset(waterHeightAt(this.player.position.x, this.player.position.z, this.time));
-      for (const a of this.aiShips) {
-        a.ship.buoy.reset(waterHeightAt(a.ship.position.x, a.ship.position.z, this.time));
-      }
+      this.player.seedVertical(this.time);
+      for (const a of this.aiShips) a.ship.seedVertical(this.time);
       this.boatLaunch?.buoy.reset();
     }
     if (announce) {
@@ -1729,6 +1724,8 @@ export class Game {
   /** последнее значение счётчика зелёной воды игрока (для сообщений) */
   private lastGreenWater = 0;
   private lastGreenWaterMsgT = -99;
+  /** сколько матросов уже смыло (сообщение при росте) — Task 32 */
+  private lastWashedCrew = 0;
   /** последний визуал погоды (облачность/солнце/туман/дождь) */
   private weatherVis = { cloudiness: 0.35, sunDim: 1, fogMul: 1, rainI: 0 };
   private updateWeather(dt: number) {
@@ -1901,6 +1898,15 @@ export class Game {
       this.lastGreenWater = this.player.greenWater;
     }
 
+    // зелёная вода СМЫЛА матроса за борт (Task 32): честная механика —
+    // только когда палуба ДЕЙСТВИТЕЛЬНО под водой (кромка > 0.35 м);
+    // пока палуба над водой — никого не смывает
+    if (this.player.washedCrew > this.lastWashedCrew) {
+      this.pushMessage(`Волной смыло матроса за борт! (−${this.player.washedCrew - this.lastWashedCrew})`);
+      this.lastWashedCrew = this.player.washedCrew;
+      this.rig.addShake(0.2);
+    }
+
     // удар носом о вал (штормовой модуль, Task 29) — тряска камеры
     if (this.player.stormSlams > this.lastStormSlam) {
       this.lastStormSlam = this.player.stormSlams;
@@ -1921,7 +1927,9 @@ export class Game {
     // форштевень/корму) И ПО КРАЯМ ПАЛУБЫ (крен топит борт) —
     // учитываем крен/дифферент кватернионом
     let freeboard = Infinity;
-    const deckLocal = this.player.preset.freeboard * 0.82 - 1.0;
+    // ПАЛУБА (не борт/планширь): bulwark − 1.0 по мидель-шпангоуту —
+    // «расчёты идут от палубы» (Task 32)
+    const deckLocal = hullProfile(0.5, this.player.preset).bulwark - 1.0;
     for (const lz of [-this.player.preset.length * 0.46, 0, this.player.preset.length * 0.46]) {
       for (const lx of [0, -this.player.halfWidthAt(lz), this.player.halfWidthAt(lz)]) {
         this._v3.set(lx, deckLocal, lz).applyQuaternion(this.player.quaternion).add(this.player.position);
@@ -1949,6 +1957,8 @@ export class Game {
       freeboard, seaAmp: SEA.amplitude, wind: this.wind.speed,
       // «зелёная вода» (Task 25): сколько раз волна накрывала палубу
       greenWater: p.greenWater, greenWaterT: +p.greenWaterT.toFixed(1),
+      washedCrew: p.washedCrew,          // смыто за борт зелёной водой (Task 32)
+      deckRollLimDeg: +(p.deckRollLim() * 180 / Math.PI).toFixed(1),
       seaModel: SEA.model,
       // Task 31: плавание/посадка/углы — для всех моделей моря
       float: {

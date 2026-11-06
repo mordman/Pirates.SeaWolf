@@ -404,6 +404,11 @@ export interface CrewVisual {
   killNearPath(a: THREE.Vector3, b: THREE.Vector3, mode: KillMode,
     maxCount: number, radius: number,
     shipPos: THREE.Vector3, shipQuat: THREE.Quaternion): number;
+  /** СМЫЛО ЗА БОРТ (зелёная вода): фигура исчезает с палубы БЕЗ трупа —
+   *  обрывки летят за фальшборт + всплеск в воде. Честная механика:
+   *  вызывается ТОЛЬКО когда палуба действительно под водой */
+  washAway(n: number, shipPos: THREE.Vector3,
+    shipQuat: THREE.Quaternion): number;
   /** Оживить всех (полигон/сброс повреждений) */
   reset(): void;
 }
@@ -676,6 +681,44 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       vis.dead = figures.filter(f => f.dead).length;
       vis.shown = figures.filter(f => !f.dead && f.group.visible).length;
       return n;
+    },
+    washAway(n, shipPos, shipQuat) {
+      // смыв за борт: без трупа на палубе — фигуру УНОСИТ потоком
+      // (несколько обрывков летят ЗА фальшборт + барашки в воде)
+      let washed = 0;
+      const wpos = new THREE.Vector3();
+      const gibs = FX.gibs;
+      for (const f of figures) {
+        if (washed >= n) break;
+        if (f.dead || !f.group.visible) continue;
+        const lp = f.group.position;
+        wpos.set(lp.x, lp.y + 0.75, lp.z).applyQuaternion(shipQuat).add(shipPos);
+        f.dead = true;
+        f.deadT = 0;
+        f.deathMode = 'gib';
+        f.corpseLife = 0;
+        f.group.visible = false;
+        // обрывки летят ЗА БОРТ (к ближайшему борту от фигуры)
+        const side = lp.x >= 0 ? 1 : -1;        // +X порт: наружу — в ту же сторону
+        const out = new THREE.Vector3(side, 0, 0).applyQuaternion(shipQuat);
+        if (gibs) {
+          for (let k = 0; k < 3; k++) {
+            gibs.spawnPart(
+              new THREE.Vector3(wpos.x, wpos.y - 0.2 + k * 0.3, wpos.z),
+              new THREE.Vector3(
+                out.x * (3.2 + Math.random() * 2.6) + (Math.random() - 0.5) * 1.6,
+                0.8 + Math.random() * 1.8,
+                out.z * (3.2 + Math.random() * 2.6) + (Math.random() - 0.5) * 1.6),
+              0.1 + Math.random() * 0.12, 0.1 + Math.random() * 0.14, 0.1 + Math.random() * 0.12,
+              k === 0 ? f.shirt : (k === 1 ? f.pants : f.skin), 1.2 + Math.random());
+          }
+        }
+        FX.particles?.splash(wpos.x + out.x * 1.6, wpos.y - 0.5, wpos.z + out.z * 1.6, 0.9);
+        washed++;
+      }
+      vis.dead = figures.filter(f2 => f2.dead).length;
+      vis.shown = figures.filter(f2 => !f2.dead && f2.group.visible).length;
+      return washed;
     },
     reset() {
       for (const f of figures) {
