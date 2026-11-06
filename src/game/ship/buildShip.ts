@@ -1912,7 +1912,7 @@ export function updateBoatFalls(b: BoatVis, stub = false) {
  *  пушечных портов, камбуз с трубой, кранцы, стол экипажа, блоки у
  *  мачт. Ванты с выбленками — ОТДЕЛЬНЫМИ линиями на мачту (detailRigs):
  *  вместе с мачтой они ОБРЫВАЮТСЯ (Ship.snapRigging прячет свою пару) */
-function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
+function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[], boatCount: number): {
   group: THREE.Group;
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   boat?: BoatVis;
@@ -1976,10 +1976,12 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[]): {
   //     попадание рядом — разлетается щепой, clearDamage
   //     восстанавливает ---
   const boats: BoatVis[] = [];
-  // Task 31 «добавь еще одну»: ДВЕ шлюпки — по ялу на КАЖДОМ борту:
-  // штирборт (правый, как раньше) и порт (левый, запасная);
-  // кранбалки/фалы зеркальны, спускается любая из целых (launch.ts)
-  for (const SIDE of [1, -1] as const) {
+  // Task 33 «количество лодок — в настройки»: ялы на шлюпбалках
+  // бортов — сколько указано; штирборт (SIDE=+1) — первый, порт
+  // (SIDE=−1) — запасной; кранбалки/фалы строятся только под
+  // существующие ялы
+  const boatSides: (1 | -1)[] = boatCount >= 2 ? [1, -1] : boatCount === 1 ? [1] : [];
+  for (const SIDE of boatSides) {
     const bl = clamp2(Math.min(P.beam * 0.74, L * 0.17), 2.4, 6.2);
     const bg = buildDeckBoat(bl);
     bg.rotation.y = 0;              // нос шлюпки — к носу корабля (вдоль борта)
@@ -2340,9 +2342,12 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
 }
 
 // ---------- полная сборка ----------
-export function buildShip(P: ShipPreset): ShipVisual {
+export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVisual {
   const group = new THREE.Group();
   const L = P.length;
+  // СКОЛЬКО ШЛЮПОК на борту — настройка (Task 33): 2 — оба борта
+  // (штирборт + порт), 1 — только штирборт, 0 — без шлюпок
+  const boatCount = Math.max(0, Math.min(2, Math.round(opts?.boatCount ?? 2)));
 
   // корпус
   const { geometry: hullGeo, outline } = buildHull(P);
@@ -2843,7 +2848,7 @@ export function buildShip(P: ShipPreset): ShipVisual {
   }
   // мелкие детали — только вблизи (LOD, переключает game.ts);
   // ванты с выбленками — отдельными парами на мачту (рвутся с ней)
-  const detailRes = buildShipDetail(P, mastDefs);
+  const detailRes = buildShipDetail(P, mastDefs, boatCount);
   const detail = detailRes.group;
   detail.visible = false;
   group.add(detail);

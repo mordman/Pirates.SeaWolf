@@ -1,11 +1,13 @@
 import * as THREE from 'three';
-import { gerstnerGLSL, SEA, waveUniformData, seaAmpLoHi } from './waves';
+import { gerstnerGLSL, SEA, waveUniformData, seaAmpUniforms } from './waves';
 
 // ============================================================
 // Кильватерный след + пена по ватерлинии (без «линии разреза»):
 //  - WakeTrail: лента пенной дорожки за кормой (турбулентный след)
 //  - WaterlineFoam: пенный «воротник» вокруг корпуса, повторяющий
 //    контур ватерлинии, с шумом и усилением от скорости (носовой бурун)
+// Лежит на ЕДИНОМ море (Gerstner + FBM) — те же uniform-волны,
+// что у поверхности воды и физики.
 // ============================================================
 
 export class WakeTrail {
@@ -218,9 +220,9 @@ export class WaterlineFoam {
         uSpeed: { value: 0 },      // 0..1 доля скорости
         uRoll: { value: 0 },
         uSize: { value: size },    // характерная длина корпуса (нормировка буруна)
-        uAmp: { value: SEA.amplitude },   // погода (высота волн)
-        uAmpLo: { value: SEA.amplitude }, // погодные множители (Task 27)
-        uAmpHi: { value: SEA.amplitude },
+        uAmp: { value: SEA.amp01 },     // погода (высота волн)
+        uAmpLo: { value: seaAmpUniforms() }, // погодный множитель (единое море)
+        uAmpHi: { value: seaAmpUniforms() },
         uWaveA: { value: waveUniformData().wa.map((v) => new THREE.Vector4(...v)) },
         uWaveB: { value: waveUniformData().wb.map((v) => new THREE.Vector4(...v)) },
         uShift: { value: new THREE.Vector3() }, // floating origin: сцена -> мир
@@ -298,8 +300,8 @@ export class WaterlineFoam {
     this.mat.uniforms.uTime.value = time;
     this.mat.uniforms.uSpeed.value = speedFrac;
     this.mat.uniforms.uRoll.value = roll;
-    this.mat.uniforms.uAmp.value = SEA.amplitude;
-    // волны активной модели моря (Task 27) — значения uniform'ов
+    this.mat.uniforms.uAmp.value = SEA.amp01;
+    // волны единого моря — значения uniform'ов каждый кадр
     const wu = waveUniformData();
     const wa = this.mat.uniforms.uWaveA.value as THREE.Vector4[];
     const wb = this.mat.uniforms.uWaveB.value as THREE.Vector4[];
@@ -307,9 +309,9 @@ export class WaterlineFoam {
       wa[i].set(wu.wa[i][0], wu.wa[i][1], wu.wa[i][2], wu.wa[i][3]);
       wb[i].set(wu.wb[i][0], wu.wb[i][1], wu.wb[i][2], wu.wb[i][3]);
     }
-    const amp = seaAmpLoHi();
-    this.mat.uniforms.uAmpLo.value = amp.lo;
-    this.mat.uniforms.uAmpHi.value = amp.hi;
+    const amp = seaAmpUniforms();
+    this.mat.uniforms.uAmpLo.value = amp;
+    this.mat.uniforms.uAmpHi.value = amp;
     if (shift) (this.mat.uniforms.uShift.value as THREE.Vector3).copy(shift);
   }
 }

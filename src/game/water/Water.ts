@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpLoHi } from './waves';
+import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpUniforms, terrainTexture, TERRAIN_WORLD_SIZE } from './waves';
 
 const NOISE_GLSL = `
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
@@ -42,12 +42,13 @@ export class Water {
     // волны — в UNIFORM-массивах (набор PHYS/RIDE переключается
     // без пересборки материала, Task 27)
     const wu = waveUniformData();
-    const amp = seaAmpLoHi();
     this.uniforms = {
       uTime: { value: 0 },
-      uAmp: { value: SEA.amplitude },
-      uAmpLo: { value: amp.lo },
-      uAmpHi: { value: amp.hi },
+      uAmpLo: { value: seaAmpUniforms() },
+      uAmpHi: { value: seaAmpUniforms() },
+      uWind01: { value: 0.3 },                     // 0..1 — микронормали/прибой от ветра
+      uTerrain: { value: terrainTexture() },       // рельеф: затухание волн у берега + прибой
+      uTerrainHalf: { value: TERRAIN_WORLD_SIZE / 2 },
       uWaveA: { value: wu.wa.map((v) => new THREE.Vector4(...v)) },
       uWaveB: { value: wu.wb.map((v) => new THREE.Vector4(...v)) },
       uShift: { value: new THREE.Vector3() },   // floating origin
@@ -82,17 +83,31 @@ export class Water {
         uniform vec3 uShift; // = -worldGroup.position (сцена -> мир)
         uniform vec2 uFarFade;
         uniform vec2 uHiFade;
+        uniform sampler2D uTerrain;   // рельеф мира (R = высота)
+        uniform float uTerrainHalf;   // половина стороны текстуры, м
+        varying float vDepth;         // глубина под вершиной (для прибоя)
+        float terrainDepth(vec2 wxz) {
+          vec2 uv = wxz / (2.0 * uTerrainHalf) + 0.5;
+          float h = texture2D(uTerrain, clamp(uv, 0.0, 1.0)).r * 64.0 - 16.0;
+          return -h;
+        }
         void main() {
           vec3 sceneP = (modelMatrix * vec4(position, 1.0)).xyz;
           vec2 worldXZ = sceneP.xz + uShift.xz; // мировые координаты вершины
           float d = length(sceneP.xz - cameraPosition.xz);
+          // ВОЛНЫ РАЗБИВАЮТСЯ ОБ ОСТРОВА: на мелководье (< 30 м) амплитуда
+          // гаснет — вал «ложится» у берега. Горы от самого берега — узкая
+          // полоса прибоя (глубина нарастает резко), пляжи — широкая
+          float depth = terrainDepth(worldXZ);
+          vDepth = depth;
+          float shoreFade = smoothstep(0.0, 30.0, depth);
           // два диапазона: короткие волны гаснут к краю чанка (у дальних
           // колец крупная ячейка — иначе граница читается как «квадрат»),
           // длинная зыбь живёт до горизонта
           float fadeLo = 1.0 - smoothstep(uFarFade.x, uFarFade.y, d);
           float fadeHi = 1.0 - smoothstep(uHiFade.x, uHiFade.y, d);
           vec3 disp; vec3 nrm;
-          gerstner(worldXZ, uAmpLo * fadeLo, uAmpHi * fadeHi, disp, nrm);
+          gerstner(worldXZ, uAmpLo * fadeLo * shoreFade, uAmpHi * fadeHi * shoreFade, disp, nrm);
           vec3 p = sceneP + disp;
           vNormal = nrm;
           vScenePos = p;
@@ -110,18 +125,22 @@ export class Water {
         varying float vDist;
         varying float vFoamWave;
         varying vec2 vWorldXZ;
+        varying float vDepth;
         uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uFogColor;
-        uniform float uTime, uFogDensity, uFoamQ, uEdge;
+        uniform float uTime, uFogDensity, uFoamQ, uEdge, uWind01;
         uniform sampler2D uFoamTex;
         ${NOISE_GLSL}
 
         void main() {
           vec3 N = normalize(vNormal);
-          // мелкая деталь-нормаль (рябь)
+          // МИКРОНОРМАЛИ ПОВЕРХНОСТИ НА ОСНОВЕ FBM: рябь из двух
+          // многооктавных шумов, дрейфует по ветру; амплитуда растёт
+          // с ветром (в штиль море стеклянное, в шторм кипит)
           vec2 uv = vWorldXZ * 0.35 + vec2(uTime * 0.25, uTime * -0.18);
           float n1 = fbm(uv);
           float n2 = fbm(uv * 2.7 + 13.7 + vec2(uTime * 0.4, uTime * 0.31));
-          N = normalize(N + vec3((n1 - 0.5) * 0.35, 0.0, (n2 - 0.5) * 0.35));
+          float microAmp = 0.06 + 0.34 * uWind01;
+          N = normalize(N + vec3((n1 - 0.5) * microAmp, 0.0, (n2 - 0.5) * microAmp));
 
           vec3 V = normalize(cameraPosition - vScenePos);
           float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
@@ -183,12 +202,34 @@ export class Water {
           float texFoam = smoothstep(0.66, 1.05, ft * 0.6 + ft2 * 0.6 + crest * 0.35) * (0.10 + 0.14 * clamp(foamPatch, 0.0, 1.2));
           float foamAmt = crestFoam * (0.55 + 0.45 * fn2) + streakFoam * 0.65 + texFoam;
           foamAmt = clamp(foamAmt, 0.0, 1.0) * (0.35 + 0.65 * vFoamWave);
+
+          // ===== ПРИБОЙ: волны РАЗБИВАЮТСЯ об острова =====
+          // (1) кромка воды — белая полоса у самого берега
+          float surfEdge = 1.0 - smoothstep(0.0, 7.0, vDepth);
+          // (2) ЛОМАЮЩИЕСЯ ВАЛЫ: полосы пены ВДОЛЬ изолиний глубины
+          //     (const vDepth = параллельно берегу), накатываются на
+          //     отмель (полоса ползёт к берегу), шум рвёт их в гребни;
+          //     с ветром прибой злее, гребни привязаны к волнам
+          float surfZone = 1.0 - smoothstep(0.0, 34.0, vDepth);
+          float brk = fbm(vWorldXZ * vec2(0.14, 0.14) - vec2(uTime * 0.22, uTime * 0.17) + 7.7);
+          float crestNear = smoothstep(0.12, 0.9, vWorldPos.y * 0.55 + 0.32);
+          float rollPhase = vDepth * 0.55 - uTime * 1.35 + brk * 2.6;
+          float roller = smoothstep(0.42, 0.92, sin(rollPhase) * 0.5 + 0.5);
+          float surfBreak = surfZone * (0.55 + 0.45 * uWind01)
+                          * roller * (0.7 + 0.3 * crestNear);
+          float surfFoam = clamp(surfEdge * 1.15 + surfBreak * 1.25, 0.0, 1.0);
+          foamAmt = clamp(foamAmt + surfFoam, 0.0, 1.0);
           // цвет пены: от голубовато-серой «отработанной» до свежей белой,
           // яркость следует солнцу (ночью пена тускнеет)
           vec3 foamCol = mix(vec3(0.78, 0.84, 0.88), vec3(0.97, 0.99, 1.0),
                              clamp(fn2 * 0.55 + foamPatchM * 0.45, 0.0, 1.0));
           foamCol *= (uSunColor * 0.35 + 0.65);
-          col = mix(col, foamCol, foamAmt * 0.8);
+          // пена с лёгким перебором: ACES-тонмаппинг съедает 0.97-белый
+          // до серого — белые барашки шторма должны читаться ЯРКО
+          col = mix(col, foamCol * 1.15, foamAmt * 0.85);
+          // прибой — ОТДЕЛЬНЫЙ проход ярче: переярченный цвет даёт
+          // ЧИСТО БЕЛУЮ полосу ломающихся валов у берега
+          col = mix(col, foamCol * 1.32, clamp(surfFoam, 0.0, 1.0) * 0.92);
 
           // туман
           float fog = 1.0 - exp(-uFogDensity * uFogDensity * vDist * vDist);
@@ -286,12 +327,11 @@ export class Water {
     this.uniforms.uFogDensity.value = fogDensity;
   }
 
-  /** worldShift = -worldGroup.position: перевод координат сцены в мировые */
+  /** worldShift = -worldGroup.position: перевод координат сцены в мировые.
+   *  Ветер — из состояния моря SEA (направления спектра/амплитуды
+   *  обновляются каждый кадр: волны бегут за ветром) */
   update(time: number, camScenePos: THREE.Vector3, worldShift: THREE.Vector3) {
     this.uniforms.uTime.value = time;
-    this.uniforms.uAmp.value = SEA.amplitude;
-    // две модели моря (Task 27): набор волн и погодные множители —
-    // каждый кадр из waves.ts (переключение в настройках мгновенное)
     const wu = waveUniformData();
     const wa = this.uniforms.uWaveA.value as THREE.Vector4[];
     const wb = this.uniforms.uWaveB.value as THREE.Vector4[];
@@ -299,9 +339,10 @@ export class Water {
       wa[i].set(wu.wa[i][0], wu.wa[i][1], wu.wa[i][2], wu.wa[i][3]);
       wb[i].set(wu.wb[i][0], wu.wb[i][1], wu.wb[i][2], wu.wb[i][3]);
     }
-    const amp = seaAmpLoHi();
-    this.uniforms.uAmpLo.value = amp.lo;
-    this.uniforms.uAmpHi.value = amp.hi;
+    const amp = seaAmpUniforms();
+    this.uniforms.uAmpLo.value = amp;
+    this.uniforms.uAmpHi.value = amp;
+    this.uniforms.uWind01.value = Math.max(0, Math.min(1, SEA.windSpeed / 24));
     (this.uniforms.uShift.value as THREE.Vector3).copy(worldShift);
     this.cam.copy(camScenePos);
     // снапим к шагу СЕТКИ (общая решётка чанка и всех колец): вершины

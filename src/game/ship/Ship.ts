@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
-import { waterHeightAt, SEA } from '../water/waves';
-import { ShipBuoyancy, BUOYANCY_CONFIG } from '../sea/shipPhysics';
+import { waterHeightAt } from '../water/waves';
+import { BUOYANCY_CONFIG, PHYSICS, CONTROLS } from '../water/buoyancy';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
 import type { GibPool } from '../fx/gibs';
@@ -45,6 +45,7 @@ interface BuoyCol {
 export interface ShipOpts {
   durabilityMul?: number;              // множитель прочности корпуса/парусов/мачт
   ammo?: Record<string, number>;       // стартовый боезапас (игрок)
+  boatCount?: number;                  // СКОЛЬКО шлюпок на шлюпбалках (0..2)
 }
 
 const G = 9.81;
@@ -201,12 +202,9 @@ export class Ship {
   wake = new WakeTrail();
   private rollSmooth = 0;
 
-  // ===== КАЧКА ШТОРМОВОГО МОДУЛЯ (Task 29, shipPhysics.js) =====
-  /** пружинная посадка на волнах Герстнера моря 'storm' */
-  readonly buoy = new ShipBuoyancy();
-  /** счётчики событий модуля (для тряски камеры/сообщений) */
-  stormSlams = 0;
-  stormFloods = 0;
+  // ===== КАЧКА (Task 33): единственное море — Герстнер + FBM; =====
+  // режим физики (реалистичная/простая) — глобальный PHYSICS.mode
+  // из настроек. Прежние три модели моря и ShipBuoyancy удалены.
 
   // --- события колбэки ---
   onSurrender?: (s: Ship) => void;
@@ -220,7 +218,7 @@ export class Ship {
     this.wind = wind;
     this.terrainHeight = terrainHeight;
     this.particles = particles;
-    this.visual = buildShip(this.preset);
+    this.visual = buildShip(this.preset, { boatCount: opts?.boatCount });
     // прочность по настройке игры (по умолчанию 1× — исторические ТТХ)
     const mul = opts?.durabilityMul ?? 1;
     this.hullHP = this.preset.hullHP * mul;
@@ -320,20 +318,6 @@ export class Ship {
     // выставлена до создания этого корабля
     this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset);
 
-    // качка штормового модуля: габариты корпуса; отсчёт высоты у
-    // нашего корабля — КВЛ (position.y = ватерлиния), поэтому
-    // depth=0 (модуль не поднимает центр); палуба для события
-    // заливания — ПАЛУБА (bulwark − 1.0 у миделя), а НЕ борт:
-    // заливание = вода на палубе, фальшборт держит вал снаружи
-    // (жалоба игрока: «расчёты — от палубы, а не от борта»)
-    this.buoy.setVessel({
-      type: this.preset.length >= 38 ? 'frigate' : 'default',
-      len: this.preset.length,
-      beam: this.preset.beam,
-      depth: 0,
-      deck: hullProfile(0.5, this.preset).bulwark - 1.0,
-    });
-
     // экипаж на палубе: процедурные типажи, сид фиксирован по модели
     const seed = Array.from(presetId).reduce((a, ch) => a + ch.charCodeAt(0) * 31, 11)
       + Math.round(this.preset.length * 7);
@@ -403,15 +387,13 @@ export class Ship {
     // пружины плавучести уже не нужны, корпус ведёт себя как тело,
     // теряющее остойчивость
     if (this.sinking) { this.stepSinking(dt, time); return; }
-    // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): качка корпуса — из
-    // ShipBuoyancy (shipPhysics.js): 4+1 замер высоты, нормаль
-    // поверхности, пружинный гейв, тяжёлый slerp ориентации
-    if (SEA.model === 'storm') { this.stepStormSea(dt, time); return; }
-    // МОРЕ «ВОЛНА-ОПОРА» (Task 27, из файла игрока «ФРЕГАТ ПЕРУН»):
-    // корабль идёт ПОВЕРХНОСТЬЮ — 5 точек замера задают рамку наклона,
-    // пружина держит осадку; нос всходит на волну и спускается,
-    // глубоких нырков нет. Выбор модели моря — в настройках.
-    if (SEA.model === 'riding') { this.stepRidingWaves(dt, time); return; }
+    // ПРОСТАЯ ФИЗИКА (настройка «Физика корабля»): корабль скользит
+    // ПО поверхности волн — рамка из 5 точек замера, крен — целевой
+    // угол; нос всходит на волну и спускается, глубоких нырков нет
+    if (PHYSICS.mode === 'simple') { this.stepSimpleWaves(dt, time); return; }
+    // РЕАЛИСТИЧНАЯ ФИЗИКА (по умолчанию): Архимед по точкам корпуса —
+    // корабль честно кренится/дифферентится и РЕЖЕТ волны носом,
+    // запас плавучести надводного борта не даёт проваливаться в вал
     this.force.set(0, 0, 0);
     this.torque.set(0, 0, 0);
     this._lt.set(0, 0, 0);   // крен/дифферент — по осям КОРПУСА
@@ -490,7 +472,9 @@ export class Ship {
     // --- ветер на парусах ---
     this.sailFrac += (this.sailTarget / 3 - this.sailFrac) * Math.min(1, dt * 0.7);
     const awa = this.apparentWindAngle();
-    const polar = Ship.polar(awa);
+    // УПРОЩЁННОЕ УПРАВЛЕНИЕ (настройка): паруса тянут одинаково при
+    // любом курсе к ветру — без «мёртвых зон» в левентик
+    const polar = CONTROLS.simple ? 0.82 : Ship.polar(awa);
     const sailEffMul = this.sailHP / this.preset.sailHP;
     const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
     const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
@@ -528,7 +512,9 @@ export class Ship {
     // --- руль ---
     this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
     const rudderAngle = this.rudder * 0.6; // рад, макс ~34°
-    const yawAuth = clamp(spd / 4.0, 0, 1.15); // авторитеты руля от скорости
+    // УПРОЩЁННОЕ УПРАВЛЕНИЕ: руль работает на ЛЮБОЙ скорости
+    // (реалистично — авторитет руля растёт с ходом)
+    const yawAuth = CONTROLS.simple ? 1.0 : clamp(spd / 4.0, 0, 1.15);
     // положительный руль (D) = поворот ВПРАВО (штирборт):
     // вращение вокруг −Y, т.к. +Y = поворот влево (к порту)
     this.torque.y -= rudderAngle * yawAuth * m * 12.0; // ~6°/с на полном ходу
@@ -628,21 +614,18 @@ export class Ship {
     this.stepHousekeeping(dt);
   }
 
-  /** Смена модели моря (Game.applySeaModel): посадить вертикальную
-   *  динамику на равновесие БЕЗ транзиента. Физическая модель:
-   *  проектная ватерлиния y=0 (мгновенная высота волны — НЕ равновесие:
-   *  старт в подошве топил корабль на метр с всплеском зелёной воды).
-   *  Волна-опора/шторм: текущая поверхность (пружина модуля). */
+  /** Смена режима физики (Game): посадить вертикальную динамику
+   *  на равновесие БЕЗ транзиента. Реалистичная модель:
+   *  проектная ватерлиния y=0 (мгновенная высота волны — НЕ
+   *  равновесие: старт в подошве топил корабль на метр с всплеском
+   *  зелёной воды). Простая: текущая поверхность. */
   seedVertical(time: number) {
     const h = waterHeightAt(this.position.x, this.position.z, time);
     this.velocity.y = 0;
-    this.rideVy = 0;
-    if (SEA.model === 'physical') {
+    if (PHYSICS.mode === 'realistic') {
       this.position.y = 0;
-      this.buoy.reset(0);
     } else {
       this.position.y = h;
-      this.buoy.reset(h);
     }
   }
 
@@ -737,19 +720,17 @@ export class Ship {
   }
 
   // ============================================================
-  // МОРЕ «ВОЛНА-ОПОРА» (Task 27): реализация взята из файла игрока
-  // («ФРЕГАТ „ПЕРУН“ — штормовое плавание», раздел 8 «ФИЗИКА
-  // ПЛАВУЧЕСТИ») и адаптирована под наш корабль: нос/корма/борта/
-  // мидель замеряются на Gerstner-волнах активного набора, из
-  // наклона воды строится ОРИЕНТАЦИЯ корпуса (нос всходит на
-  // передний склон гребня и спускается за ним), а вертикаль —
-  // пружина с демпфером к средневзвешенной поверхности.
-  // Корабль ДЕРЖИТСЯ НА ВОДЕ: глубоких нырков нет, осадка почти
-  // постоянна. Крен от ветра на парусах — целевой угол рамки.
+  // ПРОСТАЯ ФИЗИКА (настройка «Физика корабля → Простая»):
+  // корабль СКОЛЬЗИТ ПО ПОВЕРХНОСТИ единого моря. 5 точек замера
+  // (нос/корма/борта/мидель) на волнах Герстнера задают рамку
+  // ориентации — нос всходит на передний склон гребня и спускается
+  // за ним; вертикаль — БЫСТРОЕ экспоненциальное следование
+  // средневзвешенной поверхности (пружина попадала в резонанс и
+  // гоняла корабль в противофазе — теперь глубоких нырков НЕТ
+  // ВООБЩЕ, корабль не проваливается внутрь волн). Крен от ветра
+  // на парусах и затопления — целевой угол рамки с пределом.
   // ============================================================
-  private rideVy = 0;                 // вертикальная скорость пружины
-  /** сглаженный крен от ветра/затопления (волна-опора и шторм) —
-   *  публичен для телеметрии: изолированная «креновая» часть наклона */
+  /** сглаженный крен от ветра/затопления — публичен для телеметрии */
   rideHeel = 0;
   private _rf = new THREE.Vector3();
   private _ru = new THREE.Vector3();
@@ -757,29 +738,30 @@ export class Ship {
   private _rv1 = new THREE.Vector3();
   private _rv2 = new THREE.Vector3();
   private _rm = new THREE.Matrix4();
-  private _re = new THREE.Euler();
+  private _re = new THREE.Euler();   // разбор кватерниона (подъём шлюпки)
   private _rq = new THREE.Quaternion();
   private _rHeelQ = new THREE.Quaternion();
 
-  /** Общая горизонтальная физика «волна-опора»/«шторм» (Task 27/29):
-   *  паруса / вёсла / руль / сопротивление + интеграция горизонтали
-   *  и курса. Гравитации и кренящих моментов нет — наклон корпуса
-   *  задаёт волна (рамка или ShipBuoyancy). Обновляет this._f/_r
-   *  до курса ПОСЛЕ поворота. Возвращает боковую составляющую
-   *  ветра (для крена от парусов). */
-  private rideHorizontalStep(dt: number): number {
+  /** Горизонтальная физика простой модели: паруса / вёсла / руль /
+   *  сопротивление + интеграция горизонтали и курса. Гравитации и
+   *  кренящих моментов нет — наклон корпуса задаёт волна (рамка).
+   *  Обновляет this._f/_r до курса ПОСЛЕ поворота. Возвращает
+   *  боковую составляющую ветра В СТОРОНУ ПОРТА (для крена). */
+  private simpleHorizontalStep(dt: number): number {
     this.force.set(0, 0, 0);
     this.torque.set(0, 0, 0);
 
     const f = this._f.copy(this.forward);
-    const star = this._r.set(f.z, 0, -f.x).normalize(); // ШТИРБОРТ (право)
+    // ПОРТ (левый борт) = локальная +X: (f.z, 0, −f.x)
+    const port = this._r.set(f.z, 0, -f.x).normalize();
     const spd = this.speed();
     const m = this.mass + this.water * 1000;
 
     // --- горизонтальные силы: паруса / вёсла / руль / сопротивление ---
     this.sailFrac += (this.sailTarget / 3 - this.sailFrac) * Math.min(1, dt * 0.7);
     const awa = this.apparentWindAngle();
-    const polar = Ship.polar(awa);
+    // УПРОЩЁННОЕ УПРАВЛЕНИЕ: паруса тянут одинаково при любом курсе
+    const polar = CONTROLS.simple ? 0.82 : Ship.polar(awa);
     const sailEffMul = this.sailHP / this.preset.sailHP;
     const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
     const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
@@ -799,23 +781,23 @@ export class Ship {
     // боковой снос от ветра
     const wf = this._t1.set(Math.cos(this.wind.from), 0, Math.sin(this.wind.from));
     const windTravel = this._t2.copy(wf).multiplyScalar(-this.wind.speed);
-    const lateralStar = windTravel.dot(star);
-    this.force.x += star.x * lateralStar * this.sailFrac * m * 0.004;
-    this.force.z += star.z * lateralStar * this.sailFrac * m * 0.004;
+    const lateralPort = windTravel.dot(port);
+    this.force.x += port.x * lateralPort * this.sailFrac * m * 0.004;
+    this.force.z += port.z * lateralPort * this.sailFrac * m * 0.004;
 
-    // руль (только рыскание)
+    // руль (только рыскание); УПРОЩЁННОЕ УПРАВЛЕНИЕ — авторитет всегда 1
     this.rudder += (this.rudderTarget - this.rudder) * Math.min(1, dt * 1.8);
     const rudderAngle = this.rudder * 0.6;
-    const yawAuth = clamp(spd / 4.0, 0, 1.15);
+    const yawAuth = CONTROLS.simple ? 1.0 : clamp(spd / 4.0, 0, 1.15);
     this.torque.y -= rudderAngle * yawAuth * m * 12.0;
 
     // сопротивление (по связным осям)
     const fwdSpd = this.velocity.dot(f);
-    const latSpd = this.velocity.dot(star);
+    const latSpd = this.velocity.dot(port);
     const fwdDrag = -(18 * fwdSpd + 55 * fwdSpd * Math.abs(fwdSpd)) * m * 0.001;
     const latDrag = -latSpd * 3.2 * m * 0.1;
-    this.force.x += f.x * fwdDrag + star.x * latDrag;
-    this.force.z += f.z * fwdDrag + star.z * latDrag;
+    this.force.x += f.x * fwdDrag + port.x * latDrag;
+    this.force.z += f.z * fwdDrag + port.z * latDrag;
     if (this.anchored) {
       this.force.x -= this.velocity.x * m * 1.2;
       this.force.z -= this.velocity.z * m * 1.2;
@@ -839,31 +821,27 @@ export class Ship {
     const heading = this.heading + this.angular.y * dt;
     // нос после поворота курса
     f.set(Math.sin(heading), 0, Math.cos(heading));
-    star.set(f.z, 0, -f.x);
-    return lateralStar;
+    port.set(f.z, 0, -f.x);
+    return lateralPort;
   }
 
-  private stepRidingWaves(dt: number, time: number) {
+  private stepSimpleWaves(dt: number, time: number) {
     const L = this.preset.length, B = this.preset.beam;
-    const lateralStar = this.rideHorizontalStep(dt);
-    const f = this._f, star = this._r;
-    // Настройки плавания (Task 31): замеры/пружина/доворот/посадка —
-    // те же поля, что у штормового модуля (дефолты = прежним
-    // «зашитым» значениям этой модели: 0.42/0.78, 5.0/2.4, 2.6)
-    const fa = BUOYANCY_CONFIG.sampleForeAft, sd = BUOYANCY_CONFIG.sampleSide;
-    const aF = L * fa, aS = B * sd;
+    const lateralPort = this.simpleHorizontalStep(dt);
+    const f = this._f, port = this._r;
+    const aF = L * 0.42, aS = B * 0.78;   // точки замера: нос/корма, борта
 
-    // --- 5 ТОЧЕК ЗАМЕРА на волнах (как в файле игрока) ---
+    // --- 5 ТОЧЕК ЗАМЕРА на волнах единого моря ---
     const hBow = waterHeightAt(this.position.x + f.x * aF, this.position.z + f.z * aF, time);
     const hStern = waterHeightAt(this.position.x - f.x * aF, this.position.z - f.z * aF, time);
-    const hStar = waterHeightAt(this.position.x + star.x * aS, this.position.z + star.z * aS, time);
-    const hPort = waterHeightAt(this.position.x - star.x * aS, this.position.z - star.z * aS, time);
+    const hPort = waterHeightAt(this.position.x + port.x * aS, this.position.z + port.z * aS, time);
+    const hStar = waterHeightAt(this.position.x - port.x * aS, this.position.z - port.z * aS, time);
     const hMid = waterHeightAt(this.position.x, this.position.z, time);
 
     // рамка: forward с уклоном нос-корма, up из векторного произведения
-    const slopeZ = (hBow - hStern) / (L * 2 * fa);
-    this._rv1.set(f.x * L * 2 * fa, hBow - hStern, f.z * L * 2 * fa);
-    this._rv2.set(star.x * B * 2 * sd, hStar - hPort, star.z * B * 2 * sd);
+    const slopeZ = (hBow - hStern) / (L * 0.84);
+    this._rv1.set(f.x * L * 0.84, hBow - hStern, f.z * L * 0.84);
+    this._rv2.set(port.x * B * 1.56, hPort - hStar, port.z * B * 1.56);
     const u = this._ru.copy(this._rv1).cross(this._rv2).normalize();
     const ff = this._rf.set(f.x, slopeZ, f.z).normalize();
     const rr = this._rr.copy(u).cross(ff).normalize();
@@ -871,96 +849,33 @@ export class Ship {
     this._rq.setFromRotationMatrix(this._rm);
 
     // крен от ветра на парусах + затопления — целевой УГОЛ рамки
-    // (в физической модели это момент по оси корпуса; здесь — доворот
-    // вокруг ДП). Предел — ДВУХСТУПЕНЧАТЫЙ (Task 31 «углы наклона» +
-    // ФИЗИЧЕСКИЙ: кромка палубы не ныряет от статического крена)
+    // (в реалистичной модели это момент по оси корпуса; здесь —
+    // доворот вокруг ДП). Ветер В СТОРОНУ порта кренит к порту
+    // (подветренный борт вниз). Предел: настройка «Макс. крен» и
+    // ФИЗИЧЕСКИЙ — кромка палубы не ныряет от статического крена
     const heelMax = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
     const heelTarget = clamp(
-      -lateralStar * this.sailFrac * 0.012
+      -lateralPort * this.sailFrac * 0.012
       + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
       -heelMax, heelMax);
     this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
     this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
     this._rq.multiply(this._rHeelQ);
-    // плавный доворот к рамке волны (как slerp в файле игрока,
-    // 1−e^−orientResponse·t — настройка «наклон к склону волны»)
-    this.quaternion.slerp(this._rq, 1 - Math.exp(-BUOYANCY_CONFIG.orientResponse * dt));
+    // плавный доворот к рамке волны (тяжёлый корпус не «прилипает»)
+    this.quaternion.slerp(this._rq, 1 - Math.exp(-3.0 * dt));
 
-    // --- вертикаль: пружина к средневзвешенной поверхности ---
-    // (замер в 5 точках + притопление от наклона и хода; пружина/
-    // демпфер — настройки «вертикальная качка»). Гарантирует
-    // ПОСТОЯННУЮ осадку — корабль не ныряет. «Осадка ±» (Task 31)
-    // сдвигает посадку глубже/мельче без потери ровного киля
-    const sink = -(1 - u.y) * BUOYANCY_CONFIG.sinkHeel
-      - Math.min(Math.abs(this.speed()) * BUOYANCY_CONFIG.sinkSpeed, BUOYANCY_CONFIG.sinkSpeedMax)
+    // --- вертикаль: ПРЯМОЕ следование средневзвешенной поверхности ---
+    // (быстрая экспонента: гасит дрожь замеров, но не отстаёт от
+    // волны; пружина попадала в резонанс и топила корпус — теперь
+    // корабль ПЛЫВЁТ ПО волнам, осадка постоянна). «Осадка ±» —
+    // сдвиг посадки; лёгкое притопление от наклона и хода
+    const sink = -(1 - u.y) * 0.6
+      - Math.min(Math.abs(this.speed()) * 0.02, 0.2)
       - BUOYANCY_CONFIG.draftOffset;
     const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 + sink;
-    this.rideVy += ((targetY - this.position.y) * BUOYANCY_CONFIG.heaveStiffness
-      - this.rideVy * BUOYANCY_CONFIG.heaveDamping) * dt;
-    this.position.y += this.rideVy * dt;
+    this.position.y += (targetY - this.position.y) * Math.min(1, dt * 7.0);
 
-    // мел / течь / пожар / сдача — общий хвост обеих моделей
-    this.stepHousekeeping(dt);
-  }
-
-  // ============================================================
-  // ШТОРМОВОЙ МОДУЛЬ sea.js (Task 29): вертикаль и ориентация —
-  // из ShipBuoyancy (shipPhysics.js игрока): 4 замера высоты по
-  // габаритам → нормаль поверхности → крен/дифферент тяжёлым
-  // slerp, пружинный гейв с притоплением от крена/хода, события
-  // «удар носом» (брызги) и «заливание палубы» (зелёная вода).
-  // Горизонталь (паруса/вёсла/руль/сопротивление) — общая с
-  // «волной-опорой». Отсчёт высоты корабля — КВЛ: у модуля
-  // depth=0, погружение (immersion) смещает посадку ±0.5.
-  // ============================================================
-  private stepStormSea(dt: number, time: number) {
-    const lateralStar = this.rideHorizontalStep(dt);
-    const f = this._f;
-
-    // --- качка модулем ShipBuoyancy ---
-    const fwdSpd = this.velocity.dot(f);
-    this.buoy.update(dt, time, {
-      x: this.position.x, z: this.position.z,
-      yaw: this.heading, speed: fwdSpd,
-    }, waterHeightAt);
-
-    // вертикаль: buoy.y = средневзвешенная поверхность + притопления;
-    // immersion (настройка «Посадка…») поднимает/опускает корпус,
-    // «осадка ±» (Task 31) — дополнительный сдвиг посадки (те же
-    // настройки плавания, что у физ. модели и «волны-опоры»)
-    const hullDepth = this.preset.draft + this.preset.freeboard;
-    this.position.y = this.buoy.y
-      + (this.buoy.vessel.immersion - 0.5) * hullDepth
-      - BUOYANCY_CONFIG.draftOffset;
-
-    // крен от ветра на парусах + затопления — целевой угол (как в
-    // riding), затем доворот вокруг ДП поверх кватерниона модуля.
-    // Предел — ДВУХСТУПЕНЧАТЫЙ (Task 31 «углы наклона» + ФИЗИЧЕСКИЙ:
-    // кромка палубы не ныряет от статического крена)
-    const heelMax = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
-    const heelTarget = clamp(
-      -lateralStar * this.sailFrac * 0.012
-      + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
-      -heelMax, heelMax);
-    this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
-    const heelQ = this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
-    // ориентация: кватернион модуля (уже сглажен orientResponse) × крен
-    this.quaternion.copy(this._rq.copy(this.buoy.q).multiply(heelQ));
-
-    // --- события модуля: удар носом / заливание палубы ---
-    if (this.buoy.events.slam) {
-      this.stormSlams++;
-      const bowX = this.position.x + f.x * this.preset.length * 0.42;
-      const bowZ = this.position.z + f.z * this.preset.length * 0.42;
-      this.particles.splash(bowX, this.buoy.hBow, bowZ, 1.1);
-    }
-    if (this.buoy.events.floodPort || this.buoy.events.floodStar) {
-      this.stormFloods++;
-      this.greenWater++;
-      this.greenWaterT = time;
-    }
-
-    // мел / течь / пожар / сдача — общий хвост
+    // мел / течь / пожар / сдача — общий хвост обеих физик
     this.stepHousekeeping(dt);
   }
 
@@ -1897,12 +1812,14 @@ export class Ship {
           this.velocity.x *= 0.988; this.velocity.z *= 0.988;
         }
         // ---- СМЫВ МАТРОСА: палуба ДЕЙСТВИТЕЛЬНО под водой (глубоко,
-        // > 0.3 м воды над кромкой, не чаще 25 с) — волна уносит
-        //  человека за борт. Пока палуба над водой — никого не смывает
-        // (жалоба игрока: «смыло матросов, хотя корабль был высоко
-        //  над водой»); в спокойную погоду не срабатывает никогда
-        if (overMax > 0.3 && time - this.lastWashT > 25
-          && this.crew > 0 && !this.sinking) {
+        // > 0.3 м воды над кромкой) — волна уносит человека за борт
+        // С НАСТРАИВАЕМОЙ ВЕРОЯТНОСТЬЮ (по умолчанию 30%, настройка
+        // «Вероятность смыва»; 0% — никого никогда, 100% — каждое
+        // глубокое заливание). Пока палуба над водой — никого не
+        // смывает; в спокойную погоду не срабатывает никогда
+        if (overMax > 0.3 && time - this.lastWashT > BUOYANCY_CONFIG.washCooldown
+          && this.crew > 0 && !this.sinking
+          && Math.random() < BUOYANCY_CONFIG.washProbability) {
           this.lastWashT = time;
           const washed = this.crew3d.washAway(1, this.position, this.quaternion);
           if (washed > 0) {

@@ -11,7 +11,7 @@ import { PART_REGISTRY } from '@/game/glb/glbParts';
 // сразу и сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'weather' | 'gameplay' | 'controls' | 'audio';
+type Tab = 'graphics' | 'weather' | 'physics' | 'gameplay' | 'controls' | 'audio';
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
@@ -162,7 +162,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
         <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
           <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
           <div className="flex gap-1">
-            {([['graphics', 'Графика'], ['weather', 'Погода'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-3 py-1 text-xs font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -258,6 +258,29 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
               </div>
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Каркас: только треугольники без текстур</div>
+                <div className="mb-1 text-[10px] text-stone-500">
+                  Показать сетку объекта — отдельно для каждой категории.
+                  Полезно для отладки геометрии: вода, корабли, острова, растительность.
+                </div>
+                <Row label="🌊 Вода" hint="треугольная сетка поверхности моря">
+                  <input type="checkbox" checked={g.wireframe.water} onChange={e => update(d => { d.graphics.wireframe.water = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="⛵ Корабли" hint="корпуса, паруса и экипаж всех судов">
+                  <input type="checkbox" checked={g.wireframe.ships} onChange={e => update(d => { d.graphics.wireframe.ships = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="🏝 Острова" hint="рельеф, постройки, причалы, животные">
+                  <input type="checkbox" checked={g.wireframe.islands} onChange={e => update(d => { d.graphics.wireframe.islands = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="🌴 Растительность" hint="деревья, кусты, валуны">
+                  <input type="checkbox" checked={g.wireframe.vegetation} onChange={e => update(d => { d.graphics.wireframe.vegetation = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+              </div>
               {/* Каталог заменяемых деталей: единые описания + промпты генерации */}
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Замена деталей на GLB-модели</div>
@@ -326,162 +349,17 @@ export default function SettingsPanel({ initial, onApply, onClose }:
               </div>
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Море и волны</div>
-                <Row label="Модель моря" hint="волна-опора: корабль идёт по поверхности — нос всходит на волну и спускается; физическая: честный Архимед по точкам корпуса, корабль режет волны; штормовой модуль: море + качка из приложенных файлов sea.js / shipPhysics.js">
-                  <select value={s.weather.seaModel}
-                    onChange={e => update(d => { d.weather.seaModel = e.target.value as 'physical' | 'riding' | 'storm'; })}
-                    className={inputCls}>
-                    <option value="physical">Физическая (Архимед, режет волны)</option>
-                    <option value="riding">Волна-опора (по поверхности)</option>
-                    <option value="storm">Штормовой модуль (sea.js)</option>
-                  </select>
-                </Row>
-                <div className="mt-1 text-[10px] text-stone-500">
-                  «Волна-опора» — реализация из штормового демо «Фрегат „Перун“»:
-                  крутые валы с фазами, корабль держится на воде и не ныряет глубоко.
+                <div className="rounded border border-stone-800 bg-stone-900/40 px-2.5 py-2 text-[10px] leading-relaxed text-stone-400">
+                  🌊 ЕДИНОЕ МОРЕ — волны Герстнера с микронормалями поверхности
+                  (FBM-шум): одна реализация для картинки и физики.
+                  <b className="text-stone-300">Высота волн зависит от силы ветра</b>
+                  (ползунок выше): штиль — стеклянная рябь, свежий ветер —
+                  бодрая зыбь, шторм — валы с барашками. Волны бегут по ветру и
+                  <b className="text-stone-300"> разбиваются об острова</b> — у берега
+                  гаснут с полосой прибоя (у горных берегов — узкой).
+                  Качка корабля — вкладка «Физика».
                 </div>
               </div>
-
-              {s.weather.seaModel === 'storm' && (
-                <div className="py-2">
-                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
-                    Штормовой модуль (sea.js)
-                  </div>
-                  <div className="mb-1 text-[10px] text-stone-500">
-                    Сила и направление ветра — общие настройки выше («Сила ветра» и
-                    «Направление ветра»): модуль слушает их так же, как паруса и погода.
-                    Солнце, небо и туман — из глобального неба (день/ночь, гроза).
-                  </div>
-                  <Row label="Высота волн" hint="множитель крутизны штормовых вал (0.3 — зыбь, 2 — валы с гору)">
-                    <Slider value={s.sea.waveHeight} min={0.3} max={2} step={0.05}
-                      onChange={v => update(d => { d.sea.waveHeight = v; })}
-                      format={v => `×${v.toFixed(2)}`} />
-                  </Row>
-                  <Row label="Длина волн" hint="масштаб длин волн спектра (0.6 — короткая chop, 1.8 — длинная зыбь)">
-                    <Slider value={s.sea.waveLength} min={0.6} max={1.8} step={0.05}
-                      onChange={v => update(d => { d.sea.waveLength = v; })}
-                      format={v => `×${v.toFixed(2)}`} />
-                  </Row>
-                  <Row label="Пена" hint="барашки на гребнях, обводка корпуса, кильватер и бурун у форштевня">
-                    <Slider value={s.sea.foam} min={0} max={1.5} step={0.05}
-                      onChange={v => update(d => { d.sea.foam = v; })}
-                      format={v => `${Math.round(v * 100)}%`} />
-                  </Row>
-                  <Row label="Дальняя сетка" hint="сегменты по стороне: качество волн до горизонта (128 быстро … 320 детально)">
-                    <Slider value={s.sea.farSeg} min={128} max={320} step={32}
-                      onChange={v => update(d => { d.sea.farSeg = Math.round(v / 16) * 16; })}
-                      format={v => `${v}`} />
-                  </Row>
-                  <Row label="Ближняя сетка" hint="сегменты детальной сетки вокруг корабля (мелкая рябь)">
-                    <Slider value={s.sea.nearSeg} min={128} max={320} step={32}
-                      onChange={v => update(d => { d.sea.nearSeg = Math.round(v / 16) * 16; })}
-                      format={v => `${v}`} />
-                  </Row>
-                  <Row label="Размер ближней сетки" hint="сторона детального квадрата вокруг корабля, м (дальность — из настроек графики)">
-                    <Slider value={s.sea.nearSize} min={260} max={500} step={20}
-                      onChange={v => update(d => { d.sea.nearSize = v; })}
-                      format={v => `${v} м`} />
-                  </Row>
-                </div>
-              )}
-
-              <div className="py-2">
-                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
-                  Плавание и посадка (все модели моря)
-                </div>
-                <div className="mb-1 text-[10px] text-stone-500">
-                  Плавание, осадка и углы наклона — ЕДИНЫЕ настройки для всех трёх моделей
-                  моря. У физической осадка меняется перекалибровкой гидростатики (ровный
-                  киль сохраняется), у «волны-опоры» и штормовой — сдвигом посадки.
-                </div>
-                <Row label="Осадка: глубже / мельче" hint="±м: физ. модель — корабль сидит глубже/мельче с тем же ровным килем; волна-опора и шторм — сдвиг посадки. Для шторма есть ещё «Посадка» ниже">
-                  <Slider value={s.buoyancy.draftOffset} min={-0.8} max={0.8} step={0.05}
-                    onChange={v => update(d => { d.buoyancy.draftOffset = v; })}
-                    format={v => `${v > 0 ? '+' : ''}${v.toFixed(2)} м`} />
-                </Row>
-                <Row label="Осадка шлюпки" hint="множитель посадки яла на воде (физ. и волна-опора: планширь ближе/дальше от воды); в шторме — отдельная «Посадка: шлюпка» ниже">
-                  <Slider value={s.buoyancy.boatDraftMul} min={0.5} max={3} step={0.1}
-                    onChange={v => update(d => { d.buoyancy.boatDraftMul = v; })}
-                    format={v => `×${v.toFixed(1)}`} />
-                </Row>
-                <Row label="Макс. крен" hint="предел наклона бортами, °: стопы физической модели, кромка крена от ветра (волна-опора/шторм), крен шлюпки — во всех моделях">
-                  <Slider value={s.buoyancy.heelMaxDeg} min={6} max={35} step={0.5}
-                    onChange={v => update(d => { d.buoyancy.heelMaxDeg = v; })}
-                    format={v => `${v.toFixed(1)}°`} />
-                </Row>
-                <Row label="Макс. дифферент" hint="предел наклона носом/кормой, °: стопы физической модели и дифферент шлюпки на волне">
-                  <Slider value={s.buoyancy.pitchMaxDeg} min={8} max={35} step={0.5}
-                    onChange={v => update(d => { d.buoyancy.pitchMaxDeg = v; })}
-                    format={v => `${v.toFixed(1)}°`} />
-                </Row>
-                <Row label="Жёсткость качки" hint="пружина вертикальной качки (волна-опора и шторм): больше — резче подскакивает на волне">
-                  <Slider value={s.buoyancy.heaveStiffness} min={1} max={12} step={0.5}
-                    onChange={v => update(d => { d.buoyancy.heaveStiffness = v; })}
-                    format={v => v.toFixed(1)} />
-                </Row>
-                <Row label="Демпфер качки" hint="как быстро гаснет вертикальная качка (волна-опора и шторм)">
-                  <Slider value={s.buoyancy.heaveDamping} min={0.5} max={6} step={0.1}
-                    onChange={v => update(d => { d.buoyancy.heaveDamping = v; })}
-                    format={v => v.toFixed(1)} />
-                </Row>
-                <Row label="Отзывчивость корпуса" hint="скорость доворота к склону волны (волна-опора и шторм): меньше — лениво переваливается, больше — липнет к волне">
-                  <Slider value={s.buoyancy.orientResponse} min={0.5} max={8} step={0.1}
-                    onChange={v => update(d => { d.buoyancy.orientResponse = v; })}
-                    format={v => `${v.toFixed(1)} 1/с`} />
-                </Row>
-                <Row label="Заглубление от крена" hint="сколько корпус садится при наклоне поверхности, м (волна-опора и шторм)">
-                  <Slider value={s.buoyancy.sinkHeel} min={0} max={3} step={0.1}
-                    onChange={v => update(d => { d.buoyancy.sinkHeel = v; })}
-                    format={v => `${v.toFixed(1)} м`} />
-                </Row>
-                <Row label="Заглубление от хода" hint="динамическое погружение на скорости (м/м·с⁻¹; волна-опора и шторм)">
-                  <Slider value={s.buoyancy.sinkSpeed} min={0} max={0.08} step={0.005}
-                    onChange={v => update(d => { d.buoyancy.sinkSpeed = v; })}
-                    format={v => v.toFixed(3)} />
-                </Row>
-                <Row label="Замер: нос/корма" hint="доля длины корпуса для точек замера воды (волна-опора и шторм)">
-                  <Slider value={s.buoyancy.sampleForeAft} min={0.2} max={0.6} step={0.02}
-                    onChange={v => update(d => { d.buoyancy.sampleForeAft = v; })}
-                    format={v => v.toFixed(2)} />
-                </Row>
-                <Row label="Замер: борта" hint="доля полуширины для точек замера воды (волна-опора и шторм)">
-                  <Slider value={s.buoyancy.sampleSide} min={0.4} max={1} step={0.02}
-                    onChange={v => update(d => { d.buoyancy.sampleSide = v; })}
-                    format={v => v.toFixed(2)} />
-                </Row>
-                <Row label="Плавность посадки шлюпки" hint="скорость сглаживания посадки яла на волны, 1/с (физ. и волна-опора): меньше — ял мягче всходит на гребень">
-                  <Slider value={s.buoyancy.boatSmooth} min={6} max={25} step={1}
-                    onChange={v => update(d => { d.buoyancy.boatSmooth = v; })}
-                    format={v => `${v} 1/с`} />
-                </Row>
-              </div>
-
-              {s.weather.seaModel === 'storm' && (
-                <div className="py-2">
-                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">
-                    Штормовой модуль: посадка (shipPhysics.js)
-                  </div>
-                  <Row label="Посадка: крупные суда" hint="0.5 — проектная осадка; больше — сидит выше (фрегаты и линейные)">
-                    <Slider value={s.buoyancy.immersionFrigate} min={0.25} max={0.75} step={0.05}
-                      onChange={v => update(d => { d.buoyancy.immersionFrigate = v; })}
-                      format={v => v.toFixed(2)} />
-                  </Row>
-                  <Row label="Посадка: шлюпка" hint="лёгкий ял сидит выше корпуса (0.65 по умолчанию)">
-                    <Slider value={s.buoyancy.immersionBoat} min={0.25} max={0.85} step={0.05}
-                      onChange={v => update(d => { d.buoyancy.immersionBoat = v; })}
-                      format={v => v.toFixed(2)} />
-                  </Row>
-                  <Row label="Посадка: прочие суда" hint="шлюпы, торговцы и прочие">
-                    <Slider value={s.buoyancy.immersionDefault} min={0.25} max={0.75} step={0.05}
-                      onChange={v => update(d => { d.buoyancy.immersionDefault = v; })}
-                      format={v => v.toFixed(2)} />
-                  </Row>
-                  <Row label="Пауза заливаний" hint="минимальный интервал события «волна залила палубу», с">
-                    <Slider value={s.buoyancy.floodCooldown} min={0.5} max={6} step={0.1}
-                      onChange={v => update(d => { d.buoyancy.floodCooldown = v; })}
-                      format={v => `${v.toFixed(1)} с`} />
-                  </Row>
-                </div>
-              )}
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Дым и огонь выстрелов</div>
                 <Row label="Видимость дыма" hint="полностью скрывает дым и вспышки">
@@ -508,6 +386,76 @@ export default function SettingsPanel({ initial, onApply, onClose }:
             </div>
           )}
 
+          {tab === 'physics' && (
+            <div className="divide-y divide-stone-800/60">
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Физика корабля</div>
+                <Row label="Режим физики" hint="реалистичная: честный Архимед по точкам корпуса — корабль кренится/дифферентится и режет волны носом; простая: корабль скользит ПО поверхности волн — нос всходит на гребень и спускается, глубоких нырков нет">
+                  <select value={s.physics.mode}
+                    onChange={e => update(d => { d.physics.mode = e.target.value as 'realistic' | 'simple'; })}
+                    className={inputCls}>
+                    <option value="realistic">Реалистичная (Архимед, режет волны)</option>
+                    <option value="simple">Простая (по поверхности волн)</option>
+                  </select>
+                </Row>
+                <div className="mt-1 text-[10px] text-stone-500">
+                  Обе физики — на ОДНОМ море (Герстнер + FBM); переключение
+                  мгновенное и действует на все корабли.
+                </div>
+              </div>
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Плавучесть и посадка</div>
+                <div className="mb-1 text-[10px] text-stone-500">
+                  Настройки плавучести переделаны (Task 33): только общие для обеих
+                  физик величины. У реалистичной осадка меняется перекалибровкой
+                  гидростатики (ровный киль сохраняется), у простой — сдвигом посадки.
+                </div>
+                <Row label="Осадка: глубже / мельче" hint="±м: корабль сидит глубже/мельче с тем же ровным килем">
+                  <Slider value={s.physics.buoyancy.draftOffset} min={-0.8} max={0.8} step={0.05}
+                    onChange={v => update(d => { d.physics.buoyancy.draftOffset = v; })}
+                    format={v => `${v > 0 ? '+' : ''}${v.toFixed(2)} м`} />
+                </Row>
+                <Row label="Макс. крен" hint="предел статического крена (ветер/поворот/затопление), ° — кромка палубы не ныряет">
+                  <Slider value={s.physics.buoyancy.heelMaxDeg} min={6} max={35} step={0.5}
+                    onChange={v => update(d => { d.physics.buoyancy.heelMaxDeg = v; })}
+                    format={v => `${v.toFixed(1)}°`} />
+                </Row>
+                <Row label="Макс. дифферент" hint="предел наклона носом/кормой, °">
+                  <Slider value={s.physics.buoyancy.pitchMaxDeg} min={8} max={35} step={0.5}
+                    onChange={v => update(d => { d.physics.buoyancy.pitchMaxDeg = v; })}
+                    format={v => `${v.toFixed(1)}°`} />
+                </Row>
+                <Row label="Осадка шлюпки" hint="множитель посадки яла на воде: планширь ближе/дальше от воды">
+                  <Slider value={s.physics.buoyancy.boatDraftMul} min={0.5} max={3} step={0.1}
+                    onChange={v => update(d => { d.physics.buoyancy.boatDraftMul = v; })}
+                    format={v => `×${v.toFixed(1)}`} />
+                </Row>
+                <Row label="Плавность посадки шлюпки" hint="скорость сглаживания посадки яла на волны, 1/с: меньше — ял мягче всходит на гребень">
+                  <Slider value={s.physics.buoyancy.boatSmooth} min={6} max={25} step={1}
+                    onChange={v => update(d => { d.physics.buoyancy.boatSmooth = v; })}
+                    format={v => `${v} 1/с`} />
+                </Row>
+              </div>
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Залитие палубы и смыв моряков</div>
+                <div className="mb-1 text-[10px] text-stone-500">
+                  Большая волна заливает палубу (зелёная вода) — и может СМЫТЬ
+                  матроса за борт. Пока палуба над водой — никого не смывает.
+                </div>
+                <Row label="Вероятность смыва матроса" hint="шанс унести человека за борт при глубоком залитии палубы (> 0.3 м воды над кромкой); 0% — никогда, 100% — каждое залитие">
+                  <Slider value={s.physics.buoyancy.washProbabilityPct} min={0} max={100} step={5}
+                    onChange={v => update(d => { d.physics.buoyancy.washProbabilityPct = v; })}
+                    format={v => `${v}%`} />
+                </Row>
+                <Row label="Пауза между смывами" hint="минимальный интервал между бросками на смыв, с">
+                  <Slider value={s.physics.buoyancy.washCooldownS} min={2} max={25} step={1}
+                    onChange={v => update(d => { d.physics.buoyancy.washCooldownS = v; })}
+                    format={v => `${v} с`} />
+                </Row>
+              </div>
+            </div>
+          )}
+
           {tab === 'gameplay' && (
             <div className="divide-y divide-stone-800/60">
               <div className="py-2">
@@ -520,6 +468,23 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   Полигон доступен из главного меню — корабли стоят параллельно,
                   мишень на якоре с правого борта.
                 </div>
+              </div>
+              <div className="py-2">
+                <div className="mb-1.5 text-[11px] font-semibold text-amber-200/90">Корабль и управление</div>
+                <Row label="🚤 Количество шлюпок" hint="сколько ялов на шлюпбалках бортов: 2 — оба борта (штирборт + порт), 1 — только штирборт, 0 — без шлюпок; применяется сразу (корабль пересобирается)">
+                  <select value={s.gameplay.boatCount}
+                    onChange={e => update(d => { d.gameplay.boatCount = Number(e.target.value); })}
+                    className={inputCls}>
+                    <option value={0}>Без шлюпок</option>
+                    <option value={1}>1 — штирборт</option>
+                    <option value={2}>2 — оба борта</option>
+                  </select>
+                </Row>
+                <Row label="🎮 Упрощённое управление" hint="руль работает на любой скорости, паруса тянут одинаково при любом курсе к ветру (без «мёртвых зон» в левентик) — аркада">
+                  <input type="checkbox" checked={s.gameplay.simpleControls}
+                    onChange={e => update(d => { d.gameplay.simpleControls = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
               </div>
               <div className="py-2">
                 <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Кошелёк капитана</div>

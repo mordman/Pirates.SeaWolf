@@ -7,62 +7,39 @@
 export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 
 // ============================================================
-// Погода: режим явлений + ветер. От силы ветра зависят волны.
+// Погода: режим явлений + ветер. ОТ ВЕТРА ЗАВИСЯТ ВОЛНЫ —
+// высота волн прямо следует силе ветра (единое море Task 33).
 // ============================================================
 export type WeatherMode = 'clear' | 'rain' | 'storm' | 'fog';
 
-/** Море и волны — ТРИ реализации: физическая (Task 12–25),
- *  «волна-опора» (Task 27) и АВТОНОМНЫЙ ШТОРМОВОЙ МОДУЛЬ sea.js
- *  (Task 29: две сетки Gerstner + пена вокруг корпуса в шейдере
- *  + качка ShipBuoyancy из shipPhysics.js) */
-export type SeaModelKind = 'physical' | 'riding' | 'storm';
+/** Режим физики корабля (Task 33): «реалистичная» — Архимед по
+ *  точкам корпуса (корабль режет волны, кренят моменты) и
+ *  «простая» — корабль скользит по поверхности волн (нос всходит
+ *  на гребень и спускается, глубоких нырков нет) */
+export type PhysicsMode = 'realistic' | 'simple';
 
-export const SEA_MODEL_LABELS: Record<SeaModelKind, string> = {
-  physical: 'Физическая (Архимед, корабль режет волны)',
-  riding: 'Волна-опора (по поверхности, из файла «Перун»)',
-  storm: 'Штормовой модуль (sea.js: Герстнер + качка корпуса)',
+export const PHYSICS_MODE_LABELS: Record<PhysicsMode, string> = {
+  realistic: 'Реалистичная (Архимед — корабль режет волны)',
+  simple: 'Простая (корабль скользит по поверхности волн)',
 };
 
-/** Параметры штормового модуля (sea.js) — всё, что можно
- *  настроить в приложенном коде; ветер/направление — ОБЩИЕ
- *  настройки погоды (действуют на модуль так же) */
-export interface SeaModuleSettings {
-  waveHeight: number;   // 0.3..2 — множитель крутизны (высоты) волн
-  waveLength: number;   // 0.6..1.8 — множитель длин волн
-  foam: number;         // 0..1.5 — пена: барашки, обводка корпуса, кильватер
-  farSeg: number;       // 128..320 — сегменты дальней сетки (качество)
-  nearSeg: number;      // 128..320 — сегменты ближней сетки (детализация)
-  nearSize: number;     // 260..500 — сторона ближней сетки, м
-}
-
-/** Плавание судов и качка — для ВСЕХ моделей моря (Task 31):
- *  пружины/замеры/углы применяются физической, «волной-опорой»
- *  и штормовым модулем (у штормового свои «посадки»-immersion) */
+/** Плавучесть и посадка — НАСТРОЙКИ ПО НОВОЙ (Task 33): только
+ *  общие для обеих физик величины + механика смыва матросов
+ *  (залитие палубы может смыть моряка с вероятностью 30%) */
 export interface BuoyancySettings {
-  heaveStiffness: number;    // 1..12 — жёсткость пружины вертикальной качки
-  heaveDamping: number;      // 0.5..6 — демпфер вертикальной качки
-  orientResponse: number;    // 0.5..8 — «вязкость» доворота к склону волны
-  sinkHeel: number;          // 0..3 — заглубление от крена, м
-  sinkSpeed: number;         // 0..0.08 — заглубление от хода, м/м·с⁻¹
-  sampleForeAft: number;     // 0.2..0.6 — доля длины: точки замера нос/корма
-  sampleSide: number;        // 0.4..1 — доля полуширины: точки замера бортов
-  immersionFrigate: number;  // 0.25..0.75 — посадка крупных судов (шторм)
-  immersionBoat: number;     // 0.25..0.85 — посадка шлюпки (шторм)
-  immersionDefault: number;  // 0.25..0.75 — посадка остальных судов (шторм)
-  floodCooldown: number;     // 0.5..6 — пауза между событиями заливания, с
-  // --- Task 31: плавание/посадка/углы для ВСЕХ моделей моря ---
-  draftOffset: number;      // −0.8..0.8 м — осадка глубже(+)/мельче(−): физ. (перекалибровка колонн), волна-опора и шторм (сдвиг посадки)
-  boatDraftMul: number;     // 0.5..3 — осадка шлюпки × (физ. и волна-опора)
-  heelMaxDeg: number;       // 6..35° — предел крена: стопы физ. модели, кромка крена от ветра (волна/шторм), крен шлюпки
-  pitchMaxDeg: number;      // 8..35° — предел дифферента: стопы физ. модели, дифферент шлюпки
-  boatSmooth: number;       // 6..25 — плавность посадки шлюпки на воду (физ. и волна-опора), 1/с
+  heelMaxDeg: number;        // 6..35° — предел статического крена
+  pitchMaxDeg: number;       // 8..35° — предел дифферента
+  draftOffset: number;       // −0.8..0.8 м — осадка глубже(+)/мельче(−)
+  boatDraftMul: number;      // 0.5..3× — осадка шлюпки
+  boatSmooth: number;        // 6..25 1/с — плавность посадки шлюпки
+  washProbabilityPct: number; // 0..100% — вероятность смыва матроса при залитии палубы
+  washCooldownS: number;     // 2..25 с — пауза между бросками на смыв
 }
 
 export interface WeatherSettings {
   mode: WeatherMode;   // ясно / дождь / гроза / туман
   windSpeed: number;   // 0..24 м/с — сила ветра (задаёт и волнение)
   windDir: number;     // 0..355° — направление ОТКУДА дует (компас)
-  seaModel: SeaModelKind; // модель моря/плавучести (Task 27)
 }
 
 export interface FxSettings {
@@ -70,6 +47,15 @@ export interface FxSettings {
   smokeSize: number;          // 0.3..2.5× — размер клубов
   smokeDensity: number;       // 0..2× — количество клубов
   smokeTransparency: number;  // 0..0.95 — прозрачность (выше = прозрачнее)
+}
+
+/** Каркас (показывать только треугольники без текстур) —
+ *  ОТДЕЛЬНО для разных категорий объектов (Task 33) */
+export interface WireframeSettings {
+  water: boolean;        // поверхность воды
+  ships: boolean;        // корпуса/паруса/экипаж всех судов
+  islands: boolean;      // острова, постройки, причалы, животные
+  vegetation: boolean;   // деревья/кусты/валуны (инстансинг)
 }
 
 export interface GraphicsSettings {
@@ -84,6 +70,7 @@ export interface GraphicsSettings {
   foamQuality: number;    // 0 простая пена .. 2 Rich (слои шума)
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
   useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
+  wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
 }
 
 export interface ControlsSettings {
@@ -117,6 +104,8 @@ export interface GameplaySettings {
   infiniteAmmo: boolean;    // не расходовать боеприпасы (чит)
   ammoJitter: boolean;      // случайная недостача боезапаса при выходе в море (1–10% на тип)
   startMoney: number;       // стартовое золото игрока (0..100000, применяется сразу)
+  boatCount: number;        // 0..2 — СКОЛЬКО ШЛЮПОК на борту (штирборт/порт)
+  simpleControls: boolean;  // УПРОЩЁННОЕ УПРАВЛЕНИЕ: руль на любой скорости, паруса тянут при любом курсе
 }
 
 export interface GameSettings {
@@ -126,19 +115,26 @@ export interface GameSettings {
   gameplay: GameplaySettings;
   weather: WeatherSettings;
   fx: FxSettings;
-  sea: SeaModuleSettings;      // штормовой модуль sea.js (Task 29)
-  buoyancy: BuoyancySettings;  // качка корпуса shipPhysics.js (Task 29)
+  physics: PhysicsSettings;   // режим физики + плавучесть (Task 33)
 }
 
-export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset'>> = {
+/** Физика корабля и плавучесть (Task 33) */
+export interface PhysicsSettings {
+  mode: PhysicsMode;        // реалистичная / простая
+  buoyancy: BuoyancySettings; // посадка/углы/смыв матросов
+}
+
+export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
   low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  foamQuality: 0, detailLod: 150, useGLBModels: true },
   medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, foamQuality: 1, detailLod: 210, useGLBModels: true },
   high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  foamQuality: 2, detailLod: 270, useGLBModels: true },
   ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  foamQuality: 2, detailLod: 340, useGLBModels: true },
 };
 
+export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };
+
 export const DEFAULT_SETTINGS: GameSettings = {
-  graphics: { preset: 'high', ...QUALITY_PRESETS.high },
+  graphics: { preset: 'high', ...QUALITY_PRESETS.high, wireframe: { ...DEFAULT_WIREFRAME } },
   controls: {
     sailsUp: 'KeyW',
     sailsDown: 'KeyS',
@@ -168,20 +164,20 @@ export const DEFAULT_SETTINGS: GameSettings = {
     infiniteAmmo: false,
     ammoJitter: true,
     startMoney: 350,
+    boatCount: 2,        // шлюпки на обоих бортах (настройка)
+    simpleControls: false,
   },
-  weather: { mode: 'clear', windSpeed: 7.5, windDir: 40, seaModel: 'physical' },
+  weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
-  sea: { waveHeight: 1, waveLength: 1, foam: 1, farSeg: 256, nearSeg: 256, nearSize: 300 },
-  buoyancy: {
-    heaveStiffness: 5, heaveDamping: 2.4, orientResponse: 2.6,
-    sinkHeel: 1.2, sinkSpeed: 0.02, sampleForeAft: 0.42, sampleSide: 0.78,
-    immersionFrigate: 0.45, immersionBoat: 0.65, immersionDefault: 0.5,
-    floodCooldown: 1.4,
-    // Task 31: дефолты = прежние «зашитые» значения моделей — поведение
-    // по умолчанию не меняется (0.36 рад = 20.6° крен, 0.42 рад = 24.1°
-    // дифферент, «волна-опора»: пружина 5/2.4, slerp 2.6, замеры 0.42/0.78)
-    draftOffset: 0, boatDraftMul: 1,
-    heelMaxDeg: 20.6, pitchMaxDeg: 24.1, boatSmooth: 13,
+  physics: {
+    mode: 'realistic',
+    buoyancy: {
+      // дефолты = выверенные значения прежних моделей;
+      // вероятность смыва матроса — 30% по ТЗ
+      heelMaxDeg: 20.6, pitchMaxDeg: 24.1,
+      draftOffset: 0, boatDraftMul: 1, boatSmooth: 13,
+      washProbabilityPct: 30, washCooldownS: 8,
+    },
   },
 };
 
@@ -195,19 +191,21 @@ export const WEATHER_PRESETS: Record<WeatherMode, { windSpeed: number; label: st
 
 const STORAGE_KEY = 'seawolves.settings.v1';
 // Версия схемы сохранения: при изменении — что делать со старыми данными.
-// v3: (1) высота волн больше НЕ настраивается — только сила ветра
-//     (настройка waveHeight удалена); (2) стартовый боезапас приведён к
-//     реалистичному 40/12/20/8 (было 90/30/60/20 — песочница);
-//     (3) новая настройка «случайная недостача боезапаса 1–10%».
-// v4 (Task 29): новые разделы sea (штормовой модуль sea.js) и
-//     buoyancy (качка shipPhysics.js) + модель моря 'storm'.
-//     Старые сохранения: боезапас сбрасывается только если версия < 3.
-// v5 (Task 31): плавание/посадка/углы — ДЛЯ ВСЕХ моделей моря:
-//     draftOffset (осадка ±м), boatDraftMul (осадка шлюпки ×),
-//     heelMaxDeg/pitchMaxDeg (пределы наклона), boatSmooth; поля
-//     пружины/замеров теперь действуют и на «волну-опору».
-//     Дефолты равны прежним «зашитым» значениям — поведение не меняется.
-const SCHEMA_VER = 5;
+// v3: высота волн больше НЕ настраивается — только сила ветра;
+//     стартовый боезапас реалистичный 40/12/20/8.
+// v4 (Task 29): разделы sea/buoyancy + модель моря 'storm'.
+// v5 (Task 31): плавание/посадка/углы для всех моделей моря.
+// v6 (Task 33): ЕДИНОЕ МОРЕ (Герстнер + FBM) — модели моря и
+//     штормовой модуль УДАЛЕНЫ: разделы sea/buoyancy и
+//     weather.seaModel больше не читаются. Новые разделы:
+//     physics (режим реалистичная/простая + НОВАЯ плавучесть:
+//     осадка/углы/шлюпка + вероятность смыва матросов 30%),
+//     gameplay.boatCount (количество шлюпок 0..2),
+//     gameplay.simpleControls (упрощённое управление),
+//     graphics.wireframe (треугольники без текстур по категориям).
+//     Старые сохранения v5 и ниже: боезапас сбрасывается только если
+//     версия < 3; прочие старые поля игнорируются, новые — дефолты.
+const SCHEMA_VER = 6;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -233,6 +231,12 @@ export function loadSettings(): GameSettings {
       if (typeof g.foamQuality === 'number') s.graphics.foamQuality = Math.min(2, Math.max(0, Math.round(g.foamQuality)));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
       if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
+      if (isObj(g.wireframe)) {
+        const w = g.wireframe;
+        for (const k of ['water', 'ships', 'islands', 'vegetation'] as const) {
+          if (typeof w[k] === 'boolean') s.graphics.wireframe[k] = w[k] as boolean;
+        }
+      }
     }
     if (isObj(data.controls)) {
       const c = data.controls;
@@ -267,42 +271,29 @@ export function loadSettings(): GameSettings {
       if (typeof data.gameplay.infiniteAmmo === 'boolean') s.gameplay.infiniteAmmo = data.gameplay.infiniteAmmo;
       if (typeof data.gameplay.ammoJitter === 'boolean') s.gameplay.ammoJitter = data.gameplay.ammoJitter;
       if (typeof data.gameplay.startMoney === 'number') s.gameplay.startMoney = Math.min(100000, Math.max(0, Math.round(data.gameplay.startMoney)));
+      if (typeof data.gameplay.boatCount === 'number') s.gameplay.boatCount = Math.min(2, Math.max(0, Math.round(data.gameplay.boatCount)));
+      if (typeof data.gameplay.simpleControls === 'boolean') s.gameplay.simpleControls = data.gameplay.simpleControls;
     }
     if (isObj(data.weather)) {
       const w = data.weather;
       if (typeof w.mode === 'string' && ['clear', 'rain', 'storm', 'fog'].includes(w.mode)) s.weather.mode = w.mode as WeatherMode;
       if (typeof w.windSpeed === 'number') s.weather.windSpeed = Math.min(24, Math.max(0, w.windSpeed));
       if (typeof w.windDir === 'number') s.weather.windDir = ((Math.round(w.windDir) % 360) + 360) % 360;
-      if (w.seaModel === 'riding' || w.seaModel === 'physical' || w.seaModel === 'storm') s.weather.seaModel = w.seaModel;
+      // v6: weather.seaModel удалён (единое море) — игнорируем старое поле
     }
-    if (isObj(data.sea)) {
-      const m = data.sea;
-      if (typeof m.waveHeight === 'number') s.sea.waveHeight = Math.min(2, Math.max(0.3, m.waveHeight));
-      if (typeof m.waveLength === 'number') s.sea.waveLength = Math.min(1.8, Math.max(0.6, m.waveLength));
-      if (typeof m.foam === 'number') s.sea.foam = Math.min(1.5, Math.max(0, m.foam));
-      if (typeof m.farSeg === 'number') s.sea.farSeg = Math.min(320, Math.max(128, Math.round(m.farSeg / 16) * 16));
-      if (typeof m.nearSeg === 'number') s.sea.nearSeg = Math.min(320, Math.max(128, Math.round(m.nearSeg / 16) * 16));
-      if (typeof m.nearSize === 'number') s.sea.nearSize = Math.min(500, Math.max(260, Math.round(m.nearSize / 20) * 20));
-    }
-    if (isObj(data.buoyancy)) {
-      const b = data.buoyancy;
-      if (typeof b.heaveStiffness === 'number') s.buoyancy.heaveStiffness = Math.min(12, Math.max(1, b.heaveStiffness));
-      if (typeof b.heaveDamping === 'number') s.buoyancy.heaveDamping = Math.min(6, Math.max(0.5, b.heaveDamping));
-      if (typeof b.orientResponse === 'number') s.buoyancy.orientResponse = Math.min(8, Math.max(0.5, b.orientResponse));
-      if (typeof b.sinkHeel === 'number') s.buoyancy.sinkHeel = Math.min(3, Math.max(0, b.sinkHeel));
-      if (typeof b.sinkSpeed === 'number') s.buoyancy.sinkSpeed = Math.min(0.08, Math.max(0, b.sinkSpeed));
-      if (typeof b.sampleForeAft === 'number') s.buoyancy.sampleForeAft = Math.min(0.6, Math.max(0.2, b.sampleForeAft));
-      if (typeof b.sampleSide === 'number') s.buoyancy.sampleSide = Math.min(1, Math.max(0.4, b.sampleSide));
-      if (typeof b.immersionFrigate === 'number') s.buoyancy.immersionFrigate = Math.min(0.75, Math.max(0.25, b.immersionFrigate));
-      if (typeof b.immersionBoat === 'number') s.buoyancy.immersionBoat = Math.min(0.85, Math.max(0.25, b.immersionBoat));
-      if (typeof b.immersionDefault === 'number') s.buoyancy.immersionDefault = Math.min(0.75, Math.max(0.25, b.immersionDefault));
-      if (typeof b.floodCooldown === 'number') s.buoyancy.floodCooldown = Math.min(6, Math.max(0.5, b.floodCooldown));
-      // v5 (Task 31): плавание для всех моделей моря
-      if (typeof b.draftOffset === 'number') s.buoyancy.draftOffset = Math.min(0.8, Math.max(-0.8, b.draftOffset));
-      if (typeof b.boatDraftMul === 'number') s.buoyancy.boatDraftMul = Math.min(3, Math.max(0.5, b.boatDraftMul));
-      if (typeof b.heelMaxDeg === 'number') s.buoyancy.heelMaxDeg = Math.min(35, Math.max(6, b.heelMaxDeg));
-      if (typeof b.pitchMaxDeg === 'number') s.buoyancy.pitchMaxDeg = Math.min(35, Math.max(8, b.pitchMaxDeg));
-      if (typeof b.boatSmooth === 'number') s.buoyancy.boatSmooth = Math.min(25, Math.max(6, b.boatSmooth));
+    if (isObj(data.physics)) {
+      const p = data.physics;
+      if (p.mode === 'realistic' || p.mode === 'simple') s.physics.mode = p.mode;
+      if (isObj(p.buoyancy)) {
+        const b = p.buoyancy;
+        if (typeof b.heelMaxDeg === 'number') s.physics.buoyancy.heelMaxDeg = Math.min(35, Math.max(6, b.heelMaxDeg));
+        if (typeof b.pitchMaxDeg === 'number') s.physics.buoyancy.pitchMaxDeg = Math.min(35, Math.max(8, b.pitchMaxDeg));
+        if (typeof b.draftOffset === 'number') s.physics.buoyancy.draftOffset = Math.min(0.8, Math.max(-0.8, b.draftOffset));
+        if (typeof b.boatDraftMul === 'number') s.physics.buoyancy.boatDraftMul = Math.min(3, Math.max(0.5, b.boatDraftMul));
+        if (typeof b.boatSmooth === 'number') s.physics.buoyancy.boatSmooth = Math.min(25, Math.max(6, b.boatSmooth));
+        if (typeof b.washProbabilityPct === 'number') s.physics.buoyancy.washProbabilityPct = Math.min(100, Math.max(0, b.washProbabilityPct));
+        if (typeof b.washCooldownS === 'number') s.physics.buoyancy.washCooldownS = Math.min(25, Math.max(2, b.washCooldownS));
+      }
     }
     if (isObj(data.fx)) {
       const f = data.fx;
@@ -334,9 +325,10 @@ export function saveSettings(s: GameSettings) {
   }
 }
 
-/** Применить пресет к графике (копируем поля пресета) */
+/** Применить пресет к графике (копируем поля пресета; каркас —
+ *  настройка пользователя, пресетом не перетирается) */
 export function applyPreset(g: GraphicsSettings, preset: QualityPreset): GraphicsSettings {
-  return { preset, ...QUALITY_PRESETS[preset] };
+  return { preset, ...QUALITY_PRESETS[preset], wireframe: { ...g.wireframe } };
 }
 
 /** Реалистичная «недостача» боезапаса при выходе в море: каждый тип

@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { waterHeightAt, SEA } from '../water/waves';
+import { waterHeightAt } from '../water/waves';
 import { updateBoatFalls, type BoatVis } from './buildShip';
 import type { Ship } from './Ship';
 import { buildFigure, rollTraits, mulberry32 } from './crew';
 import type { Particles } from '../fx/particles';
 import { WakeTrail, WaterlineFoam } from '../water/wake';
-import { ShipBuoyancy, BUOYANCY_CONFIG } from '../sea/shipPhysics';
+import { BUOYANCY_CONFIG } from '../water/buoyancy';
 
 // ============================================================
 // СПУСК ШЛЮПКИ НА ВОДУ (по замечанию игрока: «можно спустить
@@ -91,12 +91,6 @@ export class BoatLaunch {
   oarDeploy = 0;
   roll = 0; pitch = 0;
   private bowFoamCd = 0;       // кулдаун буруна у носа
-
-  // качка штормового модуля (Task 29, shipPhysics.js): ял на
-  // волнах моря 'storm' — та же ShipBuoyancy, что и у кораблей
-  readonly buoy = new ShipBuoyancy();
-  /** счётчик заливаний шлюпки (телеметрия) */
-  stormFloods = 0;
 
   // гребцы в шлюпке (видны только на воде) — по списку на ял (Task 31)
   // (создаются в конструкторе для КАЖДОГО яла, см. rowersByBoat)
@@ -512,13 +506,8 @@ export class BoatLaunch {
       }
     }
 
-    // --- ПЛАВУЧЕСТЬ ЯЛА ---
-    // ШТОРМОВОЙ МОДУЛЬ (Task 29): посадка/наклон — из ShipBuoyancy
-    // (shipPhysics.js игрока): 4+1 замер, нормаль, пружинный гейв.
-    // Отсчёт высоты — планширь яла ≈ КВЛ, поэтому depth=0, а
-    // immersion (настройка «посадка шлюпки») смещает её ±0.5.
-    // Task 31: осадка/пределы наклона/плавность — из настроек
-    // «Плавание и качка» (действуют во ВСЕХ моделях моря)
+    // 7 ТОЧЕК НА ВОЛНЕ единого моря (Герстнер + FBM): посадка/наклон —
+    // из настроек плавучести; штормовая ветка удалена (Task 33)
     const L = this.active.len, B = this.active.beam;
     const draft = L * 0.155 * 0.15 * BUOYANCY_CONFIG.boatDraftMul;  // осадка яла (настройка ×)
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
@@ -527,23 +516,7 @@ export class BoatLaunch {
       this.onSplash?.();
       this.splashed = true;
     }
-    if (SEA.model === 'storm') {
-      const hullDepth = L * 0.155;             // высота борта яла, м
-      this.buoy.setVessel({ type: 'boat', len: L, beam: B, depth: 0, deck: 0.12 });
-      this.buoy.update(dt, time, {
-        x: this.pos.x, z: this.pos.z, yaw: this.heading, speed: Math.abs(this.vel),
-      }, waterHeightAt);
-      this.pos.y = this.buoy.y + (this.buoy.vessel.immersion - 0.5) * hullDepth;
-      b.position.set(this.pos.x, this.pos.y + Math.sin(time * 1.7) * 0.015, this.pos.z);
-      // наклон — кватернион модуля + лёгкая качка от гребков;
-      // пределы — настройки «углы наклона» (Task 31)
-      this._e.setFromQuaternion(this.buoy.q, 'YXZ');
-      this.pitch = THREE.MathUtils.clamp(this._e.x, -BUOYANCY_CONFIG.pitchMax, BUOYANCY_CONFIG.pitchMax);
-      this.roll = THREE.MathUtils.clamp(this._e.z, -BUOYANCY_CONFIG.heelMax, BUOYANCY_CONFIG.heelMax)
-        + (rowing ? Math.sin(this.strokePhase) * 0.035 : 0);
-      b.quaternion.setFromEuler(this._e.set(this.pitch, this.heading, this.roll, 'YXZ'));
-      if (this.buoy.events.floodPort || this.buoy.events.floodStar) this.stormFloods++;
-    } else {
+    if (true) {  // единая ветка плавучести (Task 33)
       // 7 ТОЧЕК НА ВОЛНЕ (Task 27→28): нос/корма/борта/мидель +
       // ПОЛУНОС и ПОЛУКОРМА — между прежними 5 точками середина
       // корпуса проваливалась ПОД гребень на коротких волнах

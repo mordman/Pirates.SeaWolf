@@ -427,11 +427,11 @@ export default function Home() {
       ctx.fillStyle = s.surrendered ? '#e8e4d8' : ['brig', 'galleon', 'frigate'].includes(s.kind) ? '#c23b3b' : '#d8a03c';
       ctx.beginPath(); ctx.arc(px(s.x), pz(s.z), 4, 0, Math.PI * 2); ctx.fill();
     }
-    // игрок
+    // игрок (стрелка носом по курсу; север карты = −Z, как на миникарте)
     const p = hud.mapPlayer;
     ctx.save();
     ctx.translate(px(p.x), pz(p.z));
-    ctx.rotate(-p.h);
+    ctx.rotate(Math.PI - p.h);
     ctx.fillStyle = '#7dd3fc';
     ctx.beginPath();
     ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7);
@@ -507,7 +507,7 @@ export default function Home() {
               <span><b className="text-amber-200">Колесо</b> — зум</span>
               <span><b className="text-amber-200">Alt+W/S</b> — вёсла · <b className="text-amber-200">S</b> — назад · <b className="text-amber-200">O</b> — вывалить · <b className="text-amber-200">P</b> — порты</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</span>
-              <span><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить шлюпку на воду (на якоре/малым ходом); на судне ДВЕ шлюпки — правого и левого борта, спускается первая целая</span>
+              <span><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить шлюпку на воду (на якоре/малым ходом); сколько шлюпок на борту — настройка «Игра», спускается первая целая</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.repair)}</b> — ремонт / откачка</span>
               <span><b className="text-amber-200">{keyLabel(settings.controls.map)}</b> — карта · <b className="text-amber-200">{keyLabel(settings.controls.help)}</b> — помощь</span>
             </div>

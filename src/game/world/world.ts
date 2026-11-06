@@ -384,6 +384,13 @@ export class World {
     this.buildAnimals();
     // полигоны берега (неправильная форма) — для карт: считаем раз
     for (let i = 0; i < this.islands.length; i++) this.outlines.push(islandOutline(i, 56));
+    // КАРКАС «треугольники без текстур» (Task 33): категория
+    // каждого объекта для настройки. Растительность помечена при
+    // сборке ('veg'); всё прочее в мире (рельеф, постройки,
+    // причалы, животные) — «острова»
+    this.group.traverse((o) => {
+      if (!o.userData.wire) o.userData.wire = 'island';
+    });
   }
 
   // ---------- острова ----------
@@ -521,6 +528,7 @@ export class World {
         const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
         if (types[kind].sway > 0) applySway(mat, types[kind].sway);
         const inst = new THREE.InstancedMesh(geo, mat, list.length);
+        inst.userData.wire = 'veg';   // каркас: категория «растительность»
         list.forEach((p, i) => inst.setMatrixAt(i, p.m));
         inst.castShadow = true;
         inst.receiveShadow = false;
