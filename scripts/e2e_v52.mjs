@@ -309,8 +309,8 @@ const migr = jparse(ev(`(() => {
   return JSON.stringify({ v: after.v, foamInGame: 'foamQuality' in g.settings.graphics,
     physicsOK: !!g.settings.physics });
 })()`));
-check('E3: миграция v6→v7: foamQuality из старого сохранения игнорируется, схема перезаписана в v7',
-  migr.v === 7 && migr.foamInGame === false && migr.physicsOK === true, JSON.stringify(migr));
+check('E3: миграция v6→v7+: foamQuality из старого сохранения игнорируется, схема перезаписана (v7 и новее)',
+  migr.v >= 7 && migr.foamInGame === false && migr.physicsOK === true, JSON.stringify(migr));
 
 log(`\n===== ИТОГ: ${fails === 0 ? 'ALL OK' : fails + ' FAIL'} =====`);
 run('close');

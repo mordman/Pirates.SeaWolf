@@ -46,6 +46,7 @@ export interface ShipOpts {
   durabilityMul?: number;              // множитель прочности корпуса/парусов/мачт
   ammo?: Record<string, number>;       // стартовый боезапас (игрок)
   boatCount?: number;                  // СКОЛЬКО шлюпок на шлюпбалках (0..2)
+  crewCats?: boolean;                  // экипаж из КОТОВ вместо матросов (только игрок)
 }
 
 const G = 9.81;
@@ -318,10 +319,9 @@ export class Ship {
     // выставлена до создания этого корабля
     this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset);
 
-    // экипаж на палубе: процедурные типажи, сид фиксирован по модели
-    const seed = Array.from(presetId).reduce((a, ch) => a + ch.charCodeAt(0) * 31, 11)
-      + Math.round(this.preset.length * 7);
-    this.crew3d = buildCrew(this.preset, seed);
+    // экипаж на палубе: процедурные типажи, сид фиксирован по модели;
+    // у игрока может быть «экипаж из котов» (настройка, cats.ts)
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -334,6 +334,25 @@ export class Ship {
       this.mastFall.push(-1);
       this.mastSplashed.push(false);
     }
+  }
+
+  /** сид экипажа — фиксирован по модели корабля (стабильные лица) */
+  private crewSeed(): number {
+    return Array.from(this.preset.id).reduce((a, ch) => a + ch.charCodeAt(0) * 31, 11)
+      + Math.round(this.preset.length * 7);
+  }
+
+  /** ПЕРЕСОБРАТЬ экипаж на лету: матросы ↔ коты (настройка
+   *  «заменить всех матросов на котов», только корабль игрока).
+   *  Потери не сохраняются — палуба заново укомплектована */
+  rebuildCrew(allCats: boolean) {
+    this.visual.group.remove(this.crew3d.group);
+    this.crew3d.group.traverse(o => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats);
+    this.visual.group.add(this.crew3d.group);
   }
 
   halfWidthAt(z: number): number {

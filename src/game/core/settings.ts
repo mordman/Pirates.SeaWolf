@@ -106,6 +106,7 @@ export interface GameplaySettings {
   startMoney: number;       // стартовое золото игрока (0..100000, применяется сразу)
   boatCount: number;        // 0..2 — СКОЛЬКО ШЛЮПОК на борту (штирборт/порт)
   simpleControls: boolean;  // УПРОЩЁННОЕ УПРАВЛЕНИЕ: руль на любой скорости, паруса тянут при любом курсе
+  catsInsteadOfCrew: boolean; // ЗАМЕНИТЬ ВСЕХ МАТРОСОВ НА КОТОВ: экипаж на палубе игрока — коты
 }
 
 export interface GameSettings {
@@ -166,6 +167,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     startMoney: 350,
     boatCount: 2,        // шлюпки на обоих бортах (настройка)
     simpleControls: false,
+    catsInsteadOfCrew: false,   // экипаж — матросы; коты покупаются в порту
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
@@ -209,7 +211,10 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     вода, белое — только прибой у островов): настройка
 //     graphics.foamQuality больше не существует и игнорируется.
 //     Обе физики плывут ПО поверхности волн.
-const SCHEMA_VER = 7;
+// v8 (Task 35): КОТЫ — gameplay.catsInsteadOfCrew: заменить всех
+//     матросов на котов (экипаж на палубе игрока); корабельные
+//     коты покупаются в порту (до 5) — состояние игры, не настроек.
+const SCHEMA_VER = 8;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -276,6 +281,7 @@ export function loadSettings(): GameSettings {
       if (typeof data.gameplay.startMoney === 'number') s.gameplay.startMoney = Math.min(100000, Math.max(0, Math.round(data.gameplay.startMoney)));
       if (typeof data.gameplay.boatCount === 'number') s.gameplay.boatCount = Math.min(2, Math.max(0, Math.round(data.gameplay.boatCount)));
       if (typeof data.gameplay.simpleControls === 'boolean') s.gameplay.simpleControls = data.gameplay.simpleControls;
+      if (typeof data.gameplay.catsInsteadOfCrew === 'boolean') s.gameplay.catsInsteadOfCrew = data.gameplay.catsInsteadOfCrew;
     }
     if (isObj(data.weather)) {
       const w = data.weather;

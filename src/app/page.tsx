@@ -859,6 +859,7 @@ export default function Home() {
                 <div className="flex justify-between"><span>Корабль</span><span className="text-amber-200">{hud.shipName || '—'}</span></div>
                 <div className="flex justify-between"><span>Корпус</span><span>{Math.round(hud.hullPct * 100)}% · ремонт {g.repairCost} зол.</span></div>
                 <div className="flex justify-between"><span>Команда</span><span>{hud.crew} / {hud.maxCrew}</span></div>
+                <div className="flex justify-between"><span>Коты</span><span className="text-amber-200">🐱 {hud.cats} / 5</span></div>
                 <div className="flex justify-between"><span>Трюм</span>
                   <span className={hud.cargoT >= hud.cargoMaxT - 0.01 ? 'text-red-400 font-bold' : 'text-amber-200'}>
                     {hud.cargoT} / {hud.cargoMaxT} т
@@ -918,6 +919,10 @@ export default function Home() {
                 <button onClick={() => act(gg => gg.portHireCrew())}
                   className="pointer-events-auto rounded-lg border border-stone-700 bg-stone-900/60 px-3 py-2 text-left transition hover:bg-stone-800">
                   🧑‍⚓ Нанять матроса<div className="text-[11px] text-stone-400">30 зол. · быстрее перезарядка</div>
+                </button>
+                <button onClick={() => act(gg => gg.portBuyCat())}
+                  className="pointer-events-auto rounded-lg border border-amber-800 bg-amber-900/40 px-3 py-2 text-left transition hover:bg-amber-800/50">
+                  🐱 Купить кота<div className="text-[11px] text-stone-400">50 зол. · на борту: {hud.cats}/5 · ловит мышей</div>
                 </button>
               </div>
             )}

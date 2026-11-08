@@ -478,6 +478,11 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={e => update(d => { d.gameplay.simpleControls = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                <Row label="🐱 Экипаж из котов" hint="заменить всех матросов на котов: капитан-кот у штурвала, боцман-кот у шпиля, канониры-коты таскают ядра; корабельные коты из порта остаются на палубе; применяется сразу (только ваш корабль)">
+                  <input type="checkbox" checked={s.gameplay.catsInsteadOfCrew}
+                    onChange={e => update(d => { d.gameplay.catsInsteadOfCrew = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
               </div>
               <div className="py-2">
                 <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Кошелёк капитана</div>

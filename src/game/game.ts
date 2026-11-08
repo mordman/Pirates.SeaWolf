@@ -18,6 +18,7 @@ import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
 import { setCrewFx, deckCrewFor } from './ship/crew';
+import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
@@ -70,6 +71,8 @@ export interface HudState {
   ammoCounts: Record<string, number>;
   planks: number;
   gold: number;
+  /** корабельные коты (покупаются в порту, 0..5) */
+  cats: number;
   cargo: Record<string, number>;
   cargoT: number;          // занято трюма, т
   cargoMaxT: number;       // грузоподъёмность, т
@@ -214,6 +217,14 @@ export class Game {
   settings: GameSettings;         // графика/управление/звук (см. core/settings.ts)
   uiOpen = false;                 // открыт ли модальный экран (пауза ввода)
   paused = false;                 // отладка/E2E: заморозить физику (рендер идёт)
+
+  // ===== Корабельные коты (только игрок; покупаются в порту) =====
+  /** сколько котов на борту (0..MAX_SHIP_CATS) */
+  catCount = 0;
+  /** клички котов по индексам (порт даёт первую свободную) */
+  catNames: string[] = [];
+  /** визуал котов на корабле игрока (пересоздаётся со сменой судна) */
+  cats3d: CatsVisual | null = null;
 
   // ===== Экономика порта =====
   /** ближайшая гавань (для подсказки швартовки) */
@@ -475,6 +486,14 @@ export class Game {
       this.changeShip(this.player.preset.id, true, true);
       this.pushMessage(`Шлюпок на борту: ${s.gameplay.boatCount}`);
     }
+    // экипаж из котов — пересобрать фигуры на палубе игрока
+    // (NPC-корабли остаются с матросами: коты — только у игрока)
+    if (prev.gameplay.catsInsteadOfCrew !== s.gameplay.catsInsteadOfCrew) {
+      this.player.rebuildCrew(s.gameplay.catsInsteadOfCrew);
+      this.pushMessage(s.gameplay.catsInsteadOfCrew
+        ? '🐱 Экипаж заменён котами: капитан-кот у штурвала, боцман-кот у шпиля, канониры-коты таскают ядра'
+        : 'Экипаж снова из матросов');
+    }
     // каркас «треугольники без текстур» по категориям
     if (JSON.stringify(prev.graphics.wireframe) !== JSON.stringify(g.wireframe)) {
       this.applyWireframe(g.wireframe);
@@ -533,6 +552,11 @@ export class Game {
     this.wind.speed = speed;
   }
 
+  /** Отладочный хук для E2E: выпустить мышь на палубу (котам нужна добыча) */
+  debugSpawnMouse() {
+    this.cats3d?.spawnMouseNow();
+  }
+
   private spawnShips() {
     const terrain = (x: number, z: number) => heightAt(x, z);
     // прочность кораблей — из настроек; боезапас игрока — стартовый набор
@@ -541,7 +565,8 @@ export class Game {
     const startAmmo = gp.ammoJitter
       ? rollStartingAmmo(gp.startingAmmo).ammo
       : { ...gp.startingAmmo };
-    const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo, boatCount: gp.boatCount };
+    const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo, boatCount: gp.boatCount,
+      crewCats: gp.catsInsteadOfCrew };
     const aiOpts = { durabilityMul: gp.hullDurability, boatCount: gp.boatCount };
     // игрок: шлюп в глубокой воде за пирсом
     this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
@@ -564,6 +589,9 @@ export class Game {
       msg: (t) => this.pushMessage(t),
       onSplash: () => this.audio.splash(0),
     });
+
+    // корабельные коты — палуба игрока (если уже куплены)
+    this.attachCats();
 
     // торговцы (спавн в проверенно глубокой воде)
     const routes: THREE.Vector3[][] = [
@@ -986,7 +1014,8 @@ export class Game {
     // выставлено в настройках, Task 33)
     const gp = this.settings.gameplay;
     const np = new Ship(presetId, true, this.wind, (x, z) => heightAt(x, z), this.particles,
-      { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo }, boatCount: gp.boatCount });
+      { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo }, boatCount: gp.boatCount,
+        crewCats: gp.catsInsteadOfCrew });
     // не отнимать боезапас при смене (берём максимум из текущего и стартового)
     (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
       np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
@@ -1034,6 +1063,8 @@ export class Game {
     this.worldGroup.add(np.visual.group);
     this.worldGroup.add(np.foam.mesh);
     this.worldGroup.add(np.wake.mesh);
+    // коты перебираются на новый корабль вместе с капитаном
+    this.attachCats();
     // каркас кораблей — на новый визуал
     this.applyWireframe(this.settings.graphics.wireframe);
     this.rig.snap();
@@ -1154,6 +1185,41 @@ export class Game {
     if (this.player.gold < 30) return 'Не хватает золота';
     this.player.gold -= 30;
     this.player.crew++;
+    return null;
+  }
+
+  // ===== КОРАБЕЛЬНЫЕ КОТЫ: покупка в порту (только игрок, ≤5) =====
+  /** собрать «кошачью палубу» на текущем корабле игрока
+   *  (вызывается при старте и после смены судна) */
+  private attachCats() {
+    const seed = Array.from(this.player.preset.id)
+      .reduce((a, ch) => a + ch.charCodeAt(0) * 17, 5)
+      + Math.round(this.player.preset.beam * 91);
+    this.cats3d = buildCats(this.player.preset, seed, (idx) => {
+      // кот поймал мышь — сообщение с кличкой (не чаще раза в 20 с)
+      const now = this.time;
+      if (now - this._lastCatMsg < 20) return;
+      this._lastCatMsg = now;
+      const nm = this.catNames[idx] ?? 'Кот';
+      this.pushMessage(`🐱 ${nm} поймал мышь!`);
+    });
+    this.cats3d.setCount(this.catCount);
+    this.player.visual.group.add(this.cats3d.group);
+  }
+
+  private _lastCatMsg = -1e9;
+
+  /** купить кота в порту: 50 зол., не более 5 на борту */
+  portBuyCat(): string | null {
+    if (this.catCount >= MAX_SHIP_CATS) return 'На борту уже пять котов — больше не возьмут';
+    if (this.player.gold < CAT_PRICE) return `Не хватает золота (кот стоит ${CAT_PRICE} зол.)`;
+    this.player.gold -= CAT_PRICE;
+    const used = new Set(this.catNames);
+    const name = CAT_NAMES.find(n => !used.has(n)) ?? 'Кот';
+    this.catNames[this.catCount] = name;
+    this.catCount++;
+    this.cats3d?.setCount(this.catCount);
+    this.pushMessage(`🐱 Кот ${name} взошёл по трапу! Котов на борту: ${this.catCount}/${MAX_SHIP_CATS}`);
     return null;
   }
 
@@ -1586,7 +1652,7 @@ export class Game {
       speed: 0, headingDeg: 0, windFromDeg: 0, windSpeed: 0, windRelDeg: 0,
       sailLevel: 0, rudder: 0, hullPct: 1, sailPct: 1, crew: 0, maxCrew: 0, waterPct: 0,
       onFire: false, firePct: 0, anchored: false, grounded: false, sinking: false,
-      ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cargo: {},
+      ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cats: 0, cargo: {},
       cargoT: 0, cargoMaxT: 0,
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
       cameraLabel: CAMERA_LABEL.iso, clock: '', seaState: 0, repairAction: null,
@@ -1637,6 +1703,7 @@ export class Game {
     h.ammoCounts = { ...p.ammo };
     h.planks = Math.floor(p.planks);
     h.gold = Math.floor(p.gold);
+    h.cats = this.catCount;
     h.cargo = { ...p.cargo };
     h.aiming = this.combat.aim.active;
     h.aimSide = this.combat.aim.side === 1 ? 'правый борт' : 'левый борт';
@@ -2010,6 +2077,16 @@ export class Game {
       crewShown: p.crew3d.shown,
       crewDead: p.crew3d.dead,
       crewTotal: p.crew3d.total,
+      crewIsCats: p.crew3d.isCats === true,
+      // корабельные коты (e2e): сколько куплено/активно/поймано мышей
+      cats: {
+        bought: this.catCount,
+        active: this.cats3d?.count ?? 0,
+        caught: this.cats3d?.caught ?? 0,
+        mice: this.cats3d?.mice ?? 0,
+        names: this.catNames.slice(0, this.catCount),
+        state: this.cats3d?.catState() ?? [],
+      },
       deckFor: deckCrewFor(p.crew),          // сколько ДОЛЖНО быть на палубе
       rigSnapped: p.riggingSnapped(),         // обрывов такелажа (обвязка мачт)
       lairFolk: this.lairFolk
@@ -2180,6 +2257,11 @@ export class Game {
 
     // шлюпка: спуск/подъём/гребля — после визуала корабля
     this.boatLaunch?.update(dt, this.time, this.negShift);
+
+    // корабельные коты: бродят/бегают/ловят мышей (только игрок)
+    this.cats3d?.update(dt, this.time, {
+      sinking: this.player.sinking, sunk: this.player.sunk,
+    });
 
     // мелкие детали кораблей — только когда камера рядом (LOD)
     const camPos = this.rig.camera.position;

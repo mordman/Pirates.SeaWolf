@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './buildShip';
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
+import { buildCatCrewFigure } from './cats';
 
 // ============================================================
 // Экипаж на палубе: процедурные типажи «наугад» — бороды,
@@ -47,7 +48,7 @@ export function setCrewFx(gibs: GibPool, particles: Particles) {
 /** Текущие эффекты (гибы/частицы) — для islandFolk.ts */
 export function crewFx() { return FX; }
 
-type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker' | 'helmsman' | 'rower';
+export type CrewRole = 'captain' | 'boatswain' | 'gunner' | 'watch' | 'walker' | 'helmsman' | 'rower';
 export type DeathMode = 'fall' | 'gib';
 /** способ поражения: картечь валит, ядро разрывает */
 export type KillMode = 'grape' | 'ball';
@@ -86,6 +87,11 @@ export interface CrewFigure {
   // цвета/протезы — для кусков при разрыве
   skin: number; shirt: number; pants: number;
   hasHook: boolean; hasPeg: boolean;
+  // КОШАЧЬИ размеры (режим «экипаж из котов»): капсула попаданий
+  // ниже человеческой, центр тела у палубы; дефолты — матрос 1.62 м
+  hitLo?: number;   // низ капсулы над палубой (человек 0.12, кот 0.03)
+  hitH?: number;    // верх капсулы (человек 1.62, кот 0.40)
+  midY?: number;    // центр тела для гибов/смыва (человек 0.75, кот 0.22)
 }
 
 /** Маршрут полезной работы фигуры (локальные координаты корабля):
@@ -396,6 +402,8 @@ export interface CrewVisual {
   total: number;
   shown: number;          // живые видимые фигуры
   dead: number;           // потери (трупы + разорванные)
+  /** режим «экипаж из котов»: все фигуры — коты (настройка) */
+  isCats?: boolean;
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
   /** Поражение экипажа вдоль пути снаряда (a→b в ЛОКАЛЬНЫХ координатах
@@ -416,8 +424,10 @@ export interface CrewVisual {
 /** Собрать экипаж для корабля (local coords: +Z нос, +X порт).
  *  Число фигур = deckCrewFor(maxCrew): 1 фигура = 1 человек;
  *  500-экипаж → 50 фигур, минимум 10 — от 10 на шлюпе до ~73
- *  на линейном корабле */
-export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
+ *  на линейном корабле.
+ *  allCats — режим «заменить всех матросов на котов»: та же
+ *  логика ролей/маршрутов, но фигуры — коты (cats.ts) */
+export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVisual {
   const group = new THREE.Group();
   const L = P.length;
   // палуба под ногами: на квартердеке — приподнята; корма судов
@@ -502,7 +512,9 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
     // ноги (шагают), маршруты задаются ниже
     const busy = role === 'captain' || role === 'boatswain'
       || role === 'gunner' || role === 'watch';
-    const f = buildFigure(role, rollTraits(rot, role), nextSeed(), busy || role === 'walker');
+    const f = allCats
+      ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
+      : buildFigure(role, rollTraits(rot, role), nextSeed(), busy || role === 'walker');
     if (role === 'captain') {
       // капитан — РАСХАЖИВАЕТ по квартердеку за спиной рулевого
       // (замирает и смотрит на горизонт)
@@ -535,10 +547,13 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       const side = ri % 2 === 0 ? -1 : 1;
       ri++;
       place(f, side * Math.max(0.55, halfW(z) * 0.5), z + 0.35, Math.PI);
-      // «сидит»: приземнее и приземистее стоящего матроса
-      f.group.position.y -= 0.30;
-      f.group.scale.y = 0.78;
-      f.baseScaleY = 0.78;
+      // «сидит»: матрос приземленее и приземистее (гребная банка);
+      // кот-гребец просто сидит — он и так низенький
+      if (!allCats) {
+        f.group.position.y -= 0.30;
+        f.group.scale.y = 0.78;
+        f.baseScaleY = 0.78;
+      }
     } else if (role === 'gunner') {
       // канонир — ОБСЛУЖИВАЕТ орудие: челнок орудие↔пороховая яма,
       // у ствола наклоняется (заряжает), у кучи — берёт ядро
@@ -609,9 +624,9 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
     f.dead = true;
     f.deadT = 0;
     f.deathMode = mode === 'grape' ? 'fall' : 'gib';
-    // мировые координаты центра тела
+    // мировые координаты центра тела (у котов центр у самой палубы)
     const lp = f.group.position;
-    const wpos = new THREE.Vector3(lp.x, lp.y + 0.75, lp.z).applyQuaternion(shipQuat).add(shipPos);
+    const wpos = new THREE.Vector3(lp.x, lp.y + (f.midY ?? 0.75), lp.z).applyQuaternion(shipQuat).add(shipPos);
     // мировое направление пути снаряда
     const wdir = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
     if (wdir.lengthSq() < 1e-6) wdir.set(0, 0, 1);
@@ -655,7 +670,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
   };
 
   const vis: CrewVisual = {
-    group, total: figures.length, shown: figures.length, dead: 0,
+    group, total: figures.length, shown: figures.length, dead: 0, isCats: allCats,
     setVisible(v: boolean) { group.visible = v; },
     killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
       // ТОЧНОЕ поражение: путь снаряда (a→b, локальные координаты корабля)
@@ -668,8 +683,8 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
       for (const f of figures) {
         if (f.dead || !f.group.visible) continue;
         const p = f.group.position;
-        const lo = new THREE.Vector3(p.x, p.y + 0.12, p.z);
-        const hi = new THREE.Vector3(p.x, p.y + 1.62, p.z);
+        const lo = new THREE.Vector3(p.x, p.y + (f.hitLo ?? 0.12), p.z);
+        const hi = new THREE.Vector3(p.x, p.y + (f.hitH ?? 1.62), p.z);
         const d = segSegDist3D(A, B, lo, hi);
         if (d > radius) continue;
         cands.push({ f, d });
@@ -692,7 +707,7 @@ export function buildCrew(P: ShipPreset, seed: number): CrewVisual {
         if (washed >= n) break;
         if (f.dead || !f.group.visible) continue;
         const lp = f.group.position;
-        wpos.set(lp.x, lp.y + 0.75, lp.z).applyQuaternion(shipQuat).add(shipPos);
+        wpos.set(lp.x, lp.y + (f.midY ?? 0.75), lp.z).applyQuaternion(shipQuat).add(shipPos);
         f.dead = true;
         f.deadT = 0;
         f.deathMode = 'gib';
