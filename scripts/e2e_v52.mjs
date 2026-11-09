@@ -6,9 +6,18 @@
 // заливания 0.15 м, станции нос+мидель); (5) настройка «Качество
 // пены» удалена (схема v7); (6) 0 ошибок JS + скриншоты.
 import { execSync } from 'node:child_process';
-const run = (args) => {
+const runRaw = (args) => {
   try { return execSync(`agent-browser ${args}`, { encoding: 'utf8', timeout: 300000 }).trim(); }
   catch (e) { return `ERR: ${e.stdout || ''} ${e.stderr || ''}`.trim(); }
+};
+// Task 36: тяжёлые сцены занимают демон — повторяем с паузой
+const run = (args, tries = 6) => {
+  let out = runRaw(args);
+  for (let i = 0; i < tries && (!out.trim() || out.includes('Resource temporarily unavailable') || out.includes('Cdp command timed out') || out.includes('Failed to read') || out.includes('page_wedged')); i++) {
+    execSync('sleep 15');
+    out = runRaw(args);
+  }
+  return out;
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const ev = (js) => run(`eval "${js.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`);

@@ -17,9 +17,18 @@
 //  (H) ИИ открывает порты в бою
 //  (I) скриншоты для VLM + страница без ошибок
 import { execSync } from 'node:child_process';
-const run = (args) => {
+const runRaw = (args) => {
   try { return execSync(`agent-browser ${args}`, { encoding: 'utf8', timeout: 120000 }).trim(); }
   catch (e) { return `ERR: ${e.stdout || ''} ${e.stderr || ''}`.trim(); }
+};
+// Task 36: тяжёлые сцены занимают демон — повторяем с паузой
+const run = (args, tries = 6) => {
+  let out = runRaw(args);
+  for (let i = 0; i < tries && (!out.trim() || out.includes('Resource temporarily unavailable') || out.includes('Cdp command timed out') || out.includes('Failed to read') || out.includes('page_wedged')); i++) {
+    execSync('sleep 15');
+    out = runRaw(args);
+  }
+  return out;
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const ev = (js) => run(`eval "${js.replace(/"/g, '\\"')}"`);

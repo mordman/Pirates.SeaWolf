@@ -21,9 +21,18 @@
 //  (J) stepDebug: симуляция шагает без RAF (30 с за один вызов)
 //  (K) 0 ошибок JS
 import { execSync } from 'node:child_process';
-const run = (args) => {
+const runRaw = (args) => {
   try { return execSync(`agent-browser ${args}`, { encoding: 'utf8', timeout: 240000 }).trim(); }
   catch (e) { return `ERR: ${e.stdout || ''} ${e.stderr || ''}`.trim(); }
+};
+// Task 36: тяжёлые сцены занимают демон — повторяем с паузой
+const run = (args, tries = 6) => {
+  let out = runRaw(args);
+  for (let i = 0; i < tries && (!out.trim() || out.includes('Resource temporarily unavailable') || out.includes('Cdp command timed out') || out.includes('Failed to read') || out.includes('page_wedged')); i++) {
+    execSync('sleep 15');
+    out = runRaw(args);
+  }
+  return out;
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const ev = (js) => run(`eval "${js.replace(/"/g, '\\"')}"`);
@@ -61,7 +70,7 @@ await sleep(1500);
 log('=== A: острова неправильной формы ===');
 const shapes = jparse(ev(`JSON.stringify(window.__sea.islandsShape)`));
 log('A:', JSON.stringify(shapes.slice(0, 3)), '…');
-check('A: все 20 островов', shapes.length === 20, `n=${shapes.length}`);
+check('A: все 30 островов (Task 36: мир ×10)', shapes.length === 30, `n=${shapes.length}`);
 check('A: НИ ОДНОГО «круга» (ratio ≥ 1.5 у всех)',
   shapes.every(i => i.ratio >= 1.5),
   `min=${Math.min(...shapes.map(i => i.ratio))}`);
@@ -80,8 +89,9 @@ check('A: формы РАЗНООБРАЗНЫ (разброс ratio ≥ 0.7, ≥
 
 // ============ B: без широких отмелей ============
 log('=== B: острова без отмелей ===');
-const shelf = jparse(ev(`window.__sea.shelf`));
-check('B: полоса мелководья (h:0→−6) ≤ 90 м', shelf <= 90, `ширина=${shelf} м`);
+const shelf = jparse(ev(`(() => { const g = window.__game; return JSON.stringify({ worst: window.__sea.shelf, r: g.world.islands[0].r }); })()`));
+check('B: полоса мелководья (h:0→−6) ≤ 0.3·r (мир ×10 — пропорционально)',
+  shelf.worst <= shelf.r * 0.3, `ширина=${shelf.worst} м при r=${shelf.r}`);
 
 // ============ C: порты целы ============
 log('=== C: порты и гавани ===');
@@ -116,17 +126,12 @@ check('D: все 8 видов (включая пень и валун)',
   kinds.map(k => `${k}:${veg[k] ? veg[k].n : 0}`).join(' '));
 const brk = jparse(ev(`(() => {
   const g = window.__game, w = g.world;
-  // ломаем деревья на пляже Пальмовой гавани
   const isl = w.islands[0];
-  let spot = null;
-  for (let t = 0; t < 80 && !spot; t++) {
-    const a = t * 0.41, rr = isl.r * (0.55 + 0.3 * (t % 7) / 7);
-    const x = isl.cx + Math.cos(a) * rr, z = isl.cz + Math.sin(a) * rr;
-    if (window.__heightAt(x, z) > 1.5) spot = { x, y: window.__heightAt(x, z), z };
-  }
+  const tree = g.debugNearestCuttable(isl.cx, isl.cz, 3500);
+  if (!tree) return JSON.stringify({ broke: 0, total: w.treesBroken, before: w.treesBroken });
   const before = w.treesBroken;
-  const broke = w.breakTrees(spot.x, spot.y, spot.z, 26, g.particles, g.gibs);
-  return JSON.stringify({ broke, total: w.treesBroken, before });
+  const broke = w.breakTrees(tree.x, window.__heightAt(tree.x, tree.z) + 2, tree.z, 26, g.particles, g.gibs);
+  return JSON.stringify({ broke, total: w.treesBroken, before, kind: tree.kind });
 })()`));
 log('D breakTrees:', JSON.stringify(brk));
 check('D: ядра валят деревья (3 куска, счётчик растёт)', brk.broke >= 1, JSON.stringify(brk));
