@@ -11,7 +11,8 @@ import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
-import { World, heightAt, type PortDef } from './world/world';
+import { World, heightAt, VILLAGES, type PortDef } from './world/world';
+import { Lander } from './player/lander';
 import { GLBPartSystem } from './glb/glbParts';
 import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
@@ -112,6 +113,8 @@ export interface HudState {
   target: TargetReport | null;
   /** шлюпка за кормой: фаза спуска, ход, расстояние до кормы */
   boat: { phase: string; t: number; dist: number; speed: number; row: number } | null;
+  /** ВЫСАДКА (Task 36): моряк на берегу — третье лицо/оружие/прицел */
+  land: { active: boolean; weapon: string; weaponLabel: string; aiming: boolean; nearBoat: boolean; canLand: boolean; hint: string } | null;
 }
 
 // ---------- товары (рынок в порту) ----------
@@ -247,7 +250,12 @@ export class Game {
   pgTarget: AIShip | null = null; // мишень на якоре
   pgModel = 'fluyt';              // модель мишени
   pgReturnFire = false;           // отвечает ли мишень огнём
-  private PG_ANCHOR = new THREE.Vector3(3200, 0, 2300); // чистая вода (запас до берега >1.1 км) вдали от островов
+  // ПОЛИГОН на чистой воде (Task 36: карта ×10 — полигон уехал к 32 км)
+  private PG_ANCHOR = new THREE.Vector3(32000, 0, 23000);
+
+  /** ВЫСАДКА НА ОСТРОВ (Task 36): моряк на берегу — третье лицо,
+   *  WASD+мышь, сабля/пистолет */
+  lander: Lander | null = null;
 
   private msgId = 1;
   messages: HudMessage[] = [];
@@ -303,7 +311,14 @@ export class Game {
     this.weather.onThunder = (dist) => this.audio.thunder(dist);
     this.applyFx(this.settings.fx);
     this.updateParticleScale();
-    this.world = new World();
+    // МИР ×10 (Task 36): видимость статики — от дальности прорисовки;
+    // текстурирование рельефа — из настроек
+    this.world = new World({
+      visDistance: g.drawDistance,
+      textures: g.islandTextures,
+    });
+    // стрим рельефа: тайлы держим с запасом за дальностью видимости
+    this.world.terrain.streamDist = g.drawDistance + 2200;
     this.worldGroup.add(this.world.group);
     // GLB-модели деталей: асинхронная замена с фолбэком на процедурные
     // (реестр: описания + промпты генерации — вкладка «Графика»)
@@ -498,6 +513,18 @@ export class Game {
     if (JSON.stringify(prev.graphics.wireframe) !== JSON.stringify(g.wireframe)) {
       this.applyWireframe(g.wireframe);
     }
+    // Task 36: МИР ×10 — текстурирование островов + дальность
+    // видимости статики/стрима рельефа
+    if (prev.graphics.islandTextures !== g.islandTextures) {
+      this.world.setTerrainTextures(g.islandTextures);
+      this.pushMessage(g.islandTextures
+        ? 'Текстурирование островов: ВКЛ (зерно песка/травы/скал)'
+        : 'Текстурирование островов: ВЫКЛ (ровный цвет)');
+    }
+    if (prev.graphics.drawDistance !== g.drawDistance) {
+      this.world.visDistance = g.drawDistance;
+      this.world.terrain.streamDist = g.drawDistance + 2200;
+    }
   }
 
   /** КАРКАС (Task 33): показывать только треугольники без текстур —
@@ -557,10 +584,49 @@ export class Game {
     this.cats3d?.spawnMouseNow();
   }
 
+  /** Отладочный хук для E2E (Task 36): ближайший ломаемый куст/дерево */
+  debugNearestCuttable(x: number, z: number, maxR = 120, withCollider = false) {
+    return this.world.nearestCuttable(x, z, maxR, withCollider);
+  }
+
+  /** Отладочный хук для E2E (Task 36): ближайший живой житель деревни */
+  debugNearestFolk(x: number, z: number): { x: number; z: number } | null {
+    let best: { x: number; z: number } | null = null;
+    let bestD = Infinity;
+    for (const f of this.world.villageFolk) {
+      const gpos = f.group.children.map(c => (c as THREE.Group).position);
+      for (const p of gpos) {
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d < bestD) { bestD = d; best = { x: p.x, z: p.z }; }
+      }
+    }
+    return best;
+  }
+
+  /** КОЛЬЦЕВОЙ МАРШРУТ вокруг острова (Task 36: карта ×10 — прежние
+   *  фиксированные точки легли СКВОЗЬ выросшие острова). Точки на
+   *  кольце isl.r·1.15 + dist, каждая выталкивается наружу до
+   *  глубокой воды (heightAt < −8) */
+  private ringRoute(islandIdx: number, dist: number, n: number, a0 = 0): THREE.Vector3[] {
+    const isl = this.world.islands[islandIdx];
+    const out: THREE.Vector3[] = [];
+    for (let k = 0; k < n; k++) {
+      const a = a0 + (k / n) * Math.PI * 2;
+      let rr = isl.r * 1.15 + dist;
+      let x = isl.cx + Math.cos(a) * rr;
+      let z = isl.cz + Math.sin(a) * rr;
+      for (let t = 0; t < 40 && heightAt(x, z) > -8; t++) {
+        rr += 150;
+        x = isl.cx + Math.cos(a) * rr;
+        z = isl.cz + Math.sin(a) * rr;
+      }
+      out.push(new THREE.Vector3(x, 0, z));
+    }
+    return out;
+  }
+
   private spawnShips() {
     const terrain = (x: number, z: number) => heightAt(x, z);
-    // прочность кораблей — из настроек; боезапас игрока — стартовый набор
-    // с реалистичной недостачей 1–10% (порох отсырел, расстреляли, не доехало)
     const gp = this.settings.gameplay;
     const startAmmo = gp.ammoJitter
       ? rollStartingAmmo(gp.startingAmmo).ammo
@@ -572,7 +638,7 @@ export class Game {
     this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
     const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
       new THREE.Vector3(this.world.islands[0].cx, 0, this.world.islands[0].cz)).setY(0).normalize();
-    this.spawnPos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 130);
+    this.spawnPos = this.world.port.dockEnd.clone().addScaledVector(seaDir, 260);
     this.player.position.copy(this.spawnPos);
     this.player.position.y = 0;
     this.player.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z), 0));
@@ -582,24 +648,40 @@ export class Game {
     this.worldGroup.add(this.player.foam.mesh);
     this.worldGroup.add(this.player.wake.mesh);
 
-    // шлюпка за кормой: спуск на воду и управление (клавиша B)
+    // шлюпка за кормой (Task 36: рельеф передан — мель по ГЛУБИНЕ)
     this.boatLaunch = new BoatLaunch({
       ship: this.player, worldGroup: this.worldGroup, particles: this.particles,
       islands: () => this.world.islands,
+      heightAt: (x, z) => heightAt(x, z),
       msg: (t) => this.pushMessage(t),
       onSplash: () => this.audio.splash(0),
+    });
+
+    // ВЫСАДКА НА ОСТРОВ (Task 36): моряк для прогулок по берегу
+    this.lander = new Lander({
+      worldGroup: this.worldGroup,
+      particles: this.particles,
+      world: this.world,
+      camera: this.rig.camera,
+      msg: (t) => this.pushMessage(t),
+      audio: {
+        shot: () => this.audio.pistolShot(),
+        saber: () => this.audio.saberSwing(),
+      },
+      folkKill: (x, y, z, r, mode, dx, dz) => this.killFolkNear(x, y, z, r, mode, dx, dz),
+      chop: (x, y, z, r) => this.world.breakTrees(x, y, z, r, this.particles, this.gibs),
     });
 
     // корабельные коты — палуба игрока (если уже куплены)
     this.attachCats();
 
-    // торговцы (спавн в проверенно глубокой воде)
+    // торговцы: КОЛЬЦА вокруг островов (маршруты в чистой воде)
     const routes: THREE.Vector3[][] = [
-      [new THREE.Vector3(850, 0, -380), new THREE.Vector3(500, 0, 760), new THREE.Vector3(-350, 0, 560), new THREE.Vector3(-100, 0, -80)],
-      [new THREE.Vector3(-1350, 0, -260), new THREE.Vector3(-900, 0, -520), new THREE.Vector3(-380, 0, -740), new THREE.Vector3(-700, 0, -60)],
+      this.ringRoute(0, 900, 5),
+      this.ringRoute(4, 1200, 6),
     ];
-    const safeSpawns = [new THREE.Vector3(820, 0, -150), new THREE.Vector3(-1000, 0, -350)];
-    const traderModels = ['fluyt', 'pinnace']; // флейт и пинасс — торговые суда эпохи
+    const safeSpawns = [routes[0][0].clone(), routes[1][0].clone()];
+    const traderModels = ['fluyt', 'pinnace'];
     routes.forEach((route, i) => {
       const trader = new Ship(traderModels[i], false, this.wind, terrain, this.particles, aiOpts);
       trader.position.copy(safeSpawns[i]);
@@ -609,15 +691,11 @@ export class Game {
       this.worldGroup.add(trader.visual.group);
       this.worldGroup.add(trader.foam.mesh);
       this.worldGroup.add(trader.wake.mesh);
-      const ai = new AIShip(trader, route, 'route');
-      this.aiShips.push(ai);
+      this.aiShips.push(new AIShip(trader, route, 'route'));
     });
 
-    // каравелла — быстрый торговец северными путями (латинские паруса)
-    const caravelRoute = [
-      new THREE.Vector3(1200, 0, 600), new THREE.Vector3(0, 0, 950),
-      new THREE.Vector3(-1100, 0, 850), new THREE.Vector3(-500, 0, 150),
-    ];
+    // каравелла — быстрый торговец вокруг Зелёного атолла
+    const caravelRoute = this.ringRoute(1, 1000, 6, 0.7);
     const caravel = new Ship('caravel', false, this.wind, terrain, this.particles, aiOpts);
     caravel.position.copy(caravelRoute[0]);
     caravel.quaternion.setFromEuler(new THREE.Euler(0, -1.2, 0));
@@ -628,10 +706,10 @@ export class Game {
     this.worldGroup.add(caravel.wake.mesh);
     this.aiShips.push(new AIShip(caravel, caravelRoute, 'route'));
 
-    // галеон — флагман на якоре в гавани (для осмотра и проверки повреждений)
+    // галеон — флагман на якоре в гавани
     const galleon = new Ship('galleon', false, this.wind, terrain, this.particles, aiOpts);
     const perp = new THREE.Vector3(-seaDir.z, 0, seaDir.x);
-    galleon.position.copy(this.spawnPos).addScaledVector(perp, 85).addScaledVector(seaDir, 45);
+    galleon.position.copy(this.spawnPos).addScaledVector(perp, 170).addScaledVector(seaDir, 90);
     galleon.position.y = 0;
     galleon.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(seaDir.x, seaDir.z) + 0.7, 0));
     galleon.crew = 70;
@@ -640,25 +718,18 @@ export class Game {
     this.worldGroup.add(galleon.wake.mesh);
     this.aiShips.push(new AIShip(galleon, [], 'anchored'));
 
-    // военный патруль
-    const patrol = [
-      new THREE.Vector3(940, 0, 380), new THREE.Vector3(660, 0, 720),
-      new THREE.Vector3(240, 0, 730), new THREE.Vector3(30, 0, 380),
-      new THREE.Vector3(240, 0, 30), new THREE.Vector3(660, 0, 30),
-    ];
+    // военный патруль — широкое кольцо вокруг гавани
+    const patrol = this.ringRoute(0, 2600, 6, 0.4);
     const brig = new Ship('brig', false, this.wind, terrain, this.particles, aiOpts);
-    brig.position.set(940, 0, 380);
+    brig.position.copy(patrol[0]);
     brig.crew = 52;
     this.worldGroup.add(brig.visual.group);
     this.worldGroup.add(brig.foam.mesh);
     this.worldGroup.add(brig.wake.mesh);
     this.aiShips.push(new AIShip(brig, patrol, 'patrol'));
 
-    // фрегат Surprise — быстрый патруль южных маршрутов
-    const surpriseRoute = [
-      new THREE.Vector3(-350, 0, -1100), new THREE.Vector3(400, 0, -1500),
-      new THREE.Vector3(1100, 0, -900), new THREE.Vector3(600, 0, -350),
-    ];
+    // фрегат Surprise — патруль вокруг атолла Плёс
+    const surpriseRoute = this.ringRoute(7, 1400, 6, 1.1);
     const surprise = new Ship('surprise', false, this.wind, terrain, this.particles, aiOpts);
     surprise.position.copy(surpriseRoute[0]);
     surprise.quaternion.setFromEuler(new THREE.Euler(0, 2.1, 0));
@@ -668,11 +739,8 @@ export class Game {
     this.worldGroup.add(surprise.wake.mesh);
     this.aiShips.push(new AIShip(surprise, surpriseRoute, 'patrol'));
 
-    // ост-индец Amsterdam — тяжёлый торговец через весь архипелаг
-    const eicRoute = [
-      new THREE.Vector3(-1900, 0, 1300), new THREE.Vector3(-400, 0, 1500),
-      new THREE.Vector3(900, 0, 1200), new THREE.Vector3(1800, 0, 200),
-    ];
+    // ост-индец Amsterdam — тяжёлый торговец: дальний круг Бакунов
+    const eicRoute = this.ringRoute(4, 2600, 8, 2.3);
     const eic = new Ship('amsterdam', false, this.wind, terrain, this.particles, aiOpts);
     eic.position.copy(eicRoute[0]);
     eic.quaternion.setFromEuler(new THREE.Euler(0, -0.4, 0));
@@ -683,11 +751,8 @@ export class Game {
     this.worldGroup.add(eic.wake.mesh);
     this.aiShips.push(new AIShip(eic, eicRoute, 'route'));
 
-    // шлюп Lady Washington — каботажник у гавани (пушнинная торговля)
-    const ladyRoute = [
-      new THREE.Vector3(700, 0, 700), new THREE.Vector3(300, 0, 950),
-      new THREE.Vector3(-100, 0, 800), new THREE.Vector3(250, 0, 550),
-    ];
+    // шлюп Lady Washington — каботажник: ближний круг гавани
+    const ladyRoute = this.ringRoute(0, 500, 5, 2.6);
     const lady = new Ship('ladyw', false, this.wind, terrain, this.particles, aiOpts);
     lady.position.copy(ladyRoute[0]);
     lady.gold = 180;
@@ -698,8 +763,6 @@ export class Game {
     this.aiShips.push(new AIShip(lady, ladyRoute, 'route'));
 
     // === ПИРАТСКОЕ ЛОГОВО: эскадра у острова «Логово пиратов» ===
-    // (рядом с полигоном): все под чёрными флагами, включая
-    // легендарную «Чёрную жемчужину» — флагман на рейде
     this.spawnPirateFleet(aiOpts);
 
     this.combat = new CombatSystem(this.player, this.particles, (t, p) => this.bus.emit(t, p));
@@ -708,15 +771,35 @@ export class Game {
     this.combat.infiniteAmmo = gp.infiniteAmmo;
   }
 
+  /** Поразить «человечков» на берегу (жители деревень + пираты
+   *  логова) — сабля/пистолет игрока (Task 36) */
+  killFolkNear(x: number, y: number, z: number, r: number, mode: 'grape' | 'ball', dx?: number, dz?: number): number {
+    let killed = 0;
+    for (const f of this.world.villageFolk) {
+      killed += f.killNear(x, y, z, r, mode, dx, dz);
+    }
+    if (this.lairFolk) killed += this.lairFolk.killNear(x, y, z, r, mode, dx, dz);
+    return killed;
+  }
+
+
   /** Пиратская эскадра в логове: 7 судов плотным кольцом у берега +
    *  2 патруля вокруг острова; флагман — «Чёрная жемчужина» */
   private spawnPirateFleet(aiOpts: { durabilityMul: number }) {
     const isl = this.world.islands.find(i => i.name === 'Логово пиратов');
     if (!isl) return;
     const terrain = (x: number, z: number) => heightAt(x, z);
+    // Task 36: якорные стоянки на ГЛУБОКОЙ воде (кромка выросшего
+    // острова дальше от центра, чем прежний r)
     const ring = (aDeg: number, dist: number) => {
       const a = aDeg * Math.PI / 180;
-      return new THREE.Vector3(isl.cx + Math.cos(a) * (isl.r + dist), 0, isl.cz + Math.sin(a) * (isl.r + dist));
+      let rr = isl.r * 1.25 + dist;
+      let p = new THREE.Vector3(isl.cx + Math.cos(a) * rr, 0, isl.cz + Math.sin(a) * rr);
+      for (let t = 0; t < 30 && heightAt(p.x, p.z) > -7; t++) {
+        rr += 120;
+        p = new THREE.Vector3(isl.cx + Math.cos(a) * rr, 0, isl.cz + Math.sin(a) * rr);
+      }
+      return p;
     };
     // [модель, угол°, дистанция от берега, yaw, экипаж, золото, груз]
     const specs: [string, number, number, number, number, number, number[]][] = [
@@ -1053,6 +1136,7 @@ export class Game {
     this.boatLaunch = new BoatLaunch({
       ship: np, worldGroup: this.worldGroup, particles: this.particles,
       islands: () => this.world.islands,
+      heightAt: (x, z) => heightAt(x, z),
       msg: (t) => this.pushMessage(t),
       onSplash: () => this.audio.splash(0),
     });
@@ -1083,7 +1167,8 @@ export class Game {
     if (this.started) return;
     this.started = true;
     this.audio.init();
-    this.pushMessage('Поднять паруса! W — паруса, A/D — руль, Q/E — прицел, C — камера');
+    this.pushMessage('Поднять паруса! W — паруса, A/D — руль, Q/E — прицел, C — камера, B — шлюпка');
+    this.pushMessage('Новый архипелаг в 100 раз больше: 30 островов с горами и джунглями. Шлюпка (B) — к берегу, E — высадка с саблей и пистолетом');
   }
 
   // ---------- порт (любая гавань архипелага) ----------
@@ -1422,6 +1507,29 @@ export class Game {
     const c = this.settings.controls;
     const bl = this.boatLaunch;
 
+    // === НА БЕРЕГУ (Task 36: высадка): третье лицо, WASD+мышь,
+    //     сабля/пистолет; управление кораблём/шлюпкой отключено ===
+    if (this.lander && this.lander.active) {
+      const bl0 = this.boatLaunch;
+      this.lander.nearBoat = !!(bl0 && bl0.phase === 'afloat'
+        && Math.hypot(bl0.pos.x - this.lander.pos.x, bl0.pos.z - this.lander.pos.z) < 6);
+      this.lander.handleInput({
+        isDown: (code) => inp.isDown(code),
+        pressed: (code) => inp.pressed(code),
+        mouseDX: inp.mouseDX, mouseDY: inp.mouseDY, wheel: inp.wheelDelta,
+        lmbJust: inp.lmbJust, rmb: inp.rmb,
+      });
+      if (inp.pressed(c.aimStarboard) && this.lander.nearBoat) {
+        this.lander.despawn();
+        this.lander.restoreCamera();
+        bl0!.resumeFromShore();
+        this.rig.snap();
+        this.pushMessage('Матрос снова в шлюпке — вёсла на воду!');
+      }
+      inp.endFrame();
+      return;
+    }
+
     // === В ШЛЮПКЕ (спущена/спускается/поднимается): управление
     //     кораблём отключено — только вёсла/румпель и камера ===
     if (bl && bl.phase !== 'stowed') {
@@ -1437,6 +1545,21 @@ export class Game {
           const err = bl.tryHoist();
           if (err) this.pushMessage(err);
           else this.pushMessage('Команда на талях — шлюпка поднимается…');
+        }
+      }
+      // ВЫСАДКА НА БЕРЕГ (Task 36): E на мелководье у кромки —
+      // моряк сходит на землю (третье лицо, WASD+мышь, оружие)
+      if (inp.pressed(c.aimStarboard) && bl.phase === 'afloat' && !bl.frozen && bl.nearShore()) {
+        const lp = bl.landingPoint();
+        if (lp) {
+          bl.freezeAtShore();
+          // лицом к суше: направление шлюпка → точка высадки
+          const fx = lp.x - bl.pos.x, fz = lp.z - bl.pos.z;
+          const fl = Math.hypot(fx, fz) || 1;
+          this.lander!.spawn(lp.x, lp.z, fx / fl, fz / fl);
+          this.rig.snap();
+        } else {
+          this.pushMessage('Берег слишком крут — не сойти');
         }
       }
       p.rudderTarget = 0;
@@ -1661,7 +1784,7 @@ export class Game {
       portInfo: null, oars: null, gunPorts: null, figureOn: 'figure.stock', decoOn: 'deco.none',
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
-      proving: false, target: null, boat: null,
+      proving: false, target: null, boat: null, land: null,
     };
   }
 
@@ -1761,6 +1884,27 @@ export class Game {
           speed: +(Math.abs(this.boatLaunch.vel) * 1.944).toFixed(1),
           row: this.boatLaunch.row }
       : null;
+    // ВЫСАДКА: HUD берега — оружие/прицел/подсказки
+    if (this.lander?.active) {
+      const lh = this.lander.hud();
+      h.land = {
+        active: true, weapon: lh.weapon, weaponLabel: lh.weaponLabel,
+        aiming: lh.aiming, nearBoat: lh.nearBoat,
+        canLand: false,
+        hint: lh.nearBoat
+          ? 'E — в шлюпку'
+          : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · WASD — идти'
+          : 'ЛКМ — атака · X — убрать оружие · Shift — бег',
+      };
+    } else {
+      const bl = this.boatLaunch;
+      const canLand = !!(bl && bl.phase === 'afloat' && !bl.frozen && bl.nearShore());
+      h.land = {
+        active: false, weapon: 'none', weaponLabel: '', aiming: false,
+        nearBoat: false, canLand,
+        hint: canLand ? 'E — высадиться на берег' : '',
+      };
+    }
     if (this.proving && this.pgTarget) {
       const t = this.pgTarget.ship;
       h.target = {
@@ -2093,6 +2237,35 @@ export class Game {
         ? { total: this.lairFolk.total, shown: this.lairFolk.shown, dead: this.lairFolk.dead }
         : null,
       treesBroken: this.world.treesBroken,
+      // Task 36: ВЫСАДКА — состояние моряка на берегу
+      land: this.lander
+        ? (() => {
+            const lh = this.lander!.hud();
+            return {
+              active: lh.active, weapon: lh.weapon, aiming: lh.aiming,
+              nearBoat: lh.nearBoat, moving: lh.moving,
+              x: +this.lander!.pos.x.toFixed(1), z: +this.lander!.pos.z.toFixed(1),
+              h: +this.lander!.pos.y.toFixed(2),
+              camYaw: +lh.camYaw.toFixed(2),
+              frozenBoat: this.boatLaunch?.frozen ?? false,
+            };
+          })()
+        : null,
+      // Task 36: рельеф-стример + деревни + рыбацкие лодки
+      terrain: this.world.terrain.stats(),
+      terrainTex: this.world.terrain.texturesOn(),
+      villages: {
+        total: VILLAGES.length,
+        folk: this.world.villageFolk.reduce((s, f) => s + f.shown, 0),
+        folkDead: this.world.villageFolk.reduce((s, f) => s + f.dead, 0),
+        huts: VILLAGES.reduce((s, v) => s + v.huts, 0),
+        trails: VILLAGES.reduce((s, v) => s + v.trail.length, 0),
+      },
+      coastFleet: {
+        boats: this.world.coastFleet.boats.length,
+        fishermen: this.world.coastFleet.fishermen,
+        floating: this.world.coastFleet.boats.filter(b => !b.sinking).length,
+      },
       // вёсла игрока (гребные суда)
       oars: p.preset.oars
         ? { out: p.oarsOut, deploy: +p.oarsDeployT.toFixed(2), rowing: p.rowing, idle: +p.oarsIdleT.toFixed(1), phase: +p.strokePhase.toFixed(2) }
@@ -2258,6 +2431,9 @@ export class Game {
     // шлюпка: спуск/подъём/гребля — после визуала корабля
     this.boatLaunch?.update(dt, this.time, this.negShift);
 
+    // ВЫСАДКА (Task 36): моряк на берегу — третье лицо, оружие
+    this.lander?.update(dt, this.time, this.shift, (code) => this.input.isDown(code));
+
     // корабельные коты: бродят/бегают/ловят мышей (только игрок)
     this.cats3d?.update(dt, this.time, {
       sinking: this.player.sinking, sunk: this.player.sunk,
@@ -2337,7 +2513,7 @@ export class Game {
     let camRoll = this.player.euler.z;
     let camPitch = this.player.euler.x;
     let camSpeedFrac = clamp(this.player.speed() / this.player.preset.maxSpeed, 0, 1);
-    if (this.boatLaunch && this.boatLaunch.phase === 'afloat') {
+    if (this.boatLaunch && this.boatLaunch.phase === 'afloat' && !(this.lander?.active)) {
       // камера — за шлюпкой, пока игрок в ней (замечание игрока:
       // управлять шлюпкой, пока не вернёшься на борт); ял в 6 раз
       // короче корабля — камера ПРИБЛИЖАЕТСЯ (дистанция × 0.35),
@@ -2366,15 +2542,18 @@ export class Game {
     if (this.input.isDown('ArrowRight')) arrX += 1;
     if (this.input.isDown('ArrowUp')) arrY -= 1;
     if (this.input.isDown('ArrowDown')) arrY += 1;
-    this.rig.update(dt, {
-      active: this.combat.aim.active,
-      side: this.combat.aim.side,
-      dir: aimDir ?? this._v2.set(1, 0, 0),
-    }, shipInfo, {
-      mouseDX: this.input.mouseDX, mouseDY: this.input.mouseDY,
-      wheel: this.input.wheelDelta, rmb: this.input.rmb,
-      arrowX: arrX, arrowY: arrY,
-    });
+    // НА БЕРЕГУ: камеру ведёт Lander (третье лицо/прицел)
+    if (!this.lander?.active) {
+      this.rig.update(dt, {
+        active: this.combat.aim.active,
+        side: this.combat.aim.side,
+        dir: aimDir ?? this._v2.set(1, 0, 0),
+      }, shipInfo, {
+        mouseDX: this.input.mouseDX, mouseDY: this.input.mouseDY,
+        wheel: this.input.wheelDelta, rmb: this.input.rmb,
+        arrowX: arrX, arrowY: arrY,
+      });
+    }
 
     // вода единого моря — сетки следуют за камерой/судном, волны
     // (uniform-амплитуды/направления) — за ветром из состояния SEA
@@ -2403,6 +2582,23 @@ export class Game {
 
   /** E2E: не рендерить кадры внутри stepDebug (гнать только физику) */
   private debugNoRender = false;
+
+  /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ рендера
+   *  (headless-браузер рендерит сложные сцены минутами) */
+  stepDebugNR(seconds: number) {
+    this.debugNoRender = true;
+    let left = seconds;
+    let guard = 0;
+    try {
+      while (left > 1e-6 && guard++ < 6000) {
+        const dt = Math.min(left, 1 / 30);
+        this.stepFrame(dt);
+        left -= dt;
+      }
+    } finally {
+      this.debugNoRender = false;
+    }
+  }
 
   /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ RAF
    *  (порциями по 1/30 с — внутри фиксированный шаг 1/60).

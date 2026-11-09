@@ -801,8 +801,41 @@ export default function Home() {
             </>
           )}
 
+          {/* ---- ПРИЦЕЛ ПИСТОЛЕТА (высадка): вид от прицела ---- */}
+          {hud.land?.active && hud.land.aiming && (
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <svg width="60" height="60" viewBox="0 0 60 60">
+                <circle cx="30" cy="30" r="20" fill="none" stroke="#ffdd88" strokeWidth="1.6" opacity="0.9" />
+                <circle cx="30" cy="30" r="1.8" fill="#ffdd88" />
+                <line x1="30" y1="2" x2="30" y2="14" stroke="#ffdd88" strokeWidth="1.6" />
+                <line x1="30" y1="46" x2="30" y2="58" stroke="#ffdd88" strokeWidth="1.6" />
+                <line x1="2" y1="30" x2="14" y2="30" stroke="#ffdd88" strokeWidth="1.6" />
+                <line x1="46" y1="30" x2="58" y2="30" stroke="#ffdd88" strokeWidth="1.6" />
+                <line x1="30" y1="30" x2="30" y2="12" stroke="#ffdd88" strokeWidth="0.7" opacity="0.5" />
+              </svg>
+            </div>
+          )}
+
+          {/* ---- ВЫСАДКА: статус моряка на берегу ---- */}
+          {hud.land?.active && (
+            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 text-center">
+              <div className="rounded-lg border border-emerald-800 bg-[#08140d]/90 px-5 py-2 text-sm text-emerald-100 shadow-lg">
+                🏝 <b className="text-emerald-300">На берегу</b>
+                <span className="mx-2 text-stone-500">|</span>
+                {hud.land.weaponLabel}
+                <span className="mx-2 text-stone-500">|</span>
+                <span className="text-[11px] text-stone-300">{hud.land.hint}</span>
+              </div>
+            </div>
+          )}
+
           {/* ---- подсказки взаимодействия ---- */}
           <div className="absolute bottom-28 left-1/2 -translate-x-1/2 space-y-1 text-center">
+            {hud.land && !hud.land.active && hud.land.canLand && (
+              <div className="rounded-lg border border-emerald-600 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
+                <b>E</b> — высадиться на берег (сабля, пистолет, джунгли)
+              </div>
+            )}
             {hud.canBoard && hud.boardedName && (
               <div className="pointer-events-none rounded-lg border border-emerald-700 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
                 <b>E</b> — взять приз: {hud.boardedName} (сдался)
@@ -1163,6 +1196,10 @@ export default function Home() {
               <div><b className="text-amber-200">P</b> — открыть/закрыть пушечные порты (закрытые батареи молчат — стреляют только палубные орудия)</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.oars)}</b> — вывалить/убрать вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.boat)}</b> — спустить/поднять шлюпку (две: правого и левого борта): на воде W/S — вёсла, A/D — поворот вёслами, {keyLabel(settings.controls.boat)} у борта — на борт</div>
+              <div><b className="text-amber-200">E (у берега)</b> — ВЫСАДКА: моряк на берегу — третье лицо (вид сзади)</div>
+              <div><b className="text-amber-200">WASD + мышь (на берегу)</b> — идти (относительно камеры, как в шутерах), Shift — бег, колесо — зум</div>
+              <div><b className="text-amber-200">1 / 2 / X (на берегу)</b> — достать саблю / пистолет / убрать оружие; ЛКМ — рубить кусты и врагов / выстрел; ПКМ (пистолет) — прицел с видом от прицела</div>
+              <div><b className="text-amber-200">E у шлюпки (на берегу)</b> — вернуться в шлюпку</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpUniforms, terrainTexture, TERRAIN_WORLD_SIZE } from './waves';
+import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpUniforms, terrainTexture, TERRAIN_WORLD_SIZE, bindTerrainSampler } from './waves';
+import { heightAt } from '../world/world';
 
 const NOISE_GLSL = `
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
@@ -39,6 +40,8 @@ export class Water {
   private step = WATER_DEFAULTS.chunkSize / WATER_DEFAULTS.detailSegs;
 
   constructor(opts?: { detailSegs?: number; chunkSize?: number; far?: number; lodSkip?: number }) {
+    // сэмплер рельефа для запекания текстуры глубин (мир ×10)
+    bindTerrainSampler(heightAt);
     // волны — в UNIFORM-массивах (набор PHYS/RIDE переключается
     // без пересборки материала, Task 27)
     const wu = waveUniformData();
@@ -136,9 +139,11 @@ export class Water {
           vec3 V = normalize(cameraPosition - vScenePos);
           float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
 
-          // цвет воды: глубина -> мелководье (по нормали X/Z — у берега упрощённо по шуму)
-          float depthMix = clamp(1.0 - fres * 1.2, 0.0, 1.0);
-          vec3 waterCol = mix(uShallowColor, uDeepColor, depthMix);
+          // ФИКС «прозрачная поверхность у островов» (Task 36): вода
+          // НЕПРОЗРАЧНАЯ — цвет по ГЛУБИНЕ (текстура рельефа):
+          // бирюзовая кромка у пляжей → тёмная синева в море
+          float deepMix = smoothstep(2.0, 14.0, vDepth);
+          vec3 waterCol = mix(uShallowColor, uDeepColor, deepMix);
           vec3 skyRef = mix(uSkyColor, uHorizonColor, 0.35);
           vec3 col = mix(waterCol, skyRef, fres * 0.75);
 
@@ -185,15 +190,18 @@ export class Water {
           float fog = 1.0 - exp(-uFogDensity * uFogDensity * vDist * vDist);
           col = mix(col, uFogColor, clamp(fog, 0.0, 1.0));
 
-          // кромка воды: цвет и альфа растворяются в небо у горизонта —
+          // кромка воды: цвет растворяется в туман у горизонта —
           // внешний квадрат дальних колец НЕ читается (раньше 9% контраста)
           float edge = smoothstep(uEdge * 0.72, uEdge * 0.99, vDist);
           col = mix(col, uFogColor, edge);
 
-          gl_FragColor = vec4(col, 0.94 * (1.0 - edge));
+          // ВОДА НЕПРОЗРАЧНАЯ (Task 36): альфа 1.0 — берег больше
+          // не «просвечивает»; растворение в горизонт — ЦВЕТОМ
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
-      transparent: true,
+      transparent: false,
+      depthWrite: true,
     });
     this.material = mat;
 

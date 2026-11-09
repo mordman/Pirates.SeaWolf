@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RNG, fbm2, clamp, smoothstep } from '../core/rng';
-import { buildFishingVillage, type FishingVillage, type WorldBoat } from './fishing';
+import { buildFishingVillage, type FishingVillage, type WorldBoat, buildCoastFleet, type CoastFleet } from './fishing';
+import { TerrainStreamer } from './terrain';
+import { buildVillageFolk, type LandFolk } from './islandFolk';
 
 // ============================================================
 // Мир: детерминированные острова по сиду, густая растительность
@@ -35,35 +37,40 @@ export interface PortDef {
 export const TIER_NAMES = ['Пристань', 'Деревня', 'Городок', 'Город-крепость'] as const;
 
 function tierForIsland(isl: IslandDef): 0 | 1 | 2 | 3 {
-  if (isl.r >= 270) return 3;
-  if (isl.r >= 200) return 2;
-  if (isl.r >= 135) return 1;
+  // пороги ×10: острова выросли вдесятеро (Task 36)
+  if (isl.r >= 2700) return 3;
+  if (isl.r >= 2000) return 2;
+  if (isl.r >= 1350) return 1;
   return 0;
 }
 
+/** множитель масштаба мира (Task 36): карта и острова в 100 раз
+ *  больше по ПЛОЩАДИ — радиусы и дистанции ×10 */
+export const WORLD_SCALE = 10;
+
 export const WORLD_SEED = 20261027;
 
-// 8 «рукописных» островов (порт + ориентиры) — их индексы используют животные.
-// Мир УВЕЛИЧЕН по ТЗ: острова крупнее (×1.3–1.5) и дальше друг от
-// друга, база архипелага растянута до ±2.2 км, генерация — до ±4.5 км.
+// 9 «рукописных» островов (порт + ориентиры) — их индексы используют животные.
+// Task 36: КАРТА И ОСТРОВА ×10 (площадь ×100): острова 1–3.3 км радиусом
+// с настоящими горами (до 340 м), карта растянута до ±45 км.
 // 9-й — ПИРАТСКОЕ ЛОГОВО у полигона (4400, 3050): остров, густо
 // набитый пиратской эскадрой (эскадра спавнится в game.ts)
 const BASE_ISLANDS: IslandDef[] = [
-  { cx: 675, cz: 525, r: 330, maxH: 30, type: 'port', name: 'Пальмовая гавань', discovered: false },
-  { cx: -975, cz: 750, r: 235, maxH: 16, type: 'jungle', name: 'Зелёный атолл', discovered: false },
-  { cx: -780, cz: -1050, r: 120, maxH: 34, type: 'rock', name: 'Скала Морского Дьявола', discovered: false },
-  { cx: 1350, cz: -930, r: 145, maxH: 11, type: 'atoll', name: 'Черепаший риф', discovered: false },
-  { cx: 2100, cz: 1350, r: 290, maxH: 23, type: 'jungle', name: 'Остров Бакунов', discovered: false },
-  { cx: -2250, cz: -330, r: 205, maxH: 18, type: 'jungle', name: 'Дальний ключ', discovered: false },
-  { cx: -1575, cz: 1725, r: 105, maxH: 27, type: 'rock', name: 'Клык', discovered: false },
-  { cx: 375, cz: -2100, r: 255, maxH: 13, type: 'atoll', name: 'Плёс', discovered: false },
-  { cx: 4400, cz: 3050, r: 205, maxH: 20, type: 'jungle', name: 'Логово пиратов', discovered: false },
+  { cx: 6750, cz: 5250, r: 3300, maxH: 300, type: 'port', name: 'Пальмовая гавань', discovered: false },
+  { cx: -9750, cz: 7500, r: 2350, maxH: 210, type: 'jungle', name: 'Зелёный атолл', discovered: false },
+  { cx: -7800, cz: -10500, r: 1200, maxH: 320, type: 'rock', name: 'Скала Морского Дьявола', discovered: false },
+  { cx: 13500, cz: -9300, r: 1450, maxH: 80, type: 'atoll', name: 'Черепаший риф', discovered: false },
+  { cx: 21000, cz: 13500, r: 2900, maxH: 260, type: 'jungle', name: 'Остров Бакунов', discovered: false },
+  { cx: -22500, cz: -3300, r: 2050, maxH: 190, type: 'jungle', name: 'Дальний ключ', discovered: false },
+  { cx: -15750, cz: 17250, r: 1050, maxH: 250, type: 'rock', name: 'Клык', discovered: false },
+  { cx: 3750, cz: -21000, r: 2550, maxH: 85, type: 'atoll', name: 'Плёс', discovered: false },
+  { cx: 44000, cz: 30500, r: 2050, maxH: 230, type: 'jungle', name: 'Логово пиратов', discovered: false },
 ];
 
 /** Процедурная генерация архипелага: детерминированно по сиду —
  *  кольцом вокруг порта, с минимальными проливами между островами
- *  (увеличенная карта: дистанции 1700–4200 м, радиусы 120–330 м,
- *  проливы не уже 800 м).
+ *  (УВЕЛИЧЕННАЯ карта Task 36: дистанции 17–42 км, радиусы
+ *  1.2–3.3 км, проливы не уже 6 км).
  *  Базовые острова не трогаем (животные/порт привязаны к индексам). */
 function generateIslands(): IslandDef[] {
   const rng = new RNG(WORLD_SEED + 9173);
@@ -71,26 +78,29 @@ function generateIslands(): IslandDef[] {
     'Остров Черепа', 'Мыс Багровой Луны', 'Скалы Трёх Братьев', 'Лагуна Сирен',
     'Кайманов ключ', 'Затерянный риф', 'Бухта Повешенного', 'Остров Гвоздей',
     'Перьевой атолл', 'Голый риф', 'Отмель Мёртвого Якоря', 'Тихая банка',
+    'Зубы Кракена', 'Сиреневый пролив', 'Костяной мыс', 'Залив Скелетов',
+    'Пальмовый рукав', 'Медный берег', 'Дырявый котёл', 'Слепая бухта',
+    'Остров Трёх Ветров',
   ];
   const pool = [...names];
   const out: IslandDef[] = [];
   let guard = 0;
-  while (out.length < 11 && guard++ < 900) {
+  while (out.length < 21 && guard++ < 2400) {
     const a = rng.range(0, Math.PI * 2);
-    const d = rng.range(1700, 4200);
+    const d = rng.range(17000, 42000);
     const cx = Math.cos(a) * d;
-    const cz = Math.sin(a) * d * 0.82; // мир чуть шире по X — под карту 640×520
-    if (Math.abs(cx) > 4500 || Math.abs(cz) > 3600) continue;
+    const cz = Math.sin(a) * d * 0.82; // мир чуть шире по X — под карту 90×72 км
+    if (Math.abs(cx) > 45000 || Math.abs(cz) > 36000) continue;
     const roll = rng.next();
     const type: IslandDef['type'] = roll < 0.5 ? 'jungle' : roll < 0.78 ? 'rock' : 'atoll';
-    const r = rng.range(120, 330);
-    // проливы не уже 800 м между берегами
+    const r = rng.range(1200, 3300);
+    // проливы не уже 6 км между берегами (×10 от прежних 800 м)
     let ok = true;
     for (const isl of [...BASE_ISLANDS, ...out]) {
-      if (Math.hypot(cx - isl.cx, cz - isl.cz) < isl.r + r + 800) { ok = false; break; }
+      if (Math.hypot(cx - isl.cx, cz - isl.cz) < isl.r + r + 6000) { ok = false; break; }
     }
     if (!ok) continue;
-    const maxH = type === 'rock' ? rng.range(22, 40) : type === 'jungle' ? rng.range(12, 30) : rng.range(7, 13);
+    const maxH = type === 'rock' ? rng.range(200, 340) : type === 'jungle' ? rng.range(120, 260) : rng.range(60, 95);
     const name = pool.length ? pool.splice(Math.floor(rng.next() * pool.length), 1)[0] : `Безымянный риф ${out.length + 1}`;
     out.push({ cx: Math.round(cx), cz: Math.round(cz), r: Math.round(r), maxH: Math.round(maxH), type, name, discovered: false });
   }
@@ -129,28 +139,104 @@ function coastShape(islandIdx: number, th: number): number {
   return Math.min(1.42, Math.max(0.58, s));
 }
 
-/** Высота суши в мировой точке. Открытое море = -14 (глубина), суша > 0.
- *  Берег «неправильный» (гармоники по направлению) и БЕЗ широких
- *  отмелей: от кромки воды до глубины ~10% радиуса — судно подходит
- *  к самому берегу, не цепляя мель за сотни метров. */
+// ---------- РАЗНООБРАЗНЫЕ БЕРЕГА (Task 36): пляж / каменистый / обрыв ----------
+// У КАЖДОГО острова берег разный по направлениям: 3–6 угловых
+// «полос» со своим типом. Пляж — пологий песок с мелководной
+// полосой (шлюпка подходит к самому берегу); каменистый — крутой
+// подъём с валунами, вода глубокая почти сразу; обрыв — отвесная
+// стена прямо из глубины (прибой — узкая полоса у подножия).
+export type CoastKind = 'beach' | 'rock' | 'cliff';
+interface CoastBand { kind: CoastKind; a: number; w: number; }
+const COAST_BANDS: CoastBand[][] = ISLANDS.map((isl, i) => {
+  const rng = new RNG(WORLD_SEED * 31 + i * 977 + 13);
+  const bands: CoastBand[] = [];
+  // остров 0 (порт): ГАВАНЬ — ГАРАНТИРОВАННЫЙ широкий пляж в
+  // сторону пирса (высадка на берег у родной гавани); случайные
+  // полосы в этой дуге подавлены, чтобы обрыв не «съел» пляж
+  const portAng = Math.atan2(1, -1);
+  const suppressNear = (a: number) => i === 0
+    && Math.abs(Math.atan2(Math.sin(a - portAng), Math.cos(a - portAng))) < 1.7;
+  const n = 3 + Math.floor(rng.next() * 4);
+  for (let k = 0; k < n; k++) {
+    const roll = rng.next();
+    const kind: CoastKind = roll < 0.45 ? 'beach' : roll < 0.75 ? 'rock' : 'cliff';
+    const a = rng.range(0, Math.PI * 2);
+    if (suppressNear(a)) continue;   // у порта — только пляж
+    bands.push({ kind, a, w: rng.range(0.4, 1.1) });
+  }
+  if (i === 0) bands.push({ kind: 'beach', a: portAng, w: 2.0 });
+  // логово пиратов: скалистые подходы
+  if (isl.name === 'Логово пиратов') bands.push({ kind: 'rock', a: Math.PI, w: 1.2 });
+  return bands;
+});
+
+/** Смешивание типов берега в направлении θ: веса {beach, rock, cliff} */
+export function coastBlend(islandIdx: number, th: number): { beach: number; rock: number; cliff: number } {
+  const isl = ISLANDS[islandIdx];
+  const defB = isl.type === 'atoll' ? 0.75 : isl.type === 'rock' ? 0.2 : 0.5;
+  const defC = isl.type === 'rock' ? 0.45 : isl.type === 'atoll' ? 0.05 : 0.2;
+  const defR = Math.max(0.15, 1 - defB - defC);
+  let wB = defB, wR = defR, wC = defC;
+  for (const b of COAST_BANDS[islandIdx]) {
+    if (b.w < 0.01) continue;
+    let d = Math.abs(Math.atan2(Math.sin(th - b.a), Math.cos(th - b.a)));
+    const w = Math.max(0, Math.cos(Math.min(Math.PI / 2, d / b.w * (Math.PI / 2))));
+    const k = w * w;
+    if (b.kind === 'beach') wB += k * 2.2; else if (b.kind === 'rock') wR += k * 2.2; else wC += k * 2.2;
+  }
+  const s = wB + wR + wC;
+  return { beach: wB / s, rock: wR / s, cliff: wC / s };
+}
+
+/** Тип берега острова в направлении θ (преобладающий) */
+export function coastKindAt(islandIdx: number, th: number): CoastKind {
+  const b = coastBlend(islandIdx, th);
+  return b.beach >= b.rock && b.beach >= b.cliff ? 'beach' : b.rock >= b.cliff ? 'rock' : 'cliff';
+}
+
+/** Глубина открытого моря (дно), м. −14 как в прежнем мире:
+ *  высота волн калибровалась под гашение shoreFade (14/30 ≈ 45%
+ *  амплитуды в открытом море) — углублять нельзя, шторм удвоится */
+export const SEA_FLOOR = -14;
+
+/** Высота суши в мировой точке. Открытое море = SEA_FLOOR, суша > 0.
+ *  Task 36: берега ТРЁХ типов по направлениям (пляж — пологий,
+ *  камень — крутой, обрыв — стена из глубины) + настоящие ГОРНЫЕ
+ *  ХРЕБТЫ (ridged-шум, острые гребни у высоких островов). */
 export function heightAt(x: number, z: number): number {
-  let h = -14; // дно открытого моря
+  let h = SEA_FLOOR; // дно открытого моря
   for (let i = 0; i < ISLANDS.length; i++) {
     const isl = ISLANDS[i];
-    const dx = x - isl.cx, dz = z - isl.cz;
+    const dx = x - isl.cx; if (dx > isl.r * 2.1 || dx < -isl.r * 2.1) continue;
+    const dz = z - isl.cz; if (dz > isl.r * 2.1 || dz < -isl.r * 2.1) continue;
     const d = Math.hypot(dx, dz);
-    if (d > isl.r * 2.1) continue; // дальше — уже только дно (1.42·1.22·1.18 ≈ 2.05r)
-    // радиус берега в ЭТОМ направлении: форма × мелкий рваный шум кромки
-    const shape = coastShape(i, Math.atan2(dz, dx));
-    const coastNoise = fbm2(x * 0.008, z * 0.008, 3, WORLD_SEED + isl.r);
+    if (d > isl.r * 2.1) continue;
+    const th = Math.atan2(dz, dx);
+    // радиус берега в ЭТОМ направлении: форма × рваный шум кромки
+    const shape = coastShape(i, th);
+    const coastNoise = fbm2(x * 0.0016, z * 0.0016, 3, WORLD_SEED + isl.r);
     const rEff = isl.r * shape * (0.80 + 0.42 * coastNoise);
     if (d > rEff * 1.35) continue;
-    const fall = smoothstep(1.10, 0.30, d / rEff);
-    const detail = 0.55 + 0.45 * fbm2(x * 0.02, z * 0.02, 4, WORLD_SEED + isl.cx);
-    const ridge = isl.type === 'rock' ? Math.pow(fall, 1.6) : fall;
-    let hi = isl.maxH * ridge * detail - 2.6;
-    // обрыв к дну сразу за кромкой (узкая полоса мелководья)
-    hi = THREE.MathUtils.lerp(hi, -14, smoothstep(1.00, 1.18, d / rEff));
+    const q = d / rEff;
+    // профиль подъёма суши — по ТИПУ берега (смешивание весов).
+    // Пляж ПОЛОГИЙ у кромки (посадка шлюпки: 0→−3 м тянется ~40 м)
+    const cb = coastBlend(i, th);
+    const fB = smoothstep(1.18, 0.60, q);   // пляж: полого, широко
+    const fR = smoothstep(1.03, 0.55, q);   // камень: круто
+    const fC = smoothstep(0.985, 0.955, q); // обрыв: отвесная стена
+    const fall = cb.beach * fB + cb.rock * fR + cb.cliff * fC;
+    // рельеф: детали + ГОРНЫЕ ХРЕБТЫ (острые гребни ridged-шума)
+    const detail = 0.55 + 0.45 * fbm2(x * 0.004, z * 0.004, 4, WORLD_SEED + isl.cx);
+    const crest = 1 - Math.abs(2 * fbm2(x * 0.0011, z * 0.0011, 3, WORLD_SEED + isl.cz) - 1);
+    const relief = 0.55 * detail + 0.45 * Math.pow(crest, isl.maxH > 150 ? 2.0 : 1.0);
+    let hi = isl.maxH * fall * (0.38 + 0.72 * relief) - 3.0;
+    // мелководье → дно: пляж плавно (широкая полоса посадки),
+    // камень быстро, обрыв — сразу
+    const sB = smoothstep(1.05, 1.32, q);
+    const sR = smoothstep(1.01, 1.10, q);
+    const sC = smoothstep(1.006, 1.045, q);
+    const shelf = cb.beach * sB + cb.rock * sR + cb.cliff * sC;
+    hi = THREE.MathUtils.lerp(hi, SEA_FLOOR, shelf);
     if (hi > h) h = hi;
   }
   return h;
@@ -190,6 +276,132 @@ function slopeAt(x: number, z: number): number {
   const hz = heightAt(x, z + e) - heightAt(x, z - e);
   return Math.hypot(hx, hz) / (2 * e);
 }
+// ---------- ДЕРЕВНИ И ТРОПЫ (Task 36) ----------
+// На каждом крупном острове — несколько НЕБОЛЬШИХ деревень
+// (4–9 хижин, костёр) у берега и на склонах; от порта к деревням
+// ведут ТРОПЫ (грязевые полосы на рельефе, по ним ходят жители).
+export interface VillageDef {
+  islandIdx: number;
+  x: number; z: number;      // центр деревни (мировые)
+  h: number;                 // высота земли
+  huts: number;              // число хижин
+  /** полилиния тропы от порта до деревни (мировые точки) */
+  trail: { x: number; z: number }[];
+}
+export const VILLAGES: VillageDef[] = (function buildVillages() {
+  const out: VillageDef[] = [];
+  for (let i = 0; i < ISLANDS.length; i++) {
+    const isl = ISLANDS[i];
+    if (isl.r < 1200) continue;               // мелкие острова — без деревень
+    const rng = new RNG(WORLD_SEED * 13 + i * 331 + 7);
+    const n = Math.max(2, Math.min(6, Math.round(isl.r / 650)));
+    const dirA = i === 0 ? Math.atan2(1, -1) : Math.atan2(isl.cz, isl.cx);
+    const ux = Math.cos(dirA), uz = Math.sin(dirA);
+    let shore = { x: isl.cx, z: isl.cz };
+    for (let d = 0; d < isl.r * 1.5; d += 24) {
+      if (heightAt(isl.cx + ux * d, isl.cz + uz * d) < 0.4) break;
+      shore = { x: isl.cx + ux * d, z: isl.cz + uz * d };
+    }
+    let made = 0, tries = 0;
+    while (made < n && tries++ < 220) {
+      const a = rng.range(0, Math.PI * 2);
+      const rr = isl.r * rng.range(0.42, 0.72);
+      const x = isl.cx + Math.cos(a) * rr;
+      const z = isl.cz + Math.sin(a) * rr;
+      const h = heightAt(x, z);
+      if (h < 2.5 || h > isl.maxH * 0.5) continue;
+      if (slopeAt(x, z) > 0.34) continue;
+      if (out.some(v => v.islandIdx === i && Math.hypot(v.x - x, v.z - z) < isl.r * 0.35)) continue;
+      const trail: { x: number; z: number }[] = [shore];
+      const bends = 2 + Math.floor(rng.next() * 2);
+      for (let b = 1; b <= bends; b++) {
+        const t = b / (bends + 1);
+        const bx = shore.x + (x - shore.x) * t + (rng.next() - 0.5) * isl.r * 0.24;
+        const bz = shore.z + (z - shore.z) * t + (rng.next() - 0.5) * isl.r * 0.24;
+        if (heightAt(bx, bz) > 0.6) trail.push({ x: bx, z: bz });
+      }
+      trail.push({ x, z });
+      out.push({ islandIdx: i, x: Math.round(x), z: Math.round(z), h, huts: 4 + Math.floor(rng.next() * 6), trail });
+      made++;
+    }
+  }
+  return out;
+})();
+
+/** Маска зарослей 0..1 (Task 36): градиент растительности —
+ *  открытые луга → кустарник → ГУСТЫЕ НЕПРОХОДИМЫЕ ДЖУНГЛИ */
+export function jungleMaskAt(islandIdx: number, x: number, z: number): number {
+  const isl = ISLANDS[islandIdx];
+  const base = isl.type === 'jungle' ? 0.56 : isl.type === 'rock' ? 0.16
+    : isl.type === 'atoll' ? 0.3 : 0.44;
+  const n = fbm2(x * 0.0013, z * 0.0013, 3, WORLD_SEED + islandIdx * 517 + 3);
+  return Math.max(0, Math.min(1, base + (n - 0.5) * 1.25));
+}
+
+// ---------- ЦВЕТ РЕЛЬЕФА (общий для тайлов terrain.ts) ----------
+const C_UNDER = new THREE.Color(0x9a8a66);
+const C_SAND = new THREE.Color(0xd9c28f);
+const C_WET_SAND = new THREE.Color(0xb59f72);
+const C_GRASS = new THREE.Color(0x5f863d);
+const C_JUNGLE = new THREE.Color(0x2c5a28);
+const C_ROCK = new THREE.Color(0x8a8378);
+const C_ROCK_DARK = new THREE.Color(0x6e675c);
+const C_DIRT = new THREE.Color(0x9c7f52);
+const _tc = new THREE.Color();
+
+/** Расстояние до ближайшей тропы/деревни острова */
+function trailDist(islandIdx: number, x: number, z: number): number {
+  let best = Infinity;
+  for (const v of VILLAGES) {
+    if (v.islandIdx !== islandIdx) continue;
+    const t = v.trail;
+    for (let k = 0; k + 1 < t.length; k++) {
+      const ax = t[k].x, az = t[k].z, bx = t[k + 1].x, bz = t[k + 1].z;
+      const abx = bx - ax, abz = bz - az;
+      const len2 = abx * abx + abz * abz || 1;
+      let s = ((x - ax) * abx + (z - az) * abz) / len2;
+      s = Math.max(0, Math.min(1, s));
+      const d = Math.hypot(x - (ax + abx * s), z - (az + abz * s));
+      if (d < best) best = d;
+    }
+    const dc = Math.hypot(x - v.x, z - v.z);
+    if (dc < best) best = dc;
+  }
+  return best;
+}
+
+/** Цвет поверхности острова в точке: песок/трава/джунгли/скалы,
+ *  мокрая полоса у кромки воды, грязь троп и деревень */
+export function terrainColorAt(islandIdx: number, x: number, z: number, h: number, slope: number, out?: THREE.Color): THREE.Color {
+  const c = out ?? _tc;
+  const isl = ISLANDS[islandIdx];
+  const th = Math.atan2(z - isl.cz, x - isl.cx);
+  const cb = coastBlend(islandIdx, th);
+  if (h < -0.4) {
+    const tint = clamp((h + 2.2) / 2.6, 0, 1);
+    c.copy(C_UNDER).lerp(cb.rock + cb.cliff > 0.5 ? C_ROCK_DARK : C_SAND, tint);
+    return c;
+  }
+  if (h < 0.55) { c.copy(C_WET_SAND); return c; } // мокрый песок у кромки
+  const beachTop = 1.4 + cb.beach * 2.6;
+  const dith = (fbm2(x * 0.02, z * 0.02, 2, WORLD_SEED + 77) - 0.5) * 0.5;
+  if (h < beachTop + dith) { c.copy(C_SAND); return c; }
+  const td = trailDist(islandIdx, x, z);
+  if (td < 9 && slope < 0.5) {
+    const k = 1 - smoothstep(3.5, 9, td);
+    c.copy(C_DIRT).lerp(C_GRASS, 1 - k);
+    return c;
+  }
+  const mask = jungleMaskAt(islandIdx, x, z);
+  c.copy(C_GRASS).lerp(C_JUNGLE, clamp(mask * 1.25, 0, 1));
+  const rockFrom = isl.type === 'rock' ? 0.10 : 0.55;
+  const rd = (fbm2(x * 0.008, z * 0.008, 2, WORLD_SEED + 9) - 0.5) * 0.18;
+  if (h > isl.maxH * (rockFrom + rd) || slope > 0.62) {
+    c.copy(C_ROCK).lerp(C_ROCK_DARK, clamp(slope - 0.5, 0, 0.6));
+  }
+  return c;
+}
+
 
 // ---------- геометрия с цветом ----------
 function paint(g: THREE.BufferGeometry, color: number, jitter = 0.06): THREE.BufferGeometry {
@@ -342,6 +554,16 @@ export class World {
   /** главная гавань (остров 0) — прежнее имя поля для совместимости */
   get port(): PortDef { return this.ports[0]; }
   discovered = new Set<string>();
+  /** рельеф островов: СТРИМЕР ТАЙЛОВ с LOD (Task 36) */
+  terrain: TerrainStreamer;
+  /** рыбацкие лодки вокруг всех островов (дрейфуют у кромки) */
+  coastFleet: CoastFleet;
+  /** жители деревень (по деревне на остров) — ходят по тропам */
+  villageFolk: LandFolk[] = [];
+  /** группы деревень (видимость по дистанции) */
+  private villageGroups: THREE.Group[] = [];
+  /** дальность видимости статики мира (настройка графики, м) */
+  visDistance = 5600;
 
   // животные
   private gullMesh!: THREE.InstancedMesh;
@@ -377,13 +599,29 @@ export class World {
   /** полигоны береговой линии всех островов (для карт и телеметрии) */
   outlines: { x: number; z: number }[][] = [];
 
-  constructor() {
-    this.buildIslands();
+  // группы островов: растительность/постройки/деревни острова — в
+  // своей группе (видимость по дистанции до игрока)
+  private islGroups: THREE.Group[] = [];
+
+  // коллайдеры растительности для ПЕШЕХОДА (Task 36): сетка 48 м
+  private vegGrid = new Map<number, { x: number; z: number; r: number }[]>();
+  private static VEG_CELL = 48;
+
+  constructor(opts?: { visDistance?: number; textures?: boolean }) {
+    if (opts?.visDistance) this.visDistance = opts.visDistance;
+    // РЕЛЬЕФ: тайлы вокруг игрока (детальные вблизи, грубые вдали)
+    this.terrain = new TerrainStreamer({ textures: opts?.textures ?? true });
+    this.group.add(this.terrain.group);
     this.buildVegetation();
     this.buildPorts();
+    this.buildVillages();
+    this.coastFleet = buildCoastFleet(ISLANDS, heightAt, WORLD_SEED + 36);
+    this.group.add(this.coastFleet.group);
     this.buildAnimals();
-    // полигоны берега (неправильная форма) — для карт: считаем раз
-    for (let i = 0; i < this.islands.length; i++) this.outlines.push(islandOutline(i, 56));
+    // полигоны берега: крупным островам — чаще шаг
+    for (let i = 0; i < this.islands.length; i++) {
+      this.outlines.push(islandOutline(i, this.islands[i].r > 1500 ? 128 : 72));
+    }
     // КАРКАС «треугольники без текстур» (Task 33): категория
     // каждого объекта для настройки. Растительность помечена при
     // сборке ('veg'); всё прочее в мире (рельеф, постройки,
@@ -393,74 +631,8 @@ export class World {
     });
   }
 
-  // ---------- острова ----------
-  private buildIslands() {
-    this.islands.forEach((isl, islIdx) => {
-      // размер квадрата: с запасом за всю зону влияния рельефа —
-      // неправильная форма вытягивает берег до ~1.56r, обрыв к дну
-      // до ~2.05r (r·4.3/2 = 2.15r) — кромка уходит на глубину и не видна
-      const size = isl.r * 4.3;
-      const seg = 110;
-      // у каждого острова своё дно с крошечным сдвигом: перекрывающиеся
-      // плоскости не мерцают z-fight в открытом море
-      const deep = -14 - islIdx * 0.06;
-      const g = new THREE.PlaneGeometry(size, size, seg, seg);
-      g.rotateX(-Math.PI / 2);
-      const pos = g.getAttribute('position') as THREE.BufferAttribute;
-      const colors = new Float32Array(pos.count * 3);
-      const cUnder = new THREE.Color(0x9a8a66);
-      const cSand = new THREE.Color(0xd9c28f);
-      const cGrass = new THREE.Color(0x5f863d);
-      const cJungle = new THREE.Color(0x33642e);
-      const cRock = new THREE.Color(0x8a8378);
-      const c = new THREE.Color();
-      for (let i = 0; i < pos.count; i++) {
-        const wx = pos.getX(i) + isl.cx;
-        const wz = pos.getZ(i) + isl.cz;
-        let h = heightAt(wx, wz);
-        if (h < deep) h = deep;
-        pos.setY(i, h);
-        // цвет по высоте и уклону (уклон приблизим после).
-        // Узкая полоса прибоя: песчаный оттенок только в верхних 1.6 м
-        // воды — дальше сразу тёмная глубина (острова БЕЗ отмелей).
-        // Скальные острова и ПОД водой без песка — тёмный камень
-        if (h < -0.4) {
-          const tint = clamp((h + 1.6) / 1.4, 0, 1);
-          c.copy(cUnder).lerp(isl.type === 'rock' ? cUnder : cSand, isl.type === 'rock' ? 0 : tint);
-          if (isl.type === 'rock') c.lerp(cRock, tint * 0.35);
-        }
-        else if (h < 1.3) c.copy(cSand);
-        // скальные острова — ГОЛЫЙ камень почти от уреза воды (травы
-        // только узкой каймой у пляжа), зелёные — до 62%; граница
-        // шумится (dither), чтобы не было «линии горизонта текстур»
-        else {
-          const rockFrom = isl.type === 'rock' ? 0.08 : 0.62;
-          const dith = (fbm2(wx * 0.03, wz * 0.03, 2, WORLD_SEED + 77) - 0.5) * 0.14;
-          if (h < isl.maxH * (rockFrom + dith))
-            c.copy(cGrass).lerp(cJungle, fbm2(wx * 0.05, wz * 0.05, 3, WORLD_SEED + 9));
-          else c.copy(cRock);
-        }
-        colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
-      }
-      g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      g.computeVertexNormals();
-      // скалы на крутых склонах (на скальных островах — охотнее)
-      const nrm = g.getAttribute('normal') as THREE.BufferAttribute;
-      const steepMax = isl.type === 'rock' ? 0.74 : 0.62;
-      for (let i = 0; i < pos.count; i++) {
-        if (nrm.getY(i) < steepMax && pos.getY(i) > 0.3) {
-          colors[i * 3] = cRock.r; colors[i * 3 + 1] = cRock.g; colors[i * 3 + 2] = cRock.b;
-        }
-      }
-      (g.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
-      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94, metalness: 0 });
-      const mesh = new THREE.Mesh(g, mat);
-      mesh.position.set(isl.cx, 0, isl.cz);
-      mesh.receiveShadow = true;
-      mesh.castShadow = true;
-      this.group.add(mesh);
-    });
-  }
+  /** включить/выключить процедурную текстуру рельефа (настройка) */
+  setTerrainTextures(on: boolean) { this.terrain.setTextures(on); }
 
   // ---------- растительность ----------
   // ДЕРЕВЬЯ ПО ОСТРОВУ: раньше все деревья всех островов сидели в
@@ -477,82 +649,150 @@ export class World {
       bush: { geo: bushGeo, sway: 0.05 },
       bamboo: { geo: bambooGeo, sway: 0.06 },
       rock: { geo: rockGeo, sway: 0 },
-      stump: { geo: stumpGeo, sway: 0 },      // сухие пни
-      boulder: { geo: boulderGeo, sway: 0 },  // валуны побережья
+      stump: { geo: stumpGeo, sway: 0 },
+      boulder: { geo: boulderGeo, sway: 0 },
     };
-    // placements[остров][порода] — отдельный инстанс-меш на пару
-    const perIsland: { isl: IslandDef; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> }[] = [];
-
-    for (const isl of this.islands) {
-      const density = isl.type === 'rock' ? 0.35 : isl.type === 'atoll' ? 1.0 : 1.25;
+    // радиус ствола для ПЕШЕХОДА (коллайдер): кусты проходимы
+    const trunkR: Record<string, number> = {
+      palm: 0.4, ficus: 0.6, jungle: 0.5, bamboo: 0.55,
+      bush: 0, rock: 1.0, stump: 0.45, boulder: 1.5,
+    };
+    const perIsland: { islIdx: number; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number; mask: number }[]> }[] = [];
+    for (let islIdx = 0; islIdx < this.islands.length; islIdx++) {
+      const isl = this.islands[islIdx];
+      const islGroup = new THREE.Group();
+      this.islGroups.push(islGroup);
+      this.group.add(islGroup);
+      // Task 36: ГРАДИЕНТ РАСТИТЕЛЬНОСТИ — от редких кустов до
+      // НЕПРОХОДИМЫХ ДЖУНГЛЕЙ по маске jungleMaskAt; лимит инстансов
+      const density = isl.type === 'rock' ? 0.35 : isl.type === 'atoll' ? 0.8 : 1.2;
       const area = Math.PI * isl.r * isl.r;
-      const target = Math.floor(area / 220 * density);
+      const target = Math.floor(Math.min(2600, Math.max(60, area / 16000 * density)));
       const rng = new RNG(WORLD_SEED + isl.cx * 31 + isl.cz);
-      const byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number }[]> = {};
+      const byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number; mask: number }[]> = {};
       for (const k of Object.keys(types)) byKind[k] = [];
       let tries = 0;
       let placed = 0;
-      while (placed < target && tries < target * 14) {
+      while (placed < target && tries < target * 12) {
         tries++;
         const a = rng.range(0, Math.PI * 2);
-        const rr = Math.sqrt(rng.next()) * isl.r * 1.25;
+        const rr = Math.sqrt(rng.next()) * isl.r * 1.2;
         const x = isl.cx + Math.cos(a) * rr;
         const z = isl.cz + Math.sin(a) * rr;
         const h = heightAt(x, z);
-        if (h < 0.75 || h > isl.maxH * 0.9) continue;
+        if (h < 0.75 || h > isl.maxH * 0.92) continue;
         const sl = slopeAt(x, z);
-        if (sl > 0.62) continue;
-        // тип дерева по высоте и типу острова (+ пни и валуны)
+        if (sl > 0.65) continue;
+        const mask = jungleMaskAt(islIdx, x, z);
         let kind: string;
         const roll = rng.next();
-        if (isl.type === 'rock') kind = roll < 0.42 ? 'rock' : roll < 0.72 ? 'boulder' : roll < 0.88 ? 'bush' : 'stump';
-        else if (h < 4.2) kind = roll < 0.60 ? 'palm' : roll < 0.74 ? 'bush' : roll < 0.88 ? 'boulder' : 'rock';
-        else if (h < isl.maxH * 0.55) kind = roll < 0.38 ? 'jungle' : roll < 0.56 ? 'palm' : roll < 0.72 ? 'bamboo' : roll < 0.84 ? 'bush' : roll < 0.92 ? 'ficus' : roll < 0.97 ? 'stump' : 'boulder';
-        else kind = roll < 0.42 ? 'jungle' : roll < 0.66 ? 'bush' : roll < 0.82 ? 'boulder' : roll < 0.92 ? 'rock' : 'stump';
-        if (kind === 'rock' && h < 1.0 && roll < 0.5) kind = 'palm';
-        const s = rng.range(0.7, 1.35);
+        if (h < 3.5) {
+          kind = isl.type === 'rock'
+            ? (roll < 0.4 ? 'rock' : roll < 0.7 ? 'boulder' : 'bush')
+            : (roll < 0.58 ? 'palm' : roll < 0.74 ? 'bush' : roll < 0.88 ? 'boulder' : 'rock');
+        } else if (mask < 0.35) {
+          kind = roll < 0.4 ? 'bush' : roll < 0.62 ? 'palm' : roll < 0.78 ? 'stump' : roll < 0.9 ? 'boulder' : 'ficus';
+        } else if (mask < 0.6) {
+          kind = roll < 0.34 ? 'bush' : roll < 0.54 ? 'palm' : roll < 0.72 ? 'jungle' : roll < 0.84 ? 'bamboo' : 'ficus';
+        } else if (mask < 0.78) {
+          kind = roll < 0.42 ? 'jungle' : roll < 0.6 ? 'ficus' : roll < 0.74 ? 'bamboo' : roll < 0.86 ? 'palm' : 'bush';
+        } else {
+          kind = roll < 0.58 ? 'jungle' : roll < 0.8 ? 'bamboo' : 'ficus';
+        }
+        const s = rng.range(0.8, 1.55);
         const m = new THREE.Matrix4().compose(
           new THREE.Vector3(x, h - 0.15, z),
           new THREE.Quaternion().setFromEuler(new THREE.Euler(rng.range(-0.06, 0.06), rng.range(0, Math.PI * 2), rng.range(-0.06, 0.06))),
-          new THREE.Vector3(s, s * rng.range(0.85, 1.2), s));
-        byKind[kind].push({ m, islandType: isl.type, h });
+          new THREE.Vector3(s, s * rng.range(0.85, 1.25), s));
+        byKind[kind].push({ m, islandType: isl.type, h, mask });
         placed++;
+        const tr = trunkR[kind] ?? 0.4;
+        if (tr > 0) this.addVegCollider(x, z, mask > 0.78 ? tr * 2.6 : tr);
       }
-      perIsland.push({ isl, byKind });
+      perIsland.push({ islIdx, byKind });
     }
-
-    for (const { byKind } of perIsland) {
+    for (const { islIdx, byKind } of perIsland) {
+      const islGroup = this.islGroups[islIdx];
       for (const [kind, list] of Object.entries(byKind)) {
         if (!list.length) continue;
         const geo = types[kind].geo();
         const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
         if (types[kind].sway > 0) applySway(mat, types[kind].sway);
         const inst = new THREE.InstancedMesh(geo, mat, list.length);
-        inst.userData.wire = 'veg';   // каркас: категория «растительность»
+        inst.userData.wire = 'veg';
         list.forEach((p, i) => inst.setMatrixAt(i, p.m));
         inst.castShadow = true;
         inst.receiveShadow = false;
-        // по острову — фрустум отсекает далёкие/за спиной
         inst.frustumCulled = true;
         inst.computeBoundingSphere();
-        this.group.add(inst);
-        // позиции для ломания (камни не ломаются)
-        const positions = list.map((p) => {
-          const v = new THREE.Vector3();
-          v.setFromMatrixPosition(p.m);
-          return v;
-        });
+        islGroup.add(inst);
+        const positions = list.map((p) => new THREE.Vector3().setFromMatrixPosition(p.m));
         this.vegSlots.push({
           inst, positions,
           broken: new Array(list.length).fill(false),
           breakable: kind !== 'rock' && kind !== 'boulder',
           kind,
           scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
-          procGeo: geo,   // процедурная геометрия — фолбэк GLB-замены
+          procGeo: geo,
         });
       }
     }
   }
+
+  /** зарегистрировать коллайдер растительности (сетка 48 м) */
+  private addVegCollider(x: number, z: number, r: number) {
+    const key = Math.floor(x / World.VEG_CELL) * 100003 + Math.floor(z / World.VEG_CELL);
+    let arr = this.vegGrid.get(key);
+    if (!arr) { arr = []; this.vegGrid.set(key, arr); }
+    arr.push({ x, z, r });
+  }
+
+  /** Выталкивание пешехода из стволов/валунов (Task 36): густые
+   *  джунгли (mask>0.78) — сплошная стена. null = чисто */
+  collideLand(x: number, z: number, radius: number): { dx: number; dz: number } | null {
+    const cx = Math.floor(x / World.VEG_CELL), cz = Math.floor(z / World.VEG_CELL);
+    let res: { dx: number; dz: number } | null = null;
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gz = cz - 1; gz <= cz + 1; gz++) {
+        const arr = this.vegGrid.get(gx * 100003 + gz);
+        if (!arr) continue;
+        for (const c of arr) {
+          const ddx = x - c.x, ddz = z - c.z;
+          const d = Math.hypot(ddx, ddz);
+          const min = c.r + radius;
+          if (d < min && d > 1e-4) {
+            const push = (min - d);
+            const ux = ddx / d, uz = ddz / d;
+            if (!res) res = { dx: 0, dz: 0 };
+            res.dx += ux * push; res.dz += uz * push;
+          }
+        }
+      }
+    }
+    return res;
+  }
+
+  /** Ближайшее НЕсломанное ломаемое растение к точке (E2E) */
+  nearestCuttable(x: number, z: number, maxR = 60, withCollider = false): { x: number; z: number; kind: string } | null {
+    const solidKinds = new Set(['palm', 'ficus', 'jungle', 'bamboo', 'stump']);
+    let best: { x: number; z: number; kind: string } | null = null;
+    let bestD = maxR;
+    for (const slot of this.vegSlots) {
+      if (!slot.breakable) continue;
+      if (withCollider && !solidKinds.has(slot.kind)) continue;
+      for (let i = 0; i < slot.positions.length; i++) {
+        if (slot.broken[i]) continue;
+        const p = slot.positions[i];
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d < bestD) { bestD = d; best = { x: p.x, z: p.z, kind: slot.kind }; }
+      }
+    }
+    return best;
+  }
+
+  /** Группа острова (постройки деревень/портов складываются сюда) */
+  islandGroup(islIdx: number): THREE.Group { return this.islGroups[islIdx]; }
+
 
   /** GLB-замена модели: подменить геометрию ВСЕХ инстансов вида
    *  (например пальмы на загруженную .glb). null → вернуть процедурную.
@@ -687,20 +927,19 @@ export class World {
     const rng = new RNG(WORLD_SEED + 4242);
     this.islands.forEach((isl, idx) => {
       const tier = tierForIsland(isl);
-      // остров 0: прежнее направление пирса (гавань не двигаем — там
-      // спавнится игрок); остальные — пирс в сторону открытого моря
       const dir = idx === 0
         ? new THREE.Vector3(-1, 0, 1).normalize()
         : new THREE.Vector3(isl.cx, 0, isl.cz).normalize();
       let shore = new THREE.Vector3(isl.cx, 0, isl.cz);
-      for (let d = 0; d < isl.r * 1.4; d += 4) {
+      // Task 36: форма+шум вытягивают сушу до ~1.73r — ищем воду до 2.1r
+      for (let d = isl.r * 0.4; d < isl.r * 2.1; d += 24) {
         const p = new THREE.Vector3(isl.cx, 0, isl.cz).addScaledVector(dir, d);
         if (heightAt(p.x, p.z) < 0.4) { shore = p; break; }
       }
-      const dockLen = [26, 36, 46, 52][tier];
-      const dockEnd = shore.clone().addScaledVector(dir, dockLen - 4);
+      // пирсы длиннее (×2.4): конец пирса в судоходной воде
+      const dockLen = [62, 86, 110, 124][tier];
+      const dockEnd = shore.clone().addScaledVector(dir, dockLen - 8);
       dockEnd.y = 0;
-      // детерминированный множитель цен из имени острова (0.78..1.32)
       const hash = Array.from(isl.name).reduce((a, ch) => a + ch.charCodeAt(0) * 7, 3);
       const priceMul = +(0.78 + ((hash * 2654435761) % 1000) / 1000 * 0.54).toFixed(2);
       const population = [
@@ -713,23 +952,20 @@ export class World {
         island: isl, name: isl.name, tier, tierName: TIER_NAMES[tier],
         population, dockEnd, dir, priceMul,
       });
-      this.buildPortStructs(this.ports[idx], rng);
-      // рыбацкий декор: шлюпки у пирса, краболовки, вешала, поплавки
+      this.buildPortStructs(this.ports[idx], rng, this.islGroups[idx]);
       this.fishing.push(buildFishingVillage(this.ports[idx], rng, heightAt));
-      this.group.add(this.fishing[idx].group);
+      this.islGroups[idx].add(this.fishing[idx].group);
     });
   }
 
-  /** Геометрия гавани: пирс + фонари + хижины; деревня — 3 хижины;
-   *  городок — рынок и амбар; город-крепость — церковь и ФОРТ с пушками.
-   *  Пиратское логово — чёрный флаг на пирсе */
-  private buildPortStructs(port: PortDef, rng: RNG) {
+  /** Геометрия гавани (Task 36: все размеры ×2.2..2.6 — острова ×10):
+   *  пирс 62–124 м, хижины 7–8 м, форт 68 м с 8 пушками */
+  private buildPortStructs(port: PortDef, rng: RNG, g: THREE.Group) {
     const isl = port.island;
     const tier = port.tier;
     const dir = port.dir;
-    const dockLen = [26, 36, 46, 52][tier];
-    const shore = port.dockEnd.clone().addScaledVector(dir, -(dockLen - 4));
-
+    const dockLen = [62, 86, 110, 124][tier];
+    const shore = port.dockEnd.clone().addScaledVector(dir, -(dockLen - 8));
     const wood = new THREE.MeshStandardMaterial({ color: 0x7a5c38, roughness: 0.85 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
     const stone = new THREE.MeshStandardMaterial({ color: 0x8d867a, roughness: 0.95 });
@@ -737,151 +973,138 @@ export class World {
     const iron = new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.5, metalness: 0.7 });
     const perp = new THREE.Vector3(-dir.z, 0, dir.x);
     const dirA = Math.atan2(dir.x, dir.z);
-
     // --- пирс ---
-    const dock = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.3, dockLen), wood);
-    const mid = shore.clone().addScaledVector(dir, dockLen / 2 - 2);
+    const dock = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.3, dockLen), wood);
+    const mid = shore.clone().addScaledVector(dir, dockLen / 2 - 4);
     dock.position.set(mid.x, 1.15, mid.z);
     dock.rotation.y = dirA;
     dock.castShadow = true;
-    this.group.add(dock);
-    // сваи
-    for (let i = 0; i <= 7; i++) {
-      const p = shore.clone().addScaledVector(dir, i * (dockLen / 7));
+    g.add(dock);
+    const nPiles = 12;
+    for (let i = 0; i <= nPiles; i++) {
+      const p = shore.clone().addScaledVector(dir, i * (dockLen / nPiles));
       for (const side of [-1, 1]) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 4.4, 6), dark);
-        post.position.set(p.x + perp.x * side * 2.0, -0.8, p.z + perp.z * side * 2.0);
-        this.group.add(post);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 4.4, 6), dark);
+        post.position.set(p.x + perp.x * side * 3.4, -0.8, p.z + perp.z * side * 3.4);
+        g.add(post);
       }
     }
-    // фонари на конце пирса
     for (const side of [-1, 1]) {
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.4, 6), dark);
-      const p = port.dockEnd.clone().add(new THREE.Vector3(perp.x * side * 1.9, 0, perp.z * side * 1.9));
-      pole.position.set(p.x, 2.6, p.z);
-      this.group.add(pole);
-      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8),
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 4.2, 6), dark);
+      const p = port.dockEnd.clone().add(new THREE.Vector3(perp.x * side * 3.1, 0, perp.z * side * 3.1));
+      pole.position.set(p.x, 3.0, p.z);
+      g.add(pole);
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 8),
         new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffb648, emissiveIntensity: 2.2 }));
-      lamp.position.set(p.x, 4.4, p.z);
-      this.group.add(lamp);
+      lamp.position.set(p.x, 5.2, p.z);
+      g.add(lamp);
     }
-
-    // --- хижины на берегу (число — от уровня порта) ---
+    // --- хижины ---
     const mkHut = (hp: THREE.Vector3, w: number, dpt: number, wallC: number, roofC: number) => {
       const hut = new THREE.Group();
-      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, dpt),
+      const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 4.2, dpt),
         new THREE.MeshStandardMaterial({ color: wallC, roughness: 0.9 }));
-      walls.position.y = 1.6;
+      walls.position.y = 2.1;
       hut.add(walls);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, dpt) * 0.82, 2.6, 4),
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, dpt) * 0.82, 3.4, 4),
         new THREE.MeshStandardMaterial({ color: roofC, roughness: 0.95 }));
-      roof.position.y = 4.4;
+      roof.position.y = 5.8;
       roof.rotation.y = Math.PI / 4;
       hut.add(roof);
-      const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.15), dark);
-      door.position.set(0, 1.1, dpt / 2 + 0.05);
+      const door = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.6, 0.18), dark);
+      door.position.set(0, 1.3, dpt / 2 + 0.06);
       hut.add(door);
       hut.position.set(hp.x, Math.max(heightAt(hp.x, hp.z), 0.8), hp.z);
       hut.rotation.y = dirA + (rng.next() - 0.5) * 0.5;
       hut.castShadow = true;
-      this.group.add(hut);
+      g.add(hut);
     };
-    const hutBase = shore.clone().addScaledVector(dir, -16);
-    const nHuts = [1, 3, 5, 6][tier];
+    const hutBase = shore.clone().addScaledVector(dir, -38);
+    const nHuts = [2, 4, 6, 8][tier];
     const wallColors = [0xbfa27a, 0xc9ad84, 0xa8906a];
     const roofColors = [0xb09055, 0x8a5c38, 0x74553a];
     for (let i = 0; i < nHuts; i++) {
-      const row = tier >= 2 ? i % 2 : 0; // город: два ряда
-      const off = nHuts === 1 ? 0 : (i - (nHuts - 1) / 2) * (tier >= 2 ? 11 : 13);
-      const hp = hutBase.clone()
-        .addScaledVector(perp, off)
-        .addScaledVector(dir, -row * 12);
-      mkHut(hp, tier >= 2 ? 6 : 5.5, tier >= 2 ? 5 : 4.6,
-        wallColors[i % 3], roofColors[i % 3]);
+      const row = tier >= 2 ? i % 2 : 0;
+      const off = nHuts === 1 ? 0 : (i - (nHuts - 1) / 2) * (tier >= 2 ? 24 : 28);
+      const hp = hutBase.clone().addScaledVector(perp, off).addScaledVector(dir, -row * 26);
+      mkHut(hp, tier >= 2 ? 8.4 : 7.6, tier >= 2 ? 7 : 6.4, wallColors[i % 3], roofColors[i % 3]);
     }
-
     // --- городок: рынок и амбар ---
     if (tier >= 2) {
-      const market = hutBase.clone().addScaledVector(dir, -26).addScaledVector(perp, 14);
-      for (let i = 0; i < 3; i++) {
+      const market = hutBase.clone().addScaledVector(dir, -58).addScaledVector(perp, 30);
+      for (let i = 0; i < 4; i++) {
         const st = new THREE.Group();
-        const table = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.15, 1.6), wood);
-        table.position.y = 0.95;
+        const table = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.15, 2.1), wood);
+        table.position.y = 1.0;
         st.add(table);
-        for (const sx of [-1.4, 1.4]) {
-          for (const sz of [0.6, -0.6]) {
-            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.95, 0.12), dark);
-            leg.position.set(sx, 0.48, sz);
-            st.add(leg);
-          }
+        for (const sx of [-1.8, 1.8]) for (const sz of [0.8, -0.8]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.0, 0.14), dark);
+          leg.position.set(sx, 0.5, sz);
+          st.add(leg);
         }
-        const awn = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.1, 2.2),
+        const awn = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.1, 2.8),
           new THREE.MeshStandardMaterial({ color: i % 2 ? 0xa3362c : 0x3c6b8a, roughness: 0.9 }));
-        awn.position.set(0, 2.3, 0);
+        awn.position.set(0, 2.5, 0);
         awn.rotation.x = 0.16;
         st.add(awn);
-        for (const px of [-1.6, 1.6]) {
-          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.3, 0.09), dark);
-          pole.position.set(px, 1.15, 0.9);
+        for (const px of [-2.0, 2.0]) {
+          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.5, 0.1), dark);
+          pole.position.set(px, 1.25, 1.1);
           st.add(pole);
         }
-        const mp = market.clone().addScaledVector(perp, i * 6 - 6);
+        const mp = market.clone().addScaledVector(perp, i * 8 - 12);
         st.position.set(mp.x, Math.max(heightAt(mp.x, mp.z), 0.8), mp.z);
         st.rotation.y = dirA + Math.PI / 2;
-        this.group.add(st);
+        g.add(st);
       }
-      // амбар (склад товаров)
-      const wh = hutBase.clone().addScaledVector(dir, -24).addScaledVector(perp, -16);
+      const wh = hutBase.clone().addScaledVector(dir, -54).addScaledVector(perp, -34);
       const warehouse = new THREE.Group();
-      const whWalls = new THREE.Mesh(new THREE.BoxGeometry(9, 4.6, 6.5),
+      const whWalls = new THREE.Mesh(new THREE.BoxGeometry(13, 6.4, 9),
         new THREE.MeshStandardMaterial({ color: 0x8f7550, roughness: 0.92 }));
-      whWalls.position.y = 2.3;
+      whWalls.position.y = 3.2;
       warehouse.add(whWalls);
-      const whRoof = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.4, 9.6, 3, 1),
+      const whRoof = new THREE.Mesh(new THREE.CylinderGeometry(6.2, 6.2, 13.6, 3, 1),
         new THREE.MeshStandardMaterial({ color: 0x5c4128, roughness: 0.95 }));
       whRoof.rotation.z = Math.PI / 2;
       whRoof.scale.set(1, 1, 0.42);
-      whRoof.position.y = 5.4;
+      whRoof.position.y = 7.4;
       warehouse.add(whRoof);
       warehouse.position.set(wh.x, Math.max(heightAt(wh.x, wh.z), 0.8), wh.z);
       warehouse.rotation.y = dirA;
       warehouse.castShadow = true;
-      this.group.add(warehouse);
+      g.add(warehouse);
     }
-
-    // --- город-крепость: церковь + ФОРТ с пушками ---
+    // --- город-крепость: церковь + ФОРТ ---
     if (tier >= 3) {
-      const ch = hutBase.clone().addScaledVector(dir, -34).addScaledVector(perp, 24);
+      const ch = hutBase.clone().addScaledVector(dir, -80).addScaledVector(perp, 52);
       const church = new THREE.Group();
-      const nave = new THREE.Mesh(new THREE.BoxGeometry(5, 4, 9),
+      const nave = new THREE.Mesh(new THREE.BoxGeometry(7, 5.6, 12.6),
         new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
-      nave.position.y = 2;
+      nave.position.y = 2.8;
       church.add(nave);
-      const nroof = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.1, 9.6, 3, 1),
+      const nroof = new THREE.Mesh(new THREE.CylinderGeometry(4.3, 4.3, 13.4, 3, 1),
         new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.9 }));
       nroof.rotation.z = Math.PI / 2;
       nroof.scale.set(1, 1, 0.46);
-      nroof.position.y = 4.6;
+      nroof.position.y = 6.4;
       church.add(nroof);
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(3.2, 9.5, 3.2),
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(4.4, 13, 4.4),
         new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
-      tower.position.set(0, 4.75, 4.6);
+      tower.position.set(0, 6.5, 6.4);
       church.add(tower);
-      const spire = new THREE.Mesh(new THREE.ConeGeometry(2.4, 3.4, 4),
+      const spire = new THREE.Mesh(new THREE.ConeGeometry(3.3, 4.7, 4),
         new THREE.MeshStandardMaterial({ color: 0x4a5a6b, roughness: 0.85 }));
-      spire.position.set(0, 11.2, 4.6);
+      spire.position.set(0, 15.4, 6.4);
       spire.rotation.y = Math.PI / 4;
       church.add(spire);
       church.position.set(ch.x, Math.max(heightAt(ch.x, ch.z), 0.8), ch.z);
       church.rotation.y = dirA;
       church.castShadow = true;
-      this.group.add(church);
-
-      // ФОРТ: квадрат каменных стен, 4 угловые башни, 8 пушек
-      const fb = hutBase.clone().addScaledVector(dir, -52);
+      g.add(church);
+      const fb = hutBase.clone().addScaledVector(dir, -118);
       const fy = Math.max(heightAt(fb.x, fb.z), 1.0);
-      const S = 15;
-      const wallH = 5.2, wallT = 1.4;
+      const S = 34;
+      const wallH = 9.5, wallT = 2.4;
       const fort = new THREE.Group();
       const wallsSpec: [number, number, number, number][] = [
         [0, S, S * 2, wallT], [0, -S, S * 2, wallT],
@@ -892,45 +1115,44 @@ export class World {
         wall.position.set(wx, wallH / 2, wz);
         wall.castShadow = true;
         fort.add(wall);
-        for (let k = -S + 1.5; k < S; k += 3) {
+        for (let k = -S + 2.5; k < S; k += 5.5) {
           const merlon = new THREE.Mesh(new THREE.BoxGeometry(
-            ww > wallT ? 1.5 : wallT + 0.2, 1.1, wd > wallT ? 1.5 : wallT + 0.2), stoneDark);
-          merlon.position.set(ww > wallT ? k : wx, wallH + 0.55, wd > wallT ? k : wz);
+            ww > wallT ? 2.6 : wallT + 0.4, 2.0, wd > wallT ? 2.6 : wallT + 0.4), stoneDark);
+          merlon.position.set(ww > wallT ? k : wx, wallH + 1.0, wd > wallT ? k : wz);
           fort.add(merlon);
         }
       }
       for (const [tx, tz] of [[S, S], [S, -S], [-S, S], [-S, -S]] as [number, number][]) {
-        const ftower = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.4, wallH + 3.6, 8), stone);
-        ftower.position.set(tx, (wallH + 3.6) / 2, tz);
+        const ftower = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 6.2, wallH + 6.5, 8), stone);
+        ftower.position.set(tx, (wallH + 6.5) / 2, tz);
         ftower.castShadow = true;
         fort.add(ftower);
-        const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 2.4, 8), stoneDark);
-        cap.position.set(tx, wallH + 3.6 + 1.2, tz);
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(6.2, 4.4, 8), stoneDark);
+        cap.position.set(tx, wallH + 6.5 + 2.2, tz);
         fort.add(cap);
       }
-      // 8 пушек: по 2 на стену, стволы в сторону моря
       const mkCannon = (cx: number, cz: number, ry: number) => {
-        const g = new THREE.Group();
-        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.22, 2.0, 8), iron);
+        const cg = new THREE.Group();
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.32, 3.2, 8), iron);
         barrel.rotation.z = Math.PI / 2;
-        barrel.position.set(0, 0.62, 0.9);
-        g.add(barrel);
-        const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 1.3), dark);
-        carriage.position.y = 0.25;
-        g.add(carriage);
-        for (const wx of [-0.34, 0.34]) {
-          const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.05, 5, 10), dark);
+        barrel.position.set(0, 0.95, 1.4);
+        cg.add(barrel);
+        const carriage = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.8, 2.1), dark);
+        carriage.position.y = 0.4;
+        cg.add(carriage);
+        for (const wx of [-0.55, 0.55]) {
+          const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.08, 5, 10), dark);
           wheel.rotation.y = Math.PI / 2;
-          wheel.position.set(wx, 0.26, 0);
-          g.add(wheel);
+          wheel.position.set(wx, 0.42, 0);
+          cg.add(wheel);
         }
-        g.position.set(cx, wallH + 0.3, cz);
-        g.rotation.y = ry;
-        fort.add(g);
+        cg.position.set(cx, wallH + 0.4, cz);
+        cg.rotation.y = ry;
+        fort.add(cg);
       };
       for (let i = 0; i < 8; i++) {
         const side = i % 4;
-        const k = i < 4 ? -6 : 6;
+        const k = i < 4 ? -13 : 13;
         if (side === 0) mkCannon(k, S - wallT / 2, dirA);
         else if (side === 1) mkCannon(k, -S + wallT / 2, dirA + Math.PI);
         else if (side === 2) mkCannon(S - wallT / 2, k, dirA + Math.PI / 2);
@@ -938,9 +1160,8 @@ export class World {
       }
       fort.position.set(fb.x, fy, fb.z);
       fort.rotation.y = dirA;
-      this.group.add(fort);
+      g.add(fort);
     }
-
     // --- пиратское логово: чёрный флаг на пирсе ---
     if (isl.name === 'Логово пиратов') {
       const c = document.createElement('canvas');
@@ -953,33 +1174,107 @@ export class World {
       x2.save(); x2.translate(32, 27); x2.rotate(-0.5); x2.fillRect(-16, -1.5, 32, 3); x2.restore();
       const tex = new THREE.CanvasTexture(c);
       tex.colorSpace = THREE.SRGBColorSpace;
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 9, 6), dark);
-      const fp = port.dockEnd.clone().addScaledVector(dir, -3).add(new THREE.Vector3(perp.x * 3.2, 0, perp.z * 3.2));
-      pole.position.set(fp.x, 5.2, fp.z);
-      this.group.add(pole);
-      const banner = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.1),
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 13, 6), dark);
+      const fp = port.dockEnd.clone().addScaledVector(dir, -5).add(new THREE.Vector3(perp.x * 4.6, 0, perp.z * 4.6));
+      pole.position.set(fp.x, 7.4, fp.z);
+      g.add(pole);
+      const banner = new THREE.Mesh(new THREE.PlaneGeometry(5.4, 3.3),
         new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.9 }));
-      banner.position.set(fp.x + 1.7, 8.6, fp.z);
+      banner.position.set(fp.x + 2.7, 12.2, fp.z);
       banner.rotation.y = dirA + Math.PI / 2;
-      this.group.add(banner);
+      g.add(banner);
     }
-
-    // --- пальмы у гавани (гуще у больших портов) ---
-    const nPalms = [3, 10, 16, 22][tier];
+    // --- пальмы у гавани ---
+    const nPalms = [8, 22, 36, 48][tier];
     for (let i = 0; i < nPalms; i++) {
-      const a = rng.range(0, Math.PI * 2), rr = rng.range(16, 52);
+      const a = rng.range(0, Math.PI * 2), rr = rng.range(30, 120);
       const x = hutBase.x + Math.cos(a) * rr, z = hutBase.z + Math.sin(a) * rr;
       const h = heightAt(x, z);
-      if (h < 1.0 || h > 8) continue;
+      if (h < 1.0 || h > 14) continue;
       const palm = new THREE.Mesh(palmGeo(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
-      const s = rng.range(0.8, 1.3);
+      const s = rng.range(0.9, 1.5);
       palm.scale.setScalar(s);
       palm.position.set(x, h - 0.1, z);
       palm.rotation.y = rng.range(0, 7);
       palm.castShadow = true;
-      this.group.add(palm);
+      g.add(palm);
     }
   }
+
+
+  // ---------- ДЕРЕВНИ (Task 36): небольшие посёлки в глубине
+  // островов — хижины вокруг центра, костёр, сушила сетей;
+  // жители ходят по тропам к порту (islandFolk.buildVillageFolk) ----------
+  private buildVillages() {
+    const rng = new RNG(WORLD_SEED + 8181);
+    const dark = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
+    for (const v of VILLAGES) {
+      const isl = this.islands[v.islandIdx];
+      const g = new THREE.Group();
+      this.villageGroups.push(g);
+      this.islGroups[v.islandIdx].add(g);
+      const dirA = Math.atan2(v.x - isl.cx, v.z - isl.cz);
+      const wallColors = [0xbfa27a, 0xc9ad84, 0xa8906a];
+      const roofColors = [0xb09055, 0x8a5c38, 0x74553a];
+      for (let i = 0; i < v.huts; i++) {
+        const ring = i % 2;
+        const a = (i / v.huts) * Math.PI * 2 + rng.range(-0.2, 0.2);
+        const rad = ring ? 9 : 17;
+        const hx = v.x + Math.cos(a) * rad;
+        const hz = v.z + Math.sin(a) * rad;
+        const h = heightAt(hx, hz);
+        if (h < 0.8) continue;
+        const hut = new THREE.Group();
+        const w = 5.6 + rng.range(0, 1.6), dpt = 4.8 + rng.range(0, 1.2);
+        const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 3.4, dpt),
+          new THREE.MeshStandardMaterial({ color: wallColors[i % 3], roughness: 0.9 }));
+        walls.position.y = 1.7;
+        hut.add(walls);
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, dpt) * 0.85, 2.8, 4),
+          new THREE.MeshStandardMaterial({ color: roofColors[i % 3], roughness: 0.95 }));
+        roof.position.y = 4.8;
+        roof.rotation.y = Math.PI / 4;
+        hut.add(roof);
+        const door = new THREE.Mesh(new THREE.BoxGeometry(1.3, 2.3, 0.16), dark);
+        door.position.set(0, 1.15, dpt / 2 + 0.06);
+        hut.add(door);
+        hut.position.set(hx, h, hz);
+        hut.rotation.y = dirA + rng.range(-0.6, 0.6);
+        hut.castShadow = true;
+        g.add(hut);
+      }
+      const fire = new THREE.Group();
+      const stones = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.18, 5, 9),
+        new THREE.MeshStandardMaterial({ color: 0x55504a, roughness: 1 }));
+      stones.rotation.x = Math.PI / 2;
+      fire.add(stones);
+      const logs = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.5, 5),
+        new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.95 }));
+      logs.position.y = 0.75;
+      fire.add(logs);
+      fire.position.set(v.x, v.h, v.z);
+      g.add(fire);
+      const rack = new THREE.Group();
+      for (const sx of [-2.2, 2.2]) {
+        const pole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 3.0, 0.16), dark);
+        pole.position.set(sx, 1.5, 0);
+        rack.add(pole);
+      }
+      const net = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.4, 0.06),
+        new THREE.MeshStandardMaterial({ color: 0x8a8272, roughness: 1 }));
+      net.position.y = 2.1;
+      rack.add(net);
+      const rx = v.x + Math.cos(dirA) * 13, rz = v.z + Math.sin(dirA) * 13;
+      rack.position.set(rx, heightAt(rx, rz), rz);
+      rack.rotation.y = dirA + Math.PI / 2;
+      g.add(rack);
+      const folk = buildVillageFolk(v, { heightAt, seed: WORLD_SEED + v.x * 7 + v.z });
+      this.villageFolk.push(folk);
+      g.add(folk.group);
+      g.add(folk.props);
+    }
+  }
+
 
   // ---------- животные ----------
   private buildAnimals() {
@@ -1149,6 +1444,19 @@ export class World {
     windTimeUniform.value = time;
     this.gullMat.uniforms.uTime.value = time;
 
+    // РЕЛЬЕФ-СТРИМЕР (Task 36): тайлы вокруг игрока
+    this.terrain.update(playerPos, dt);
+
+    // видимость ОСТРОВОВ: группа острова (растительность+порт+
+    // деревни) рисуется только в пределах дальности прорисовки
+    for (let i = 0; i < this.islands.length; i++) {
+      const isl = this.islands[i];
+      const d = Math.hypot(playerPos.x - isl.cx, playerPos.z - isl.cz);
+      const vis = d < this.visDistance + isl.r * 1.35;
+      const g = this.islGroups[i];
+      if (g && g.visible !== vis) g.visible = vis;
+    }
+
     // рыбацкие деревни: лодки качаются на волнах / тонут, поплавки,
     // рыбаки покачиваются. Далёкие гавани (за туманом) — скрываем:
     // не тратим ни апдейт, ни draw calls
@@ -1157,9 +1465,20 @@ export class World {
       const d = anchor
         ? Math.hypot(anchor.x - playerPos.x, anchor.z - playerPos.z)
         : 0;
-      const vis = d < 4000;
+      const vis = d < 4800;
       if (fv.group.visible !== vis) fv.group.visible = vis;
       if (vis) fv.update(time, dt, waterHeight);
+    }
+
+    // РЫБАЦКИЕ ЛОДКИ вокруг островов (Task 36)
+    this.coastFleet.update(time, dt, waterHeight, { x: playerPos.x, z: playerPos.z });
+
+    // ЖИТЕЛИ ДЕРЕВЕНЬ: ходят по тропам к порту
+    for (let i = 0; i < this.villageFolk.length; i++) {
+      const folk = this.villageFolk[i];
+      const v = VILLAGES[i];
+      const near = Math.hypot(v.x - playerPos.x, v.z - playerPos.z) < 2600;
+      if (near) folk.update(dt, time, { x: playerPos.x, z: playerPos.z });
     }
 
     // чайки — НАСТОЯЩИЙ ПОЛЁТ: курс/скорость/крен, кружение над

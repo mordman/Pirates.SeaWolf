@@ -250,6 +250,10 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   <input type="checkbox" checked={g.useGLBModels} onChange={e => update(d => { d.graphics.useGLBModels = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                <Row label="Текстурирование островов" hint="процедурное зерно песка/травы/скал на рельефе островов (выкл — ровный цвет вершин)">
+                  <input type="checkbox" checked={g.islandTextures} onChange={e => update(d => { d.graphics.islandTextures = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
               </div>
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Каркас: только треугольники без текстур</div>

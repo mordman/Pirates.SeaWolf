@@ -459,7 +459,8 @@ export interface CoastFleet {
 // ---------- варианты лодок с рыбаками (запечённая геометрия) ----------
 const strip = (g: THREE.BufferGeometry) => {
   if (g.getAttribute('uv')) g.deleteAttribute('uv');
-  return g;
+  // Task 36: mergeGeometries требует «индекс у всех или ни у кого»
+  return g.index ? g.toNonIndexed() : g;
 };
 let coastVariants: { geo: THREE.BufferGeometry; rodTips: THREE.Vector3[]; fishermen: number }[] | null = null;
 function getCoastVariants(): { geo: THREE.BufferGeometry; rodTips: THREE.Vector3[]; fishermen: number }[] {
@@ -525,17 +526,31 @@ export function buildCoastFleet(
   let fishermen = 0;
 
   for (const isl of islands) {
-    // плотность: от 2 лодок у мелкой до 9 у большой
-    const n = Math.max(2, Math.min(9, Math.round(isl.r / 130)));
+    // плотность: от 3 лодок у мелкой до 14 у большой (Task 36)
+    const n = Math.max(3, Math.min(14, Math.round(isl.r / 240)));
+    // кромка берега в направлении ang (двоичный поиск): берега
+    // трёх типов и сложная форма — фиксированные доли радиуса
+    // промахивались (то песок, то глубина)
+    const coastAt = (ang: number): number => {
+      const ux = Math.cos(ang), uz = Math.sin(ang);
+      let lo = 0, hi = isl.r * 2.0;
+      for (let it = 0; it < 16; it++) {
+        const mid = (lo + hi) / 2;
+        if (heightAt(isl.cx + ux * mid, isl.cz + uz * mid) > 0.2) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
+    };
     for (let i = 0; i < n; i++) {
       const ang = (i / n) * Math.PI * 2 + rng.range(-0.3, 0.3);
-      // ищем воду глубиной 1.5..12 м у кромки (не в отмели, не в глубине)
+      // ищем воду глубиной 1.2..13 м ЗА кромкой
       let rad = 0;
-      for (const rr of [isl.r * 1.0, isl.r * 1.07, isl.r * 1.15, isl.r * 1.28]) {
+      const coast = coastAt(ang);
+      for (const off of [14, 34, 60, 95, 140, 200]) {
+        const rr = coast + off;
         const h = heightAt(isl.cx + Math.cos(ang) * rr, isl.cz + Math.sin(ang) * rr);
-        if (h < -1.5 && h > -14) { rad = rr + rng.range(0, 16); break; }
+        if (h < -1.2 && h > -13) { rad = rr; break; }
       }
-      if (!rad) continue;   // скала в море без пригодной кромки
+      if (!rad) continue;   // скала/обрыв в этом направлении — без лодок
       const variant = variants[Math.floor(rng.next() * variants.length)];
       const scale = rng.range(0.9, 1.06);
       const mesh = new THREE.Mesh(variant.geo, VILLAGE_MAT);

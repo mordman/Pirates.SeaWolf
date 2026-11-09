@@ -3,6 +3,7 @@ import {
   buildFigure, rollTraits, mulberry32, segSegDist3D, crewFx,
   type CrewFigure, type KillMode,
 } from '../ship/crew';
+import type { VillageDef } from './world';
 
 // ============================================================
 // Островные пираты «Логова» (по ТЗ: остров у полигона, ГУСТО
@@ -384,6 +385,154 @@ export function buildLandFolk(n: number, o: LandFolkOpts): LandFolk {
           f.fig.group.rotation.z = Math.sin(time * 1.6 + f.phase) * 0.02;
         } else {
           // дворовый: idle-покачивание, изредка поворачивается
+          f.fig.group.rotation.z = Math.sin(time * 1.3 + f.phase) * 0.035;
+          f.fig.group.rotation.y = f.face + Math.sin(time * 0.3 + f.phase) * 0.7;
+        }
+      }
+      const rc = recount();
+      vis.dead = rc.dead;
+      vis.shown = rc.alive;
+    },
+  };
+  return vis;
+}
+
+// ============================================================
+// ЖИТЕЛИ ДЕРЕВЕНЬ (Task 36): мирные островитяне — ходоки бредут
+// по ТРОПЕ от деревни к порту (полилиния), дворовые толпятся у
+// костра. Те же процедурные фигурки; саблей/пистолетом игрока
+// можно атаковать и их (killNear общий).
+// ============================================================
+export interface VillageFolkOpts {
+  heightAt: (x: number, z: number) => number;
+  seed?: number;
+}
+
+export function buildVillageFolk(v: VillageDef, o: VillageFolkOpts): LandFolk {
+  const group = new THREE.Group();
+  const props = new THREE.Group();
+  const rng = mulberry32((o.seed ?? 4242) * 7717 + 11);
+  let s = (o.seed ?? 4242) * 2654435761 % 2147483647;
+  const nextSeed = () => { s = (s * 16807) % 2147483647; return s % 100000; };
+  const heightAt = o.heightAt;
+  const trail = v.trail;
+  let trailLen = 0;
+  for (let k = 0; k + 1 < trail.length; k++) {
+    trailLen += Math.hypot(trail[k + 1].x - trail[k].x, trail[k + 1].z - trail[k].z);
+  }
+  const pointAt = (t: number) => {
+    let want = t * trailLen;
+    for (let k = 0; k + 1 < trail.length; k++) {
+      const seg = Math.hypot(trail[k + 1].x - trail[k].x, trail[k + 1].z - trail[k].z);
+      if (want <= seg) {
+        const u = want / Math.max(1e-6, seg);
+        return { x: trail[k].x + (trail[k + 1].x - trail[k].x) * u, z: trail[k].z + (trail[k + 1].z - trail[k].z) * u };
+      }
+      want -= seg;
+    }
+    const last = trail[trail.length - 1];
+    return { x: last.x, z: last.z };
+  };
+  const folks: Folk[] = [];
+  const mkFolk = (x: number, z: number, mode: 'walk' | 'idle', face: number) => {
+    const role = mode === 'walk' ? 'walker' : rng() < 0.5 ? 'watch' : 'gunner';
+    const fig = buildFigure(role, rollTraits(rng, role), nextSeed());
+    fig.group.position.set(x, heightAt(x, z) - 0.06, z);
+    fig.group.rotation.y = face;
+    group.add(fig.group);
+    folks.push({
+      fig, mode, ax: x, az: z, bx: x, bz: z,
+      t: rng(), dir: rng() < 0.5 ? 1 : -1,
+      speed: 0.85 + rng() * 0.5, phase: rng() * 6.28, face,
+      dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0,
+      fallDir: 1, fallRoll: 0,
+    });
+  };
+  const nWalk = Math.max(3, Math.round(v.huts * 1.2));
+  for (let i = 0; i < nWalk; i++) {
+    const t = rng();
+    const p = pointAt(t);
+    mkFolk(p.x, p.z, 'walk', 0);
+  }
+  const nIdle = Math.max(3, Math.round(v.huts * 0.8));
+  for (let i = 0; i < nIdle; i++) {
+    const a = (i / nIdle) * Math.PI * 2 + rng() * 0.5;
+    const rad = 3.2 + rng() * 2.2;
+    mkFolk(v.x + Math.cos(a) * rad, v.z + Math.sin(a) * rad, 'idle', Math.atan2(v.x - (v.x + Math.cos(a) * rad), v.z - (v.z + Math.sin(a) * rad)));
+  }
+  group.traverse(ob => { ob.castShadow = false; ob.receiveShadow = false; });
+
+  const recount = () => {
+    let alive = 0, dead = 0;
+    for (const f of folks) {
+      if (f.dead) dead++;
+      else if (f.fig.group.visible) alive++;
+    }
+    return { alive, dead };
+  };
+
+  const vis: LandFolk = {
+    group, props, total: folks.length, shown: folks.length, dead: 0,
+    setVisible(v: boolean) { group.visible = v; },
+    killNear(x, y, z, hitR, mode, dirX = 0, dirZ = 1) {
+      const P = new THREE.Vector3(x, y, z);
+      let killed = 0;
+      for (const f of folks) {
+        if (f.dead || !f.fig.group.visible) continue;
+        const p = f.fig.group.position;
+        const lo = new THREE.Vector3(p.x, p.y + 0.12, p.z);
+        const hi = new THREE.Vector3(p.x, p.y + 1.62, p.z);
+        if (segSegDist3D(P, P, lo, hi) > hitR) continue;
+        killFolk(f, mode, dirX, dirZ);
+        killed++;
+      }
+      const rc = recount();
+      vis.dead = rc.dead;
+      vis.shown = rc.alive;
+      return killed;
+    },
+    reset() {
+      for (const f of folks) {
+        f.dead = false; f.deadT = 0; f.corpseLife = 0;
+        f.fig.group.visible = true;
+        f.fig.group.rotation.x = 0; f.fig.group.rotation.z = 0;
+        f.fig.group.scale.setScalar(1);
+      }
+      vis.dead = 0;
+      vis.shown = folks.length;
+    },
+    update(dt, time) {
+      for (const f of folks) {
+        if (!f.fig.group.visible) continue;
+        if (f.dead) {
+          if (f.deathMode !== 'fall') continue;
+          f.deadT += dt;
+          const k = Math.min(1, f.deadT / 0.5);
+          const e = 1 - (1 - k) * (1 - k);
+          f.fig.group.rotation.x = f.fallDir * (Math.PI / 2 - 0.07) * e;
+          f.fig.group.rotation.z = f.fallRoll * e;
+          if (f.deadT > f.corpseLife) {
+            const fade = Math.max(0.01, 1 - (f.deadT - f.corpseLife) / 1.2);
+            f.fig.group.scale.setScalar(fade);
+            if (fade <= 0.01) f.fig.group.visible = false;
+          }
+          continue;
+        }
+        if (f.mode === 'walk') {
+          f.t += (f.dir * f.speed * dt) / Math.max(1, trailLen);
+          if (f.t > 1) { f.t = 1; f.dir = -1; }
+          if (f.t < 0) { f.t = 0; f.dir = 1; }
+          const p = pointAt(f.t);
+          const p2 = pointAt(Math.max(0, Math.min(1, f.t + f.dir * 0.01)));
+          f.fig.group.position.set(p.x, heightAt(p.x, p.z) - 0.06, p.z);
+          f.fig.group.rotation.y = Math.atan2(p2.x - p.x, p2.z - p.z);
+          const step = time * f.speed * 7;
+          if (f.fig.legL && f.fig.legR) {
+            f.fig.legL.rotation.x = Math.sin(step) * 0.55;
+            f.fig.legR.rotation.x = -Math.sin(step) * 0.55;
+          }
+          f.fig.group.position.y += Math.abs(Math.sin(step)) * 0.03;
+        } else {
           f.fig.group.rotation.z = Math.sin(time * 1.3 + f.phase) * 0.035;
           f.fig.group.rotation.y = f.face + Math.sin(time * 0.3 + f.phase) * 0.7;
         }

@@ -217,8 +217,8 @@ void gerstner(vec2 p, float ampLo, float ampHi, out vec3 disp, out vec3 normal) 
 }
 
 /** Мир → UV текстуры рельефа (общая для CPU-затухания и GPU) */
-export const TERRAIN_TEX_SIZE = 1024;
-export const TERRAIN_WORLD_SIZE = 9800;     // ±4900 м — весь архипелаг
+export const TERRAIN_TEX_SIZE = 2048;
+export const TERRAIN_WORLD_SIZE = 98000;    // ±49 км — весь архипелаг (Task 36: карта ×10)
 
 export function worldToTerrainUV(x: number, z: number): [number, number] {
   return [(x / TERRAIN_WORLD_SIZE) + 0.5, (z / TERRAIN_WORLD_SIZE) + 0.5];
@@ -238,7 +238,7 @@ export function terrainTexture(): THREE.DataTexture {
     const z = (j / (S - 1) - 0.5) * TERRAIN_WORLD_SIZE;
     for (let i = 0; i < S; i++) {
       const x = (i / (S - 1) - 0.5) * TERRAIN_WORLD_SIZE;
-      const h = heightAt(x, z);
+      const h = heightAtRaw(x, z);
       const v = Math.max(0, Math.min(255, Math.round((h - lo) * scale)));
       const idx = (j * S + i) * 4;
       data[idx] = v; data[idx + 1] = v; data[idx + 2] = v; data[idx + 3] = 255;
@@ -252,4 +252,11 @@ export function terrainTexture(): THREE.DataTexture {
   tex.needsUpdate = true;
   terrainTex = tex;
   return tex;
+}
+
+/** ленивая ссылка на heightAt мира (ставится Water.ts при создании —
+ *  избегаем циклического импорта при инициализации) */
+let heightAtRaw: (x: number, z: number) => number = () => -14;
+export function bindTerrainSampler(fn: (x: number, z: number) => number) {
+  heightAtRaw = fn;
 }

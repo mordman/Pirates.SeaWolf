@@ -37,8 +37,8 @@ export type BoatPhase = 'stowed' | 'lowering' | 'afloat' | 'raising';
 
 const LOWER_DUR = 7.0;     // спуск/подъём, с
 const PULL_DUR = 2.8;      // подтяжка к шлюпбалкам, с
-const MAX_FWD = 1.9;       // м/с под вёслами (~3.7 уз)
-const MAX_REV = 0.85;
+const MAX_FWD = 2.8;       // м/с под вёслами (~5.4 уз; мир ×10 — грести долго, ход бодрее)
+const MAX_REV = 1.1;
 const SWEEP = 0.5;         // размах гребка, рад
 const DIP = 0.34;          // погружение лопасти, рад
 const DIP0 = 0.12;         // статичный наклон к воде
@@ -56,6 +56,8 @@ export interface LaunchDeps {
   worldGroup: THREE.Group;   // контейнер кораблей (лодка на воде — здесь)
   particles: Particles;
   islands: () => { cx: number; cz: number; r: number }[];
+  /** рельеф (Task 36): мель по ГЛУБИНЕ (не радиусу) + подсказка высадки */
+  heightAt?: (x: number, z: number) => number;
   msg?: (text: string) => void;
   onSplash?: () => void;
 }
@@ -71,8 +73,11 @@ export class BoatLaunch {
   private worldGroup: THREE.Group;
   private particles: Particles;
   private islands: () => { cx: number; cz: number; r: number }[];
+  private heightAt?: (x: number, z: number) => number;
   private msg?: (text: string) => void;
   private onSplash?: () => void;
+  /** ВЫСАДКА (Task 36): игрок на берегу — шлюпка заморожена у кромки */
+  frozen = false;
   // Task 31 «добавь еще одну»: ВСЕ ялы судна (штирборт + порт);
   // vis — АКТИВНЫЙ (спускается/на воде/поднимается), null = все
   // на шлюпбалках. Спуск берёт первую ЦЕЛУЮ (штирборт, потом порт),
@@ -130,6 +135,7 @@ export class BoatLaunch {
     this.worldGroup = d.worldGroup;
     this.particles = d.particles;
     this.islands = d.islands;
+    this.heightAt = d.heightAt;
     this.msg = d.msg;
     this.onSplash = d.onSplash;
     // Task 31: ялы обоих бортов (штирборт как раньше + порт — новая)
@@ -250,6 +256,46 @@ export class BoatLaunch {
     this.phase = 'raising';
     this.raiseStage = 0;
     this.t = 0;
+    return null;
+  }
+
+  /** ВЫСАДКА (Task 36): шлюпка на мелководье У БЕРЕГА — можно
+   *  сойти на землю (глубина < 3.2 м и суша в 60 м по 8 направлениям) */
+  nearShore(): boolean {
+    if (this.phase !== 'afloat' || this.frozen) return this.frozen;
+    if (!this.heightAt) return false;
+    const h = this.heightAt(this.pos.x, this.pos.z);
+    if (h < -3.2 || h > 0.2) return false;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      if (this.heightAt(this.pos.x + Math.cos(a) * 60, this.pos.z + Math.sin(a) * 60) > 0.5) return true;
+    }
+    return false;
+  }
+
+  /** заморозить шлюпку у берега (игрок сошёл на землю) */
+  freezeAtShore() { this.frozen = true; }
+
+  /** игрок вернулся в шлюпку — отпустить с мели */
+  resumeFromShore() { this.frozen = false; }
+
+  /** точка ВЫСАДКИ: маршем от шлюпки к центру ближайшего острова
+   *  до суши (h > 0.7). null — не нашли */
+  landingPoint(): { x: number; z: number } | null {
+    if (!this.heightAt) return null;
+    let best: { cx: number; cz: number } = { cx: 0, cz: 0 };
+    let bestD = Infinity;
+    for (const isl of this.islands()) {
+      const d = Math.hypot(this.pos.x - isl.cx, this.pos.z - isl.cz);
+      if (d < bestD) { bestD = d; best = { cx: isl.cx, cz: isl.cz }; }
+    }
+    const dx = best.cx - this.pos.x, dz = best.cz - this.pos.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const ux = dx / len, uz = dz / len;
+    for (let d = 6; d <= 600; d += 6) {
+      const x = this.pos.x + ux * d, z = this.pos.z + uz * d;
+      if (this.heightAt(x, z) > 0.7) return { x, z };
+    }
     return null;
   }
 
@@ -453,14 +499,21 @@ export class BoatLaunch {
   private floatUpdate(dt: number, time: number) {
     if (!this.active) return;
     const b = this.active.group;
+    // ВЫСАДКА: шлюпка ждёт у кромки — гребля отключена
+    if (this.frozen) {
+      this.row = 0;
+      this.steer = 0;
+      this.vel = 0;
+      this.yawRate = 0;
+    }
     // --- гребля: импульс только в рабочей фазе (sin φ > 0) ---
-    const rowing = this.row !== 0;
+    const rowing = this.row !== 0 && !this.frozen;
     if (rowing) {
       this.strokePhase += dt * (2.0 + Math.min(1, Math.abs(this.vel) / 1.4)) * Math.PI;
     }
     const power = rowing ? Math.max(0, Math.sin(this.strokePhase)) : 0;
-    this.vel += this.row * power * dt * 1.5;
-    this.vel -= this.vel * Math.abs(this.vel) * 0.34 * dt + this.vel * 0.14 * dt;
+    this.vel += this.row * power * dt * 2.4;
+    this.vel -= this.vel * Math.abs(this.vel) * 0.30 * dt + this.vel * 0.12 * dt;
     this.vel = THREE.MathUtils.clamp(this.vel, -MAX_REV, MAX_FWD);
     // --- поворот дифференциальной греблёй (руля нет: на заднем
     //     ходу руление зеркально) ---
@@ -470,19 +523,37 @@ export class BoatLaunch {
     this.pos.x += Math.sin(this.heading) * this.vel * dt;
     this.pos.z += Math.cos(this.heading) * this.vel * dt;
 
-    // --- острова: не заплыть внутрь ---
-    this.groundCd = Math.max(0, this.groundCd - dt);
-    for (const isl of this.islands()) {
-      const dx = this.pos.x - isl.cx, dz = this.pos.z - isl.cz;
-      const d = Math.hypot(dx, dz);
-      const r = isl.r * 0.72 + 2;
-      if (d < r && d > 1e-3) {
-        this.pos.x = isl.cx + dx / d * r;
-        this.pos.z = isl.cz + dz / d * r;
-        this.vel *= 0.35;
+    // --- БЕРЕГ ПО ГЛУБИНЕ (Task 36): мель = глубина < 0.6 м под
+    //     килем — откат назад (шлюпка подходит к берегу НОСОМ,
+    //     вплотную — и можно высадиться) ---
+    if (this.heightAt && !this.frozen) {
+      const hHere = this.heightAt(this.pos.x, this.pos.z);
+      if (hHere > -0.6) {
+        this.pos.x -= Math.sin(this.heading) * this.vel * dt * 2.2;
+        this.pos.z -= Math.cos(this.heading) * this.vel * dt * 2.2;
+        this.vel *= -0.12;
         if (this.groundCd <= 0) {
-          this.msg?.('Шлюпка ткнулась в отмель');
+          this.msg?.('Шлюпка ткнулась в отмель — дальше на веслах не пройти');
           this.groundCd = 4;
+        }
+      }
+    }
+
+    // --- острова: запасной радиус (если рельеф не передан) ---
+    this.groundCd = Math.max(0, this.groundCd - dt);
+    if (!this.heightAt) {
+      for (const isl of this.islands()) {
+        const dx = this.pos.x - isl.cx, dz = this.pos.z - isl.cz;
+        const d = Math.hypot(dx, dz);
+        const r = isl.r * 0.72 + 2;
+        if (d < r && d > 1e-3) {
+          this.pos.x = isl.cx + dx / d * r;
+          this.pos.z = isl.cz + dz / d * r;
+          this.vel *= 0.35;
+          if (this.groundCd <= 0) {
+            this.msg?.('Шлюпка ткнулась в отмель');
+            this.groundCd = 4;
+          }
         }
       }
     }

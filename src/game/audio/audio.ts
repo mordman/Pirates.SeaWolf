@@ -144,6 +144,18 @@ export class AudioSys {
     this.tone(1320, 0.9, 0.15, 'sine');
   }
 
+  /** ВЫСТРЕЛ ПИСТОЛЕТА (Task 36): резкий короткий хлопок */
+  pistolShot() {
+    this.noiseBurst(0.16, 2600, 'bandpass', 0.55, 300);
+    this.tone(190, 0.14, 0.4, 'square', 60);
+    this.noiseBurst(0.4, 500, 'lowpass', 0.18, 100);
+  }
+
+  /** СВИСТ САБЛИ (Task 36): воздушный шипящий взмах */
+  saberSwing() {
+    this.noiseBurst(0.22, 1700, 'bandpass', 0.22, 420);
+  }
+
   gull() {
     const f = 900 + Math.random() * 500;
     this.tone(f, 0.22, 0.08, 'sawtooth', f * 1.7);

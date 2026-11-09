@@ -71,6 +71,7 @@ export interface GraphicsSettings {
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
   useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
   wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
+  islandTextures: boolean; // ТЕКСТУРИРОВАНИЕ ОСТРОВОВ (Task 36): зерно песка/травы/скал
 }
 
 export interface ControlsSettings {
@@ -125,7 +126,7 @@ export interface PhysicsSettings {
   buoyancy: BuoyancySettings; // посадка/углы/смыв матросов
 }
 
-export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
+export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe' | 'islandTextures'>> = {
   low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true },
   medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true },
   high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true },
@@ -135,7 +136,7 @@ export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'pres
 export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };
 
 export const DEFAULT_SETTINGS: GameSettings = {
-  graphics: { preset: 'high', ...QUALITY_PRESETS.high, wireframe: { ...DEFAULT_WIREFRAME } },
+  graphics: { preset: 'high', ...QUALITY_PRESETS.high, wireframe: { ...DEFAULT_WIREFRAME }, islandTextures: true },
   controls: {
     sailsUp: 'KeyW',
     sailsDown: 'KeyS',
@@ -214,7 +215,9 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 // v8 (Task 35): КОТЫ — gameplay.catsInsteadOfCrew: заменить всех
 //     матросов на котов (экипаж на палубе игрока); корабельные
 //     коты покупаются в порту (до 5) — состояние игры, не настроек.
-const SCHEMA_VER = 8;
+// v9 (Task 36): ОСТРОВА — graphics.islandTextures: процедурное
+//     текстурирование рельефа. Мир и острова ×10 по площади.
+const SCHEMA_VER = 9;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -239,6 +242,7 @@ export function loadSettings(): GameSettings {
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
       if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
+      if (typeof g.islandTextures === 'boolean') s.graphics.islandTextures = g.islandTextures;
       if (isObj(g.wireframe)) {
         const w = g.wireframe;
         for (const k of ['water', 'ships', 'islands', 'vegetation'] as const) {
@@ -334,10 +338,10 @@ export function saveSettings(s: GameSettings) {
   }
 }
 
-/** Применить пресет к графике (копируем поля пресета; каркас —
- *  настройка пользователя, пресетом не перетирается) */
+/** Применить пресет к графике (копируем поля пресета; каркас и
+ *  текстурирование островов — настройки пользователя, не перетираются) */
 export function applyPreset(g: GraphicsSettings, preset: QualityPreset): GraphicsSettings {
-  return { preset, ...QUALITY_PRESETS[preset], wireframe: { ...g.wireframe } };
+  return { preset, ...QUALITY_PRESETS[preset], wireframe: { ...g.wireframe }, islandTextures: g.islandTextures };
 }
 
 /** Реалистичная «недостача» боезапаса при выходе в море: каждый тип
