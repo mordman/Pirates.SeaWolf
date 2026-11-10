@@ -84,8 +84,8 @@ const mig = jparse(ev(`(() => {
   return JSON.stringify({ v, tex: g.settings.assets.islandTextures, applied: g.world.terrain.texturesOn() });
 })()`));
 log('loaded after reload:', reloaded, JSON.stringify(mig));
-check('G6: сохранение v8 читается, islandTextures=\'grain\' по умолчанию, схема перезаписана в v11 (Task 38)',
-  reloaded && mig.v === 11 && mig.tex === 'grain' && mig.applied === true);
+check('G6: сохранение v8 читается, islandTextures=\'grain\' по умолчанию, схема v12',
+  reloaded && mig.v === 12 && mig.tex === 'grain' && mig.applied === true);
 
 // скриншот: остров с моря (фикс прозрачности + текстуры)
 ev(`(() => {
