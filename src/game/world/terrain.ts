@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ISLANDS, heightAt, terrainColorAt } from './world';
 import type { AssetsSettings, IslandTextureMode, TerrainShaderKind } from '../core/settings';
+import { textureUrls } from '../assets/textures';
 
 // ============================================================
 // РЕЛЬЕФ ОСТРОВОВ — СТРИМЕР ТАЙЛОВ (Task 36/37/38).
@@ -172,11 +173,10 @@ export class TerrainStreamer {
   private _color = new THREE.Color();
   /** текущая конфигурация текстур (для телеметрии/настроек) */
   private cfg: AssetsSettings;
-  /** Task 38: своя текстура по ссылке — загруженная, её URL и состояние */
-  private urlTex: THREE.Texture | null = null;
-  private urlKey = '';
-  private urlState: 'none' | 'loading' | 'ok' | 'error' = 'none';
-
+  /** Task 38/39: своя текстура рельефа по ссылке — живёт в ОБЩЕМ
+   *  реестре textureUrls (слот 'terrain', каталог assets/textures.ts);
+   *  здесь — только подписка: по готовности/ошибке пересобираем
+   *  материал (пока грузится/при ошибке — зерно, не чёрный рельеф) */
   constructor(opts?: { textures?: AssetsSettings; streamDist?: number }) {
     if (opts?.streamDist) this.streamDist = opts.streamDist;
     this.grainTex = makeDetailTexture();
@@ -186,8 +186,12 @@ export class TerrainStreamer {
     this.cfg = opts?.textures ?? {
       islandTextures: 'grain', texScale: 7, terrainShader: 'standard',
       roughness: 0.96, metalness: 0, normalStrength: 1, texUrl: '',
+      texUrls: { terrain: '', hull: '', deck: '', sail: '', water: '' },
     };
-    if (this.cfg.islandTextures === 'url' && this.cfg.texUrl) this.loadUrlTexture(this.cfg.texUrl);
+    textureUrls.listen('terrain', () => this.rebuildMaterial());
+    if (this.cfg.islandTextures === 'url' && this.cfg.texUrls.terrain) {
+      textureUrls.setUrl('terrain', this.cfg.texUrls.terrain);
+    }
     this.rebuildMaterial();
     this.group.matrixAutoUpdate = false;
   }
@@ -231,15 +235,17 @@ export class TerrainStreamer {
         std.roughnessMap = this.roughTex;
         std.normalScale = new THREE.Vector2(this.cfg.normalStrength, this.cfg.normalStrength);
       } else if (m === 'url') {
-        // Task 38: СВОЯ текстура по ссылке. Пока не загрузилась (или
-        // ошибка/пустая ссылка) — НЕ оставляем рельеф голым: зерно.
-        std.map = this.urlTex ?? this.grainTex;
+        // Task 38/39: СВОЯ текстура по ссылке (реестр textureUrls,
+        // слот 'terrain'). Пока не загрузилась (или ошибка/пустая
+        // ссылка) — НЕ оставляем рельеф голым: зерно.
+        std.map = textureUrls.get('terrain') ?? this.grainTex;
       }
       mat = std;
     }
     // масштаб текстуры: UV запечён wx/7 — повтор = 7/масштаб
     const allTex: THREE.Texture[] = [this.grainTex, this.albedoTex, this.normalTex, this.roughTex];
-    if (this.urlTex) allTex.push(this.urlTex);
+    const urlTex = textureUrls.get('terrain');
+    if (urlTex) allTex.push(urlTex);
     for (const t of allTex) {
       t.repeat.set(rep, rep);
     }
@@ -252,48 +258,16 @@ export class TerrainStreamer {
 
   /** Применить настройки текстур/шейдера на лету (вкладка «Ресурсы») */
   setTextureConfig(cfg: AssetsSettings) {
-    const prev = this.cfg;
     this.cfg = { ...cfg };
-    // Task 38: сменилась ссылка в режиме 'url' — грузим новую
-    if (this.cfg.islandTextures === 'url' && this.cfg.texUrl && this.cfg.texUrl !== prev.texUrl) {
-      this.loadUrlTexture(this.cfg.texUrl);
-    }
-    this.rebuildMaterial();
+    // Task 38/39: сменилась ссылка в режиме 'url' — грузим новую
+    // (реестр сам вызовет rebuildMaterial по готовности)
+    const url = cfg.islandTextures === 'url' ? cfg.texUrls.terrain : '';
+    if (textureUrls.url('terrain') !== url) textureUrls.setUrl('terrain', url);
+    else this.rebuildMaterial();
   }
 
-  /** Task 38: состояние загрузки своей текстуры (E2E/настройки) */
-  urlTexState(): 'none' | 'loading' | 'ok' | 'error' { return this.urlState; }
-
-  /** Task 38: асинхронная загрузка СВОЕЙ текстуры рельефа по ссылке.
-   *  png/jpg/webp, http(s)/data:/относительный путь; CORS на стороне
-   *  сервера. После загрузки — пересборка материала (пока грузится
-   *  или при ошибке рельеф остаётся с зерном, не чёрным). */
-  private loadUrlTexture(url: string) {
-    if (this.urlKey === url && this.urlTex) return; // уже загружена
-    this.urlState = 'loading';
-    const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
-    loader.load(url, tex => {
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.RepeatWrapping;
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = 4;
-      const old = this.urlTex;
-      this.urlTex = tex;
-      this.urlKey = url;
-      this.urlState = 'ok';
-      this.rebuildMaterial();
-      old?.dispose();
-    }, undefined, () => {
-      // не загрузилось (CORS/404/битый файл) — прежняя текстура
-      // уже не соответствует ссылке: сбрасываем, рельеф — с зерном
-      this.urlState = 'error';
-      this.urlTex?.dispose();
-      this.urlTex = null;
-      this.urlKey = '';
-      this.rebuildMaterial();
-    });
-  }
+  /** Task 38/39: состояние загрузки своей текстуры рельефа (E2E) */
+  urlTexState(): 'none' | 'loading' | 'ok' | 'error' { return textureUrls.state('terrain'); }
 
   /** Режим текстур по-прежнему включён (не 'off')? */
   texturesOn(): boolean { return this.cfg.islandTextures !== 'off'; }

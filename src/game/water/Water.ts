@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { gerstnerGLSL, SEA, waterHeightAt, waveUniformData, seaAmpUniforms, terrainTexture, TERRAIN_WORLD_SIZE, bindTerrainSampler } from './waves';
+import { textureUrls } from '../assets/textures';
 import { heightAt } from '../world/world';
 
 const NOISE_GLSL = `
@@ -66,6 +67,12 @@ export class Water {
       uFarFade: { value: new THREE.Vector2(600, 4600) }, // диапазон затухания зыби
       uHiFade: { value: new THREE.Vector2(270, 440) },   // затухание коротких волн (к краю чанка)
       uEdge: { value: 7200 },                       // дистанция кромки воды (растворение в небо)
+      // Task 39: СВОЯ текстура воды по ссылке (assets.texUrls.water)
+      // — подмешивается к цвету волн; uTexScale — плитка в МЕТРАХ
+      // (мировые координаты, не UV меша)
+      uTex: { value: null as THREE.Texture | null },
+      uTexOn: { value: 0 },
+      uTexScale: { value: 1.0 / 80.0 },            // плитка каждые 80 м
     };
 
     const mat = new THREE.ShaderMaterial({
@@ -123,6 +130,9 @@ export class Water {
         varying float vDepth;
         uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uFogColor;
         uniform float uTime, uFogDensity, uEdge, uWind01;
+        uniform sampler2D uTex;     // Task 39: своя текстура воды
+        uniform float uTexOn;
+        uniform float uTexScale;    // плитка в метрах (мировые координаты)
         ${NOISE_GLSL}
 
         void main() {
@@ -146,6 +156,15 @@ export class Water {
           vec3 waterCol = mix(uShallowColor, uDeepColor, deepMix);
           vec3 skyRef = mix(uSkyColor, uHorizonColor, 0.35);
           vec3 col = mix(waterCol, skyRef, fres * 0.75);
+
+          // Task 39: СВОЯ текстура воды — подмешивается к базовому
+          // цвету (текстура в sRGB, выравниваем среднюю яркость ×1.7);
+          // френель/блик/прибой/туман работают ПОВЕРХ — вода остаётся
+          // «водой», но с вашим узором (каустика/чешуя/мрамор)
+          if (uTexOn > 0.5) {
+            vec3 wtex = texture2D(uTex, vWorldXZ * uTexScale).rgb * 1.7;
+            col = mix(col, col * wtex, 0.85);
+          }
 
           // солнечный блик
           vec3 R = reflect(-V, N);
@@ -204,6 +223,8 @@ export class Water {
       depthWrite: true,
     });
     this.material = mat;
+    // Task 39: реестр подмешивает свою текстуру воды по ссылке
+    textureUrls.registerWater('water', mat);
 
     // детальный чанк следует за камерой с шагом сетки; LOD-кольца
     // создаются в configure()

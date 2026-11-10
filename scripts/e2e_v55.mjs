@@ -62,6 +62,11 @@ for (let i = 0; i < 30; i++) {
 }
 log('GAME LOADED:', loaded);
 ev(`window.__jsErrors = []; window.addEventListener('error', e => window.__jsErrors.push(String(e.message))); 'ok'`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 await sleep(300);
 ev(`window.__game.start()`);
 await sleep(400);
@@ -221,6 +226,11 @@ for (let i = 0; i < 30; i++) {
   await sleep(3000);
 }
 ev(`window.__jsErrors = []; window.addEventListener('error', e => window.__jsErrors.push(String(e.message))); 'ok'`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 ev(`window.__game.start()`);
 const mig = jparse(ev(`(() => {
   const g = window.__game;
@@ -232,8 +242,8 @@ const mig = jparse(ev(`(() => {
   });
 })()`));
 log('after reload:', reloaded, JSON.stringify(mig));
-check('G1: v9 с islandTextures=false читается как режим off, схема перезаписана в v11 (Task 38)',
-  reloaded && mig.v === 11 && mig.mode === 'off' && mig.applied === false);
+check('G1: v9 с islandTextures=false читается как режим off, схема v12',
+  reloaded && mig.v === 12 && mig.mode === 'off' && mig.applied === false);
 // вернуть дефолт grain для скриншота
 ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'grain'; g.applySettings(s); return 'grain'; })()`);
 

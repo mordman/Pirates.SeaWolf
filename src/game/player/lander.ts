@@ -1,7 +1,10 @@
 import * as THREE from 'three';
-import { buildFigure, rollTraits, mulberry32 } from '../ship/crew';
+import { buildFigure, rollTraits, mulberry32, type CrewFigure } from '../ship/crew';
 import type { Particles } from '../fx/particles';
 import { heightAt, type World } from '../world/world';
+import type { PlayerAppearance } from '../core/settings';
+import { DEFAULT_APPEARANCE } from '../core/settings';
+import { appearanceToTraits } from './appearance';
 
 // ============================================================
 // ВЫСАДКА НА ОСТРОВ (Task 36): моряк сходит с шлюпки на берег.
@@ -31,6 +34,8 @@ export interface LanderDeps {
   audio: LanderAudio;
   folkKill: (x: number, y: number, z: number, r: number, mode: 'grape' | 'ball', dx?: number, dz?: number) => number;
   chop: (x: number, y: number, z: number, r: number) => number;
+  /** Task 39: внешность капитана (экран создания персонажа) */
+  appearance?: PlayerAppearance;
 }
 
 export interface LanderHud {
@@ -67,7 +72,7 @@ export class Lander {
   private camDistSm = CAM_DIST;
   private fovSm = 55;
 
-  private fig: ReturnType<typeof buildFigure> | null = null;
+  private fig: CrewFigure | null = null;
   private saberG: THREE.Group | null = null;
   private pistolG: THREE.Group | null = null;
   private walkPhase = 0;
@@ -76,6 +81,8 @@ export class Lander {
   private shotCd = 0;
   private recoil = 0;
   private stepDustCd = 0;
+  /** текущая внешность (для E2E/проб); ставится в buildCharacter */
+  appearance!: PlayerAppearance;
 
   private deps: LanderDeps;
   private shift = new THREE.Vector3();
@@ -89,8 +96,10 @@ export class Lander {
   }
 
   private buildCharacter() {
-    const rnd = mulberry32(20261109);
-    const fig = buildFigure('walker', rollTraits(rnd, 'walker'), 777);
+    // Task 39: фигурка капитана — по ВЫБРАННОЙ внешности (экран
+    // создания персонажа); по умолчанию — «случайный моряк»
+    this.appearance = this.deps.appearance ?? DEFAULT_APPEARANCE;
+    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
     this.fig = fig;
     this.group.add(fig.group);
     // --- САБЛЯ ---
@@ -135,6 +144,36 @@ export class Lander {
     pistol.visible = false;
     this.pistolG = pistol;
     this.group.add(pistol);
+  }
+
+  /** Сменить внешность капитана (экран создания/настройки) —
+   *  фигурка пересобирается на месте, оружие сохраняется */
+  setAppearance(a: PlayerAppearance) {
+    this.appearance = { ...a };
+    if (this.fig) {
+      const old = this.fig.group;
+      this.group.remove(old);
+      old.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) m.geometry.dispose();
+      });
+    }
+    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
+    this.fig = fig;
+    this.group.add(fig.group);
+    this.deps.msg('Внешность капитана обновлена');
+  }
+
+  /** Поза фигурки для E2E/телеметрии (попугай/повязка/детали) */
+  figureInfo() {
+    return {
+      parrot: this.fig?.hasParrot ?? false,
+      eyePatch: this.appearance.eyePatch,
+      headwear: this.appearance.headwear,
+      hook: this.appearance.hook,
+      pegLeg: this.appearance.pegLeg,
+      verts: this.fig?.verts ?? 0,
+    };
   }
 
   /** Высадиться в точке (мир); faceX/faceZ — направление взгляда

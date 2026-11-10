@@ -56,6 +56,11 @@ run('open http://localhost:3000/');
 await sleep(1500);
 ev(`localStorage.removeItem('seawolves.settings.v1')`);
 run('reload');
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 await sleep(9000);
 log('старт:', clickBtn('Поднять флаг'));
 await sleep(2500);

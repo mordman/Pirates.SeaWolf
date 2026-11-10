@@ -4,6 +4,8 @@
 // (переназначение клавиш), звук. Сохранение в localStorage.
 // ============================================================
 
+import type { TextureSlotId } from '../assets/textures';
+
 export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 
 // ============================================================
@@ -36,8 +38,52 @@ export interface AssetsSettings {
   roughness: number;       // 0..1 — шероховатость PBR-материала рельефа
   metalness: number;       // 0..1 — металличность (камень ~0)
   normalStrength: number;  // 0..2 — сила карты нормалей (только PBR)
-  texUrl: string;          // ссылка на СВОЮ текстуру рельефа (http(s)/data:/относительная) — режим 'url'
+  texUrl: string;          // УСТАРЕЛО (v11): ссылка на текстуру рельефа — переехала в texUrls.terrain
+  /** Task 39 (v12): СВОИ текстуры по ссылке для ВСЕХ поверхностей.
+   *  Каталог слотов — src/game/assets/textures.ts (TEXTURE_SLOTS):
+   *  земля/борт/палуба/парус/вода. Пустая строка — процедурная. */
+  texUrls: Record<TextureSlotId, string>;
 }
+
+// ============================================================
+// ВНЕШНОСТЬ ИГРОКА (Task 39): экран создания капитана в начале
+// игры — одежда, головной убор, борода, повязка на глаз,
+// попугай на плече, деревянная нога, крюк. Палитры — ЕДИНЫЙ
+// источник для фигурки игрока (lander) и процедурных
+// «человечков» (crew.ts): массивы цветов лежат здесь, в
+// настройках (чистые данные, без three.js).
+// ============================================================
+export type HeadwearKind = 'none' | 'bandana' | 'hat';
+
+export const APPEARANCE_SKIN = [0xd9a184, 0xc98d68, 0xb3765a, 0xa06a4f, 0x8a5a42, 0xe0b294] as const;
+export const APPEARANCE_SHIRT = [0xcbb8a0, 0x8f3b34, 0x35526b, 0x5b6e46, 0x7a5f8a, 0xa8763e, 0x3d4a5c] as const;
+export const APPEARANCE_PANTS = [0x4a3a2a, 0x33404a, 0x5a4a38, 0x2c2c30, 0x614b33] as const;
+export const APPEARANCE_BANDANA = [0xa3362c, 0x2f5e8a, 0x3c6b3f, 0x8a6a2a, 0x55355f] as const;
+
+export const HEADWEAR_LABELS: Record<HeadwearKind, string> = {
+  none: 'Без убора', bandana: 'Бандана', hat: 'Треуголка',
+};
+export const BEARD_LABELS: Record<0 | 1 | 2, string> = {
+  0: 'Чисто выбрит', 1: 'Короткая борода', 2: 'Длинная борода',
+};
+
+export interface PlayerAppearance {
+  skin: number;             // тон кожи (APPEARANCE_SKIN)
+  shirt: number;            // рубаха (APPEARANCE_SHIRT)
+  pants: number;            // штаны (APPEARANCE_PANTS)
+  headwear: HeadwearKind;   // головной убор
+  beard: 0 | 1 | 2;         // борода: нет/короткая/длинная
+  eyePatch: boolean;        // повязка на глаз
+  parrot: boolean;          // попугай на плече
+  pegLeg: boolean;          // деревянная нога (правая)
+  hook: boolean;            // крюк вместо правой кисти
+}
+
+export const DEFAULT_APPEARANCE: PlayerAppearance = {
+  skin: 0xc98d68, shirt: 0x8f3b34, pants: 0x33404a,
+  headwear: 'bandana', beard: 1, eyePatch: false,
+  parrot: true, pegLeg: false, hook: false,
+};
 
 // ============================================================
 // Погода: режим явлений + ветер. ОТ ВЕТРА ЗАВИСЯТ ВОЛНЫ —
@@ -152,6 +198,7 @@ export interface GameSettings {
   fx: FxSettings;
   physics: PhysicsSettings;   // режим физики + плавучесть (Task 33)
   assets: AssetsSettings;     // текстуры/шейдеры рельефа + модели (Task 37)
+  player: PlayerAppearance;   // внешность капитана (Task 39)
 }
 
 /** Физика корабля и плавучесть (Task 33) */
@@ -176,7 +223,8 @@ export const DEFAULT_ASSETS: AssetsSettings = {
   roughness: 0.96,           // матовая земля/песок/камень
   metalness: 0,
   normalStrength: 1,         // нормали PBR-режима в полную силу
-  texUrl: '',                // своя текстура не задана (режим 'url' отключён)
+  texUrl: '',                // УСТАРЕЛО (v11→v12): теперь texUrls.terrain
+  texUrls: { terrain: '', hull: '', deck: '', sail: '', water: '' },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -226,7 +274,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
       washProbabilityPct: 30, washCooldownS: 8,
     },
   },
-  assets: { ...DEFAULT_ASSETS },
+  assets: { ...DEFAULT_ASSETS, texUrls: { ...DEFAULT_ASSETS.texUrls } },
+  player: { ...DEFAULT_APPEARANCE },
 };
 
 /** Рекомендуемые параметры погоды по режиму (кнопка режима подтягивает ветер) */
@@ -270,7 +319,11 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 // v11 (Task 38): режим 'url' — СВОЯ текстура рельефа по ссылке
 //     (assets.texUrl): png/jpg/webp/http(s)/data:, укладывается
 //     плиткой поверх цвета вершин; пока грузится/ошибка — зерно.
-const SCHEMA_VER = 11;
+// v12 (Task 39): ВСЕ текстуры по ссылкам — assets.texUrls
+//     (terrain/hull/deck/sail/water, каталог в assets/textures.ts);
+//     texUrl (v11) мигрирует в texUrls.terrain. Новый раздел
+//     player — внешность капитана (экран создания персонажа).
+const SCHEMA_VER = 12;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -392,6 +445,38 @@ export function loadSettings(): GameSettings {
         const u = raw.slice(0, cap);
         if (u === '' || /^(https?:\/\/|data:image\/|\/)/i.test(u)) s.assets.texUrl = u;
       }
+      // v12 (Task 39): ссылки на свои текстуры ВСЕХ поверхностей.
+      // Миграция v11→v12: texUrl → texUrls.terrain (если та пустая)
+      if (isObj(a.texUrls)) {
+        for (const id of ['terrain', 'hull', 'deck', 'sail', 'water'] as const) {
+          if (typeof a.texUrls[id] === 'string') {
+            const raw = (a.texUrls[id] as string).trim();
+            const cap = /^data:image\//i.test(raw) ? 200000 : 600;
+            const u = raw.slice(0, cap);
+            if (u === '' || /^(https?:\/\/|data:image\/|\/)/i.test(u)) s.assets.texUrls[id] = u;
+          }
+        }
+      }
+      if (!s.assets.texUrls.terrain && s.assets.texUrl) {
+        s.assets.texUrls.terrain = s.assets.texUrl;
+      }
+    }
+    // v12 (Task 39): внешность капитана (экран создания персонажа)
+    if (isObj(data.player)) {
+      const p = data.player as Record<string, unknown>;
+      const isColor = (v: unknown, pal: readonly number[]) =>
+        typeof v === 'number' && pal.includes(v);
+      if (isColor(p.skin, APPEARANCE_SKIN)) s.player.skin = p.skin as number;
+      if (isColor(p.shirt, APPEARANCE_SHIRT)) s.player.shirt = p.shirt as number;
+      if (isColor(p.pants, APPEARANCE_PANTS)) s.player.pants = p.pants as number;
+      if (p.headwear === 'none' || p.headwear === 'bandana' || p.headwear === 'hat') {
+        s.player.headwear = p.headwear;
+      }
+      if (p.beard === 0 || p.beard === 1 || p.beard === 2) s.player.beard = p.beard;
+      if (typeof p.eyePatch === 'boolean') s.player.eyePatch = p.eyePatch;
+      if (typeof p.parrot === 'boolean') s.player.parrot = p.parrot;
+      if (typeof p.pegLeg === 'boolean') s.player.pegLeg = p.pegLeg;
+      if (typeof p.hook === 'boolean') s.player.hook = p.hook;
     }
     // МИГРАЦИЯ v3: сохранение сделано до «реалистичного» боекомплекта —
     // сбрасываем только стартовый боезапас на новые дефолты.

@@ -273,11 +273,21 @@ export class BoatLaunch {
     return false;
   }
 
-  /** заморозить шлюпку у берега (игрок сошёл на землю) */
-  freezeAtShore() { this.frozen = true; }
+  /** заморозить шлюпку у берега (игрок сошёл на землю).
+   *  Task 39: в шлюпке остаётся ОДИН гребец — игрок СХОДИТ, его
+   *  фигура (первая банка) прячется, напарник остаётся грести */
+  freezeAtShore() {
+    this.frozen = true;
+    const list = this.active ? this.rowersByBoat.get(this.active) : null;
+    if (list && list[0]) list[0].visible = false;   // место игрока пусто
+  }
 
-  /** игрок вернулся в шлюпку — отпустить с мели */
-  resumeFromShore() { this.frozen = false; }
+  /** игрок вернулся в шлюпку — отпустить с мели, сесть на банку */
+  resumeFromShore() {
+    this.frozen = false;
+    const list = this.active ? this.rowersByBoat.get(this.active) : null;
+    if (list && list[0]) list[0].visible = true;
+  }
 
   /** точка ВЫСАДКИ: маршем от шлюпки к центру ближайшего острова
    *  до суши (h > 0.7). null — не нашли */
@@ -327,8 +337,13 @@ export class BoatLaunch {
   private setRowersVisible(v: boolean) {
     // Task 31: гребцы — только АКТИВНОГО яла (у каждого свой экипаж)
     const list = this.active ? this.rowersByBoat.get(this.active) : null;
-    if (list) for (const r of list) r.visible = v;
-    else if (!this.active) {
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        // Task 39: пока игрок НА БЕРЕГУ (frozen) его банка пуста —
+        // место игрока НЕ показываем, даже если показываем остальных
+        list[i].visible = v && !(this.frozen && i === 0);
+      }
+    } else if (!this.active) {
       // убраны — спрятать всех (после подъёма/аварии)
       for (const l of this.rowersByBoat.values()) for (const r of l) r.visible = false;
     }
@@ -690,6 +705,8 @@ export class BoatLaunch {
   /** для HUD/E2E */
   state() {
     const rowerList = this.active ? this.rowersByBoat.get(this.active) : null;
+    // Task 39: СКОЛЬКО гребцов видно (после высадки — 1: место игрока пусто)
+    const rowersVisibleCount = rowerList ? rowerList.filter(r => r.visible).length : 0;
     return {
       phase: this.phase, t: +this.t.toFixed(2),
       x: +this.pos.x.toFixed(1), y: +this.pos.y.toFixed(1), z: +this.pos.z.toFixed(1),
@@ -698,6 +715,8 @@ export class BoatLaunch {
       dist: +this.distToHoist().toFixed(1),
       oarDeploy: +this.oarDeploy.toFixed(2),
       rowersVisible: !!rowerList && rowerList.length > 0 && rowerList[0].visible,
+      rowersVisibleCount,
+      frozen: this.frozen,
       wakePts: this.wake.count(),
       foamCollar: !!this.foam && this.foam.mesh.visible,
       draft: this.active ? +(this.active.len * 0.155 * 0.15 * BUOYANCY_CONFIG.boatDraftMul).toFixed(3) : 0,

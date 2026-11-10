@@ -49,6 +49,11 @@ ev(`localStorage.removeItem('seawolves.settings.v1')`);
 run('reload');
 await sleep(9000);
 ev(`window.__jsErrors = []; window.addEventListener('error', e => window.__jsErrors.push(String(e.message))); 'ok'`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 await sleep(300);
 ev(`window.__game.start()`);
 await sleep(400);
@@ -132,6 +137,11 @@ await sleep(1500);
 run('reload');
 await sleep(9000);
 ev(`window.__jsErrors = []; window.addEventListener('error', e => window.__jsErrors.push(String(e.message))); 'rearmed'`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 await sleep(300);
 ev(`window.__game.start()`);
 await sleep(600);
@@ -145,8 +155,8 @@ const afterReload = jparse(ev(`(() => {
   });
 })()`));
 log(JSON.stringify(afterReload));
-check('A5: флаг сохранён, после перезагрузки экипаж — коты (схема перезаписана в v11, Task 38)',
-  afterReload.v === 11 && afterReload.flag === true && afterReload.isCats === true);
+check('A5: флаг сохранён, после перезагрузки экипаж — коты (схема v12)',
+  afterReload.v === 12 && afterReload.flag === true && afterReload.isCats === true);
 // вернуть матросов (чистый стенд для B/C/D)
 ev(`(() => {
   const g = window.__game;

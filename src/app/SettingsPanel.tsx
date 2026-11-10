@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode, IslandTextureMode, TerrainShaderKind } from '@/game/core/settings';
 import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS, ISLAND_TEXTURE_MODE_LABELS, TERRAIN_SHADER_LABELS } from '@/game/core/settings';
 import { PART_REGISTRY, PART_GROUP_ORDER, type PartGroup } from '@/game/glb/glbParts';
+import { TEXTURE_SLOTS, type TextureSlotId } from '@/game/assets/textures';
 
 // ============================================================
 // Экран настроек: Графика, Погода, Физика, Игра, Управление,
@@ -124,8 +125,8 @@ function TexUrlInput({ url, onCommit }: { url: string; onCommit: (u: string) => 
   );
 }
 
-export default function SettingsPanel({ initial, onApply, onClose }:
-{ initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void }) {
+export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer }:
+{ initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void; onEditPlayer?: () => void }) {
   const [s, setS] = useState<GameSettings>(() => structuredClone(initial));
   const [tab, setTab] = useState<Tab>('graphics');
   const [binding, setBinding] = useState<{ key: keyof ControlsSettings; ammoIdx?: number } | null>(null);
@@ -327,11 +328,12 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     </button>
                   ))}
                 </div>
-                {/* Task 38: режим 'url' — своя текстура по ссылке */}
+                {/* Task 38/39: режим 'url' — своя текстура РЕЛЬЕФА по ссылке
+                    (живёт в texUrls.terrain — общий каталог слотов) */}
                 {s.assets.islandTextures === 'url' && (
                   <Row label="Ссылка на текстуру" hint="png/jpg/webp; плиткой поверх цвета вершин; Enter — применить">
-                    <TexUrlInput key={s.assets.texUrl} url={s.assets.texUrl}
-                      onCommit={u => update(d => { d.assets.texUrl = u; })} />
+                    <TexUrlInput key={s.assets.texUrls.terrain} url={s.assets.texUrls.terrain}
+                      onCommit={u => update(d => { d.assets.texUrls.terrain = u; })} />
                   </Row>
                 )}
                 <Row label="Масштаб текстуры" hint="размер повторения на местности: меньше — мельче зерно">
@@ -371,6 +373,28 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   (пока грузится или при ошибке — остаётся зерно).
                   Применяется мгновенно, без перестройки мира.
                 </div>
+              </div>
+
+              {/* ============ СВОИ ТЕКСТУРЫ ПО ССЫЛКЕ (Task 39) ============
+                  Каталог ВСЕХ поверхностей — src/game/assets/textures.ts
+                  (TEXTURE_SLOTS): добавить слот = добавить запись там */}
+              <div className="py-2">
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Свои текстуры по ссылке</div>
+                <div className="mb-2 text-[10px] leading-relaxed text-stone-500">
+                  Замена процедурных текстур на свои картинки: png/jpg/webp
+                  по http(s)-ссылке, <span className="font-mono text-stone-400">/путь</span> из
+                  <span className="font-mono text-stone-400"> public/</span> или
+                  <span className="font-mono text-stone-400"> data:image</span> (до 200К).
+                  Пока грузится или при ошибке — остаётся процедурная текстура игры.
+                  Земля включается режимом «Своя текстура» выше.
+                </div>
+                {TEXTURE_SLOTS.filter(sl => sl.id !== 'terrain').map(sl => (
+                  <Row key={sl.id} label={sl.label} hint={sl.hint}>
+                    <TexUrlInput key={s.assets.texUrls[sl.id as TextureSlotId] + sl.id}
+                      url={s.assets.texUrls[sl.id as TextureSlotId]}
+                      onCommit={u => update(d => { d.assets.texUrls[sl.id as TextureSlotId] = u; })} />
+                  </Row>
+                ))}
               </div>
 
               {/* ============ 3D-МОДЕЛИ (GLB) ============ */}
@@ -576,6 +600,15 @@ export default function SettingsPanel({ initial, onApply, onClose }:
 
           {tab === 'gameplay' && (
             <div className="divide-y divide-stone-800/60">
+              {/* КАПИТАН (Task 39): внешность — экран создания персонажа */}
+              <div className="py-2">
+                <Row label="⚓ Капитан" hint="одежда, борода, повязка на глаз, попугай на плече, деревянная нога, крюк — экран создания персонажа">
+                  <button onClick={() => onEditPlayer?.()}
+                    className="rounded-lg border border-amber-500/60 bg-amber-700/40 px-3 py-1.5 text-[11px] font-bold text-amber-100 transition hover:border-amber-400 hover:bg-amber-600/50">
+                    Сменить капитана
+                  </button>
+                </Row>
+              </div>
               <div className="py-2">
                 <Row label="Дистанция до мишени на полигоне" hint="расстояние между кораблями, м (применяется сразу)">
                   <Slider value={s.gameplay.provingDistance} min={10} max={400} step={5}

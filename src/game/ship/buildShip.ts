@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pbr';
 import { makeHullTextures } from './hullDeco';
 import { buildFigurehead } from './figurehead';
+import { textureUrls } from '../assets/textures';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -408,6 +409,8 @@ export interface ShipVisual {
   detailRigs: { mast: number; lines: THREE.LineSegments }[];
   /** материал обшивки (для покупки украшений бортов) */
   hullMat: THREE.MeshStandardMaterial;
+  /** материал настила палубы (Task 39: своя текстура по ссылке) */
+  deckMat: THREE.MeshStandardMaterial;
   /** Шлюпка-ял на шлюпбалках — ломаемая; спускается на воду
    *  и управляется (launch.ts, клавиша B) */
   boat?: BoatVis;
@@ -485,7 +488,7 @@ export function sailAddHole(s: SailInfo, u: number, v: number, r: number) {
 
 // ---------- шейдер паруса ----------
 function sailMaterial(baseColor: number): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
+  const mat = new THREE.ShaderMaterial({
     uniforms: {
       uBelly: { value: 0.5 },
       uFlutter: { value: 0.3 },
@@ -494,6 +497,10 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uColor: { value: new THREE.Color(baseColor) },
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) },
       uFurl: { value: 0 },
+      // Task 39: СВОЯ ткань паруса по ссылке (uTexOn=1 — включена);
+      // швы/заплатки/пробоины рисуются ПОВЕРХ картинки
+      uTex: { value: null as THREE.Texture | null },
+      uTexOn: { value: 0 },
       // пробоины от картечи/ядер/книппеля: (u, v, радиус в долях высоты)
       uHoles: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, 0)) },
       uHoleN: { value: 0 },
@@ -543,11 +550,15 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uniform vec3 uHoles[8];
       uniform float uHoleN;
       uniform float uAspect;
+      uniform sampler2D uTex;    // Task 39: своя ткань паруса по ссылке
+      uniform float uTexOn;
       float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
       float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
         return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
       void main() {
-        vec3 col = uColor;
+        // Task 39: СВОЯ ткань — вместо базового цвета полотна;
+        // швы/заплатки/пробоины рисуются ПОВЕРХ картинки
+        vec3 col = uTexOn > 0.5 ? texture2D(uTex, vUv).rgb : uColor;
         // швы (горизонтальные полотнища)
         float seams = smoothstep(0.035, 0.0, abs(fract(vUv.y * 5.0) - 0.5) - 0.46);
         col *= 1.0 - seams * 0.16;
@@ -580,6 +591,10 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
     `,
     side: THREE.DoubleSide,
   });
+  // Task 39: своя ткань паруса по ссылке (assets.texUrls.sail) —
+  // реестр раскладывает текстуру по uniform'ам каждого полотна
+  textureUrls.registerSail('sail', mat);
+  return mat;
 }
 
 // ---------- флаг ----------
@@ -2375,6 +2390,9 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
   group.add(hull);
+  // Task 39: свои доски бортов по ссылке (assets.texUrls.hull) —
+  // реестр подменяет map (исходная процедурная — в userData.origMap)
+  textureUrls.registerStd('hull', hullMat);
 
   // палуба: текстура досок с конопачением (DoubleSide — страховка от куллинга);
   // нормали канавок/стыков/гвоздей СОВПАДАЮТ с нарисованными досками
@@ -2386,6 +2404,8 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   });
   const deck = new THREE.Mesh(buildDeck(P), deckMat);
   group.add(deck);
+  // Task 39: своя палуба по ссылке (assets.texUrls.deck)
+  textureUrls.registerStd('deck', deckMat);
 
   // планширь по верхней кромке фальшборта
   const capRail = new THREE.Mesh(buildCapRail(P),
@@ -2895,7 +2915,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
     masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
-    gunPorts, detailRigs: detailRes.detailRigs, hullMat,
+    gunPorts, detailRigs: detailRes.detailRigs, hullMat, deckMat,
     boat: detailRes.boat, boat2: detailRes.boat2, anchors: detailRes.anchors,
     figurehead, binnacleNeedle, quarter: quarterVis,
   };

@@ -18,7 +18,7 @@ import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
-import { setCrewFx, deckCrewFor } from './ship/crew';
+import { setCrewFx, deckCrewFor, buildFigure, rollTraits } from './ship/crew';
 import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
@@ -26,6 +26,7 @@ import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
 import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings, type PhysicsSettings, type PhysicsMode, type WireframeSettings } from './core/settings';
+import { textureUrls } from './assets/textures';
 
 // ============================================================
 // Game: интеграция всех систем. Фиксированный шаг физики 60 Гц,
@@ -273,6 +274,11 @@ export class Game {
 
   constructor(private canvas: HTMLCanvasElement) {
     this.settings = loadSettings();
+    // Task 39: URL-текстуры всех поверхностей (земля/борт/палуба/
+    // парус/вода) — реестр грузит их заранее; материалы кораблей и
+    // воды регистрируются по мере создания и получают текстуру
+    // сразу или по готовности загрузки
+    textureUrls.setFromAssets(this.settings.assets.texUrls);
     const g = this.settings.graphics;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pixelRatio));
@@ -513,17 +519,35 @@ export class Game {
     if (JSON.stringify(prev.graphics.wireframe) !== JSON.stringify(g.wireframe)) {
       this.applyWireframe(g.wireframe);
     }
-    // Task 37: РЕСУРСЫ — режим текстур/шейдер/PBR-параметры рельефа
-    // (вкладка «Ресурсы»); применяется на лету без перестройки тайлов
+    // Task 37/38/39: РЕСУРСЫ — режим текстур/шейдер/PBR-параметры
+    // рельефа + СВОИ текстуры ВСЕХ поверхностей по ссылке (земля/
+    // борт/палуба/парус/вода — каталог assets/textures.ts);
+    // применяется на лету без перестройки тайлов
     if (JSON.stringify(prev.assets) !== JSON.stringify(s.assets)) {
       this.world.setTerrainAssets(s.assets);
+      textureUrls.setFromAssets(s.assets.texUrls);
       const modeLabels: Record<string, string> = {
         off: 'ВЫКЛ (ровный цвет вершин)',
         grain: 'зерно (процедурная детализация)',
         pbr: 'PBR (текстуры + нормали + шероховатость)',
-        url: this.settings.assets.texUrl ? 'своя текстура по ссылке' : 'своя текстура (ссылка не задана — зерно)',
+        url: s.assets.texUrls.terrain ? 'своя текстура по ссылке' : 'своя текстура (ссылка не задана — зерно)',
       };
       this.pushMessage(`Рельеф островов: ${modeLabels[s.assets.islandTextures]} · шейдер ${s.assets.terrainShader}`);
+      // сводка по своим текстурам (что загрузилось, что нет)
+      const st = textureUrls.describe();
+      const parts: string[] = [];
+      const slotNames: Record<string, string> = {
+        terrain: 'земля', hull: 'борт', deck: 'палуба', sail: 'парус', water: 'вода',
+      };
+      for (const k of Object.keys(st) as (keyof typeof st)[]) {
+        if (st[k].urlLen === 0) continue;
+        parts.push(`${slotNames[k]}: ${st[k].state === 'ok' ? 'загружена' : st[k].state === 'error' ? 'ошибка (процедурная)' : 'грузится…'}`);
+      }
+      if (parts.length) this.pushMessage(`Свои текстуры — ${parts.join(' · ')}`);
+    }
+    // Task 39: ВНЕШНОСТЬ КАПИТАНА — пересобрать фигурку на берегу
+    if (JSON.stringify(prev.player) !== JSON.stringify(s.player)) {
+      this.lander?.setAppearance(s.player);
     }
     if (prev.graphics.drawDistance !== g.drawDistance) {
       this.world.visDistance = g.drawDistance;
@@ -664,12 +688,14 @@ export class Game {
       onSplash: () => this.audio.splash(0),
     });
 
-    // ВЫСАДКА НА ОСТРОВ (Task 36): моряк для прогулок по берегу
+    // ВЫСАДКА НА ОСТРОВ (Task 36): моряк для прогулок по берегу;
+    // Task 39: фигурка капитана — по ВЫБРАННОЙ внешности
     this.lander = new Lander({
       worldGroup: this.worldGroup,
       particles: this.particles,
       world: this.world,
       camera: this.rig.camera,
+      appearance: this.settings.player,
       msg: (t) => this.pushMessage(t),
       audio: {
         shot: () => this.audio.pistolShot(),
@@ -2255,9 +2281,16 @@ export class Game {
               h: +this.lander!.pos.y.toFixed(2),
               camYaw: +lh.camYaw.toFixed(2),
               frozenBoat: this.boatLaunch?.frozen ?? false,
+              // Task 39: СКОЛЬКО гребцов видно в шлюпке (после
+              // высадки — 1: место сошедшего игрока пусто)
+              boatRowers: this.boatLaunch?.state().rowersVisibleCount ?? 0,
             };
           })()
         : null,
+      // Task 39: СВОИ текстуры по ссылке — состояние всех слотов
+      tex: textureUrls.describe(),
+      // Task 39: фигурка капитана (попугай/повязка/детали) — E2E
+      playerFig: this.lander ? this.lander.figureInfo() : null,
       // Task 36: рельеф-стример + деревни + рыбацкие лодки
       terrain: this.world.terrain.stats(),
       terrainTex: this.world.terrain.texturesOn(),
@@ -2589,6 +2622,36 @@ export class Game {
 
   /** E2E: не рендерить кадры внутри stepDebug (гнать только физику) */
   private debugNoRender = false;
+
+  /** E2E (Task 39): проба процедурных фигурок — построить n
+   *  «человечков» и вернуть статистику: доля с попугаем (ТЗ ~10%),
+   *  среднее число вершин тела (локти/колени/детали). */
+  debugFigureProbe(n: number) {
+    let parrots = 0, pegs = 0, hooks = 0, verts = 0, maxVerts = 0, legVerts = 0, legN = 0;
+    const count = Math.max(1, Math.min(400, Math.round(n)));
+    for (let i = 0; i < count; i++) {
+      const fig = buildFigure('walker', rollTraits(Math.random, 'walker'), 1000 + i * 17);
+      if (fig.hasParrot) parrots++;
+      if (fig.hasPeg) pegs++;
+      if (fig.hasHook) hooks++;
+      verts += fig.verts ?? 0;
+      maxVerts = Math.max(maxVerts, fig.verts ?? 0);
+      // ноги: бедро+КОЛЕНО+голень+ботинок — у новой модели ≥ 4 боксов
+      if (fig.legL) {
+        legVerts += (fig.legL.geometry.attributes.position as THREE.BufferAttribute).count;
+        legN++;
+      }
+      fig.group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) m.geometry.dispose();
+      });
+    }
+    return {
+      n: count, parrots, parrotPct: +(parrots / count * 100).toFixed(1),
+      pegs, hooks, avgVerts: Math.round(verts / count), maxVerts,
+      avgLegVerts: legN ? Math.round(legVerts / legN) : 0,
+    };
+  }
 
   /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ рендера
    *  (headless-браузер рендерит сложные сцены минутами) */

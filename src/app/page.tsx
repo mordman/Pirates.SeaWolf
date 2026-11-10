@@ -5,9 +5,10 @@ import type { Game, HudState } from '@/game/game';
 import { GOODS, SKINS, UPGRADE_INFO, UPGRADE_MAX, goodName, type ShipUpgrades } from '@/game/game';
 import type { AmmoType } from '@/game/combat/combat';
 import SettingsPanel from './SettingsPanel';
+import CharacterCreate from './CharacterCreate';
 import { ENCYCLOPEDIA, type ShipEntry } from '@/game/ship/encyclopedia';
 import { PRESETS, shipPrice } from '@/game/ship/buildShip';
-import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings } from '@/game/core/settings';
+import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings, type PlayerAppearance } from '@/game/core/settings';
 
 // ============================================================
 // Страница игры: canvas + HUD (панели, компас, карта, порт)
@@ -325,6 +326,8 @@ export default function Home() {
   const [hud, setHud] = useState<HudState | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Task 39: экран создания капитана — в САМОМ НАЧАЛЕ игры
+  const [charOpen, setCharOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [encyOpen, setEncyOpen] = useState(false);
   const [encyId, setEncyId] = useState(ENCYCLOPEDIA[0].id);
@@ -360,7 +363,7 @@ export default function Home() {
     const onKey = (e: KeyboardEvent) => {
       const c = settings.controls;
       if (e.code === 'Escape') {
-        setSettingsOpen(false); setMapOpen(false); setHelpOpen(false);
+        setCharOpen(false); setSettingsOpen(false); setMapOpen(false); setHelpOpen(false);
         const gg = gameRef.current; if (gg) { gg.uiOpen = false; gg.input.keys.clear(); }
         return;
       }
@@ -389,6 +392,20 @@ export default function Home() {
     saveSettings(s);
     gameRef.current?.applySettings(s);
   }, []);
+
+  // Task 39: пока открыт экран создания капитана — игра не
+  // принимает ввод (как с настройками); закрыли — отпустили
+  useEffect(() => {
+    const gg = gameRef.current;
+    if (!gg) return;
+    gg.uiOpen = charOpen;
+    if (!charOpen) gg.input.keys.clear();
+  }, [charOpen, ready]);
+
+  const applyAppearance = useCallback((a: PlayerAppearance) => {
+    setCharOpen(false);
+    applySettings({ ...structuredClone(settings), player: a });
+  }, [applySettings, settings]);
 
   // НАВИГАЦИОННАЯ КАРТА: масштаб под МИР ×10 (Task 36: архипелаг
   // ±45×36 км). Прежний фикс 0.048 px/м покрывал лишь ±6.7 км —
@@ -1255,7 +1272,14 @@ export default function Home() {
       )}
       {/* ---- настройки ---- */}
       {settingsOpen && (
-        <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings} />
+        <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings}
+          onEditPlayer={() => { closeSettings(); setCharOpen(true); }} />
+      )}
+      {/* ---- Task 39: экран создания капитана (в начале игры) ---- */}
+      {charOpen && ready && (
+        <CharacterCreate initial={settings.player}
+          onApply={applyAppearance}
+          onClose={() => setCharOpen(false)} />
       )}
       {/* ---- энциклопедия кораблей ---- */}
       {encyOpen && (() => {

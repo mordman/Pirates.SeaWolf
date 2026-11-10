@@ -223,7 +223,7 @@ await sleep(500);
 // ================= D: URL-ТЕКСТУРА РЕЛЬЕФА =================
 log('\n===== D: своя текстура по ссылке (режим url) =====');
 // D1: пустая ссылка — зерно
-setAssets({ islandTextures: 'url', texUrl: '' });
+setAssets({ islandTextures: 'url', texUrls: { terrain: '' } });
 const d1 = jparse(await evR(`(() => {
   const t = window.__game.world.terrain;
   const m = t.group.children[0]?.material ?? t.mat;
@@ -250,7 +250,7 @@ await sleep(200);
 const dataUrl = ev(`window.__testTexUrl.length`);
 log('data URL длина:', dataUrl);
 // применяем сразу настоящий data:URL (через окно — слишком длинный для eval-строки)
-ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'url'; s.assets.texUrl = window.__testTexUrl; g.applySettings(s); return 'applied'; })()`);
+ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'url'; s.assets.texUrls.terrain = window.__testTexUrl; g.applySettings(s); return 'applied'; })()`);
 await sleep(1200);
 const d3 = jparse(await evR(`(() => {
   const t = window.__game.world.terrain;
@@ -273,7 +273,7 @@ check('D4: texScale 14 → repeat 0.5 у СВОЕЙ текстуры',
   d4 && Math.abs(d4.repeat - 0.5) < 0.01, `repeat=${d4?.repeat}`);
 setAssets({ texScale: 7 });
 // D5: битая ссылка — зерно (connection refused на localhost:1)
-setAssets({ texUrl: 'http://localhost:1/nope.png' });
+setAssets({ texUrls: { terrain: 'http://localhost:1/nope.png' } });
 await sleep(1500);
 const d5 = jparse(await evR(`(() => {
   const t = window.__game.world.terrain;
@@ -284,7 +284,7 @@ log('битая ссылка:', JSON.stringify(d5));
 check('D5: битая ссылка → состояние error, рельеф со ЗЕРНОМ (не чёрный)',
   d5 && d5.state === 'error' && d5.map === 256, JSON.stringify(d5));
 // вернуть дефолт
-setAssets({ islandTextures: 'grain', texUrl: '' });
+setAssets({ islandTextures: 'grain', texUrls: { terrain: '' } });
 
 // ================= E: UI — 4 РЕЖИМА + ПОЛЕ ССЫЛКИ =================
 log('\n===== E: вкладка «Ресурсы» — режим url и поле ссылки =====');
@@ -319,7 +319,7 @@ const pressRes = run('press Enter', 3);
 await sleep(1800);
 const uiState = jparse(await evR(`(() => {
   const g = window.__game;
-  return JSON.stringify({ texUrlLen: g.settings.assets.texUrl.length, mode: g.settings.assets.islandTextures, state: g.world.terrain.urlTexState() });
+  return JSON.stringify({ texUrlLen: g.settings.assets.texUrls.terrain.length, mode: g.settings.assets.islandTextures, state: g.world.terrain.urlTexState() });
 })()`));
 log('fill:', String(fillRes).includes('Done') || String(fillRes).includes('✓') ? 'ok' : String(fillRes).slice(0, 60),
   '| press:', String(pressRes).includes('Done') || String(pressRes).includes('✓') ? 'ok' : String(pressRes).slice(0, 60),
@@ -333,10 +333,10 @@ run(`eval "document.dispatchEvent(new KeyboardEvent('keydown', {code: 'Escape', 
 
 // ================= F: МИГРАЦИЯ И СОХРАНЕНИЕ =================
 log('\n===== F: сохранение v11 и выживание URL после перезагрузки =====');
-const ver = jparse(await evR(`(() => { const d = JSON.parse(localStorage.getItem('seawolves.settings.v1')); return JSON.stringify({ v: d.v, mode: d.assets.islandTextures, urlLen: (d.assets.texUrl || '').length }); })()`));
+const ver = jparse(await evR(`(() => { const d = JSON.parse(localStorage.getItem('seawolves.settings.v1')); return JSON.stringify({ v: d.v, mode: d.assets.islandTextures, urlLen: (d.assets.texUrls && d.assets.texUrls.terrain || '').length }); })()`));
 log(JSON.stringify(ver));
-check('F1: схема сохранения v11, режим url и ссылка в localStorage',
-  ver && ver.v === 11 && ver.mode === 'url' && ver.urlLen > 100, JSON.stringify(ver));
+check('F1: схема сохранения v12, режим url и ссылка в localStorage',
+  ver && ver.v === 12 && ver.mode === 'url' && ver.urlLen > 100, JSON.stringify(ver));
 // ошибки ДО перезагрузки (после reload слушатель исчезает)
 const errs1 = jparse(await evR(`JSON.stringify(window.__jsErrors)`, 6));
 run('reload');
@@ -352,13 +352,13 @@ ev(`window.__game.start()`);
 await sleep(400);
 const after = jparse(await evR(`(() => {
   const g = window.__game;
-  return JSON.stringify({ mode: g.settings.assets.islandTextures, urlLen: g.settings.assets.texUrl.length });
+  return JSON.stringify({ mode: g.settings.assets.islandTextures, urlLen: g.settings.assets.texUrls.terrain.length });
 })()`));
 log(JSON.stringify(after));
 check('F2: после перезагрузки режим url и ссылка на месте (валидация пропускает data:)',
   after && after.mode === 'url' && after.urlLen > 100, JSON.stringify(after));
 // сброс в дефолт, чтобы не влиять на другие тесты
-setAssets({ islandTextures: 'grain', texUrl: '' });
+setAssets({ islandTextures: 'grain', texUrls: { terrain: '' } });
 
 // ================= G: ОШИБКИ JS (до и после перезагрузки) =================
 const errs2 = jparse(await evR(`JSON.stringify(window.__jsErrors)`, 6));

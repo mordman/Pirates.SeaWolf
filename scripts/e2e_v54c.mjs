@@ -36,6 +36,11 @@ for (let i = 0; i < 30; i++) {
 }
 log('GAME LOADED:', loaded);
 ev(`window.__game.start()`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 
 let fails = 0;
 const check = (name, cond, extra = '') => {
@@ -60,7 +65,17 @@ for (let i = 0; i < 30; i++) {
   await sleep(3000);
 }
 ev(`window.__jsErrors = []; window.addEventListener('error', e => window.__jsErrors.push(String(e.message))); 'ok'`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 ev(`window.__game.start()`);
+// Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
+// («Позже», без применения): он блокирует клавиатуру (uiOpen)
+await sleep(1200);
+ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
+await sleep(900);
 ev(`window.__game.stepDebugNR(3)`);
 const mig = jparse(ev(`(() => {
   const g = window.__game;
