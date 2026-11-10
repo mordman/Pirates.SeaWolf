@@ -375,6 +375,13 @@ export function buildLandFolk(n: number, o: LandFolkOpts): LandFolk {
               f.fig.legL.rotation.x = Math.sin(step) * 0.55;
               f.fig.legR.rotation.x = -Math.sin(step) * 0.55;
             }
+            // Task 40: руки МАШУТ при ходьбе (противофаза ногам)
+            if (f.fig.armL && f.fig.armR) {
+              f.fig.armL.rotation.x = -Math.sin(step) * 0.5;
+              f.fig.armR.rotation.x = Math.sin(step) * 0.5;
+              f.fig.armL.rotation.z = 0.05;
+              f.fig.armR.rotation.z = -0.05;
+            }
             f.fig.group.position.y += Math.abs(Math.sin(step)) * 0.03;
           } else {
             // стоячего — лёгкое покачивание
@@ -406,6 +413,8 @@ export function buildLandFolk(n: number, o: LandFolkOpts): LandFolk {
 export interface VillageFolkOpts {
   heightAt: (x: number, z: number) => number;
   seed?: number;
+  /** Task 41: множитель числа жителей (настройки острова, 1 — штатно) */
+  folkMul?: number;
 }
 
 export function buildVillageFolk(v: VillageDef, o: VillageFolkOpts): LandFolk {
@@ -448,13 +457,16 @@ export function buildVillageFolk(v: VillageDef, o: VillageFolkOpts): LandFolk {
       fallDir: 1, fallRoll: 0,
     });
   };
-  const nWalk = Math.max(3, Math.round(v.huts * 1.2));
+  // Task 41: ЖИТЕЛИ — сколько на деревню, управляется настройкой
+  // острова (folkMul: 0 — пустая деревня, 5 — толпа)
+  const fMul = Math.max(0, o.folkMul ?? 1);
+  const nWalk = Math.round(Math.max(3, Math.round(v.huts * 1.2)) * fMul);
   for (let i = 0; i < nWalk; i++) {
     const t = rng();
     const p = pointAt(t);
     mkFolk(p.x, p.z, 'walk', 0);
   }
-  const nIdle = Math.max(3, Math.round(v.huts * 0.8));
+  const nIdle = Math.round(Math.max(3, Math.round(v.huts * 0.8)) * fMul);
   for (let i = 0; i < nIdle; i++) {
     const a = (i / nIdle) * Math.PI * 2 + rng() * 0.5;
     const rad = 3.2 + rng() * 2.2;
@@ -530,6 +542,13 @@ export function buildVillageFolk(v: VillageDef, o: VillageFolkOpts): LandFolk {
           if (f.fig.legL && f.fig.legR) {
             f.fig.legL.rotation.x = Math.sin(step) * 0.55;
             f.fig.legR.rotation.x = -Math.sin(step) * 0.55;
+          }
+          // Task 40: руки МАШУТ при ходьбе
+          if (f.fig.armL && f.fig.armR) {
+            f.fig.armL.rotation.x = -Math.sin(step) * 0.5;
+            f.fig.armR.rotation.x = Math.sin(step) * 0.5;
+            f.fig.armL.rotation.z = 0.05;
+            f.fig.armR.rotation.z = -0.05;
           }
           f.fig.group.position.y += Math.abs(Math.sin(step)) * 0.03;
         } else {

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RNG, fbm2, clamp, smoothstep } from '../core/rng';
 import type { AssetsSettings } from '../core/settings';
+import type { IslandsSettings } from '../core/settings';
 import { buildFishingVillage, type FishingVillage, type WorldBoat, buildCoastFleet, type CoastFleet } from './fishing';
 import { TerrainStreamer } from './terrain';
 import { buildVillageFolk, type LandFolk } from './islandFolk';
@@ -288,6 +289,20 @@ export interface VillageDef {
   huts: number;              // число хижин
   /** полилиния тропы от порта до деревни (мировые точки) */
   trail: { x: number; z: number }[];
+  /** Task 41: деревня АКТИВНА (строится и красит тропу на рельефе);
+  *  управляется настройкой islands.villagesMul (×2-×3 — берутся
+  *  ДОПОЛНИТЕЛЬНЫЕ деревни из расширенного пула генерации) */
+  active?: boolean;
+  /** Task 41: БАЗОВАЯ деревня первого прохода генерации — их набор
+  *  в точности прежний (до Task 41); множитель villagesMul
+  *  считается от ФАКТИЧЕСКОГО числа базовых на острову */
+  base?: boolean;
+}
+/** базовое число деревень на острове (при villagesMul=1 — как
+ *  было до Task 41; первые деревни пула ДЕТЕРМИНИРОВАНЫ —
+ *  прежний мир сохраняется) */
+function baseVillageCount(isl: IslandDef): number {
+  return Math.max(2, Math.min(6, Math.round(isl.r / 650)));
 }
 export const VILLAGES: VillageDef[] = (function buildVillages() {
   const out: VillageDef[] = [];
@@ -295,7 +310,11 @@ export const VILLAGES: VillageDef[] = (function buildVillages() {
     const isl = ISLANDS[i];
     if (isl.r < 1200) continue;               // мелкие острова — без деревень
     const rng = new RNG(WORLD_SEED * 13 + i * 331 + 7);
-    const n = Math.max(2, Math.min(6, Math.round(isl.r / 650)));
+    // Task 41: генерируем РАСШИРЕННЫЙ ПУЛ (до 3× базового числа,
+    // максимум 12) — настройка «деревни ×2/×3» активирует
+    // дополнительные; первые baseN совпадают с прежним миром
+    const baseN = baseVillageCount(isl);
+    const n = Math.min(12, Math.max(baseN, baseN * 3));
     const dirA = i === 0 ? Math.atan2(1, -1) : Math.atan2(isl.cz, isl.cx);
     const ux = Math.cos(dirA), uz = Math.sin(dirA);
     let shore = { x: isl.cx, z: isl.cz };
@@ -304,7 +323,9 @@ export const VILLAGES: VillageDef[] = (function buildVillages() {
       shore = { x: isl.cx + ux * d, z: isl.cz + uz * d };
     }
     let made = 0, tries = 0;
-    while (made < n && tries++ < 220) {
+    // ПЕРВЫЙ проход — БАЗОВЫЕ деревни: в точности прежняя логика
+    // (детерминизм: прежний мир сохраняется 1:1)
+    while (made < baseN && tries++ < 220) {
       const a = rng.range(0, Math.PI * 2);
       const rr = isl.r * rng.range(0.42, 0.72);
       const x = isl.cx + Math.cos(a) * rr;
@@ -322,7 +343,31 @@ export const VILLAGES: VillageDef[] = (function buildVillages() {
         if (heightAt(bx, bz) > 0.6) trail.push({ x: bx, z: bz });
       }
       trail.push({ x, z });
-      out.push({ islandIdx: i, x: Math.round(x), z: Math.round(z), h, huts: 4 + Math.floor(rng.next() * 6), trail });
+      out.push({ islandIdx: i, x: Math.round(x), z: Math.round(z), h, huts: 4 + Math.floor(rng.next() * 6), trail, active: true, base: true });
+      made++;
+    }
+    // ВТОРОЙ проход — ДОПОЛНИТЕЛЬНЫЕ (Task 41: пул для «деревни ×2/×3»):
+    // мягкие условия (ближе друг к другу, склоны помягче) — базовые
+    // деревни и их тропы НЕ затрагиваются (тот же RNG-поток дальше)
+    while (made < n && tries++ < 600) {
+      const a = rng.range(0, Math.PI * 2);
+      const rr = isl.r * rng.range(0.3, 0.8);
+      const x = isl.cx + Math.cos(a) * rr;
+      const z = isl.cz + Math.sin(a) * rr;
+      const h = heightAt(x, z);
+      if (h < 2 || h > isl.maxH * 0.6) continue;
+      if (slopeAt(x, z) > 0.44) continue;
+      if (out.some(v => v.islandIdx === i && Math.hypot(v.x - x, v.z - z) < isl.r * 0.16)) continue;
+      const trail: { x: number; z: number }[] = [shore];
+      const bends = 2 + Math.floor(rng.next() * 2);
+      for (let b = 1; b <= bends; b++) {
+        const t = b / (bends + 1);
+        const bx = shore.x + (x - shore.x) * t + (rng.next() - 0.5) * isl.r * 0.24;
+        const bz = shore.z + (z - shore.z) * t + (rng.next() - 0.5) * isl.r * 0.24;
+        if (heightAt(bx, bz) > 0.6) trail.push({ x: bx, z: bz });
+      }
+      trail.push({ x, z });
+      out.push({ islandIdx: i, x: Math.round(x), z: Math.round(z), h, huts: 3 + Math.floor(rng.next() * 5), trail, active: false, base: false });
       made++;
     }
   }
@@ -350,11 +395,12 @@ const C_ROCK_DARK = new THREE.Color(0x6e675c);
 const C_DIRT = new THREE.Color(0x9c7f52);
 const _tc = new THREE.Color();
 
-/** Расстояние до ближайшей тропы/деревни острова */
+/** Расстояние до ближайшей тропы/деревни острова
+ *  (Task 41: неактивные деревни троп НЕ красят) */
 function trailDist(islandIdx: number, x: number, z: number): number {
   let best = Infinity;
   for (const v of VILLAGES) {
-    if (v.islandIdx !== islandIdx) continue;
+    if (v.islandIdx !== islandIdx || v.active === false) continue;
     const t = v.trail;
     for (let k = 0; k + 1 < t.length; k++) {
       const ax = t[k].x, az = t[k].z, bx = t[k + 1].x, bz = t[k + 1].z;
@@ -558,7 +604,9 @@ export class World {
   /** рельеф островов: СТРИМЕР ТАЙЛОВ с LOD (Task 36) */
   terrain: TerrainStreamer;
   /** рыбацкие лодки вокруг всех островов (дрейфуют у кромки) */
-  coastFleet: CoastFleet;
+  coastFleet!: CoastFleet;
+  /** Task 41: упёрся ли лес в общий бюджет инстансов (×1000) */
+  private vegBudgetHit = false;
   /** жители деревень (по деревне на остров) — ходят по тропам */
   villageFolk: LandFolk[] = [];
   /** группы деревень (видимость по дистанции) */
@@ -583,15 +631,17 @@ export class World {
   private dummy = new THREE.Object3D();
   private tmpQ = new THREE.Quaternion();
   private tmpE = new THREE.Euler();
+  /** переиспользуемый вектор (breakTrees → gibTreePieces) */
+  private _vTmp = new THREE.Vector3();
 
-  // ломающаяся растительность: позиции инстансов по видам
+  // ломающаяся растительность: инстансы по видам (Task 41: позиции и
+  // масштабы читаются ПРЯМО из instanceMatrix — без дублирующих
+  // массивов: при ×1000 это 1,5 млн инстансов, дубль убил бы память)
   private vegSlots: {
     inst: THREE.InstancedMesh;
-    positions: THREE.Vector3[];
     broken: boolean[];
     breakable: boolean;
     kind: string;         // вид: palm/ficus/jungle/bamboo/bush/stump/boulder — рецепт разлома
-    scales: number[];     // визуальная высота каждого экземпляра (множитель)
     procGeo: THREE.BufferGeometry; // исходная процедурная геометрия (фолбэк GLB)
   }[] = [];
   /** счётчик поваленных деревьев (телеметрия) */
@@ -603,22 +653,48 @@ export class World {
   // группы островов: растительность/постройки/деревни острова — в
   // своей группе (видимость по дистанции до игрока)
   private islGroups: THREE.Group[] = [];
+  // Task 40/41: группы РАСТИТЕЛЬНОСТИ (подмножество islGroups) —
+  // плотность леса меняется в настройках на лету: старые инстансы
+  // снимаются, новые собираются тем же детерминированным RNG
+  private vegGroups: THREE.Group[] = [];
+  /** Task 41: ЭФФЕКТИВНЫЕ множители ПО ОСТРОВУ (глобальные ×
+   *  переопределения): деревья / деревни / жители / лодки */
+  private effTrees: number[] = [];
+  private effVillages: number[] = [];
+  private effFolk: number[] = [];
+  private effBoats: number[] = [];
+  /** Task 41: суммарный БЮДЖЕТ деревьев на весь архипелаг:
+   *  ×1000 без бюджета = ~30 млн инстансов — убивает GPU и память;
+   *  при превышении — пропорциональное сжатие по островам */
+  static readonly VEG_BUDGET = 1_500_000;
+  /** Task 41: деревьев по островам (телеметрия/E2E) */
+  private vegPerIsland: number[] = [];
 
   // коллайдеры растительности для ПЕШЕХОДА (Task 36): сетка 48 м
   private vegGrid = new Map<number, { x: number; z: number; r: number }[]>();
   private static VEG_CELL = 48;
 
-  constructor(opts?: { visDistance?: number; textures?: AssetsSettings }) {
+  constructor(opts?: { visDistance?: number; textures?: AssetsSettings; islands?: IslandsSettings }) {
     if (opts?.visDistance) this.visDistance = opts.visDistance;
     // РЕЛЬЕФ: тайлы вокруг игрока (детальные вблизи, грубые вдали);
     // режим текстур/шейдера — из раздела assets (Task 37)
     this.terrain = new TerrainStreamer({ textures: opts?.textures });
     this.group.add(this.terrain.group);
-    this.buildVegetation();
+    // группы островов: сюда складываются растительность, постройки
+    // портов/деревень, рыбацкие лодки (Task 40: создаются ЗДЕСЬ,
+    // чтобы перестройка растительности не трогала разметку)
+    for (let i = 0; i < this.islands.length; i++) {
+      const g = new THREE.Group();
+      this.islGroups.push(g);
+      this.group.add(g);
+    }
+    // Task 41: МИР ПО НАСТРОЙКАМ ОСТРОВОВ — деревья (до ×1000 с
+    // бюджетом), деревни (+ пул), жители, рыбацкие лодки; при
+    // первом вызове всё строится с нуля
+    this.applyIslandConfig(opts?.islands ?? {
+      treesMul: 1, villagesMul: 1, folkMul: 1, boatsMul: 1, perIsland: {},
+    });
     this.buildPorts();
-    this.buildVillages();
-    this.coastFleet = buildCoastFleet(ISLANDS, heightAt, WORLD_SEED + 36);
-    this.group.add(this.coastFleet.group);
     this.buildAnimals();
     // полигоны берега: крупным островам — чаще шаг
     for (let i = 0; i < this.islands.length; i++) {
@@ -662,23 +738,52 @@ export class World {
       palm: 0.4, ficus: 0.6, jungle: 0.5, bamboo: 0.55,
       bush: 0, rock: 1.0, stump: 0.45, boulder: 1.5,
     };
-    const perIsland: { islIdx: number; byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number; mask: number }[]> }[] = [];
-    for (let islIdx = 0; islIdx < this.islands.length; islIdx++) {
-      const isl = this.islands[islIdx];
-      const islGroup = new THREE.Group();
-      this.islGroups.push(islGroup);
-      this.group.add(islGroup);
-      // Task 36: ГРАДИЕНТ РАСТИТЕЛЬНОСТИ — от редких кустов до
-      // НЕПРОХОДИМЫХ ДЖУНГЛЕЙ по маске jungleMaskAt; лимит инстансов
+    // Task 41: ПЛОТНОСТЬ ПО ОСТРОВАМ (настройки) + ОБЩИЙ БЮДЖЕТ:
+    // желаемое по каждому острову пропорционально площади × множ.
+    // острова; если сумма выше бюджета (×1000 просит ~30 млн) —
+    // пропорциональное сжатие. Так «×1000» честно даёт максимум,
+    // который выдерживает GPU (~1,5 млн инстансов на архипелаг)
+    const raws: number[] = [];
+    let rawSum = 0;
+    for (let i = 0; i < this.islands.length; i++) {
+      const isl = this.islands[i];
       const density = isl.type === 'rock' ? 0.35 : isl.type === 'atoll' ? 0.8 : 1.2;
       const area = Math.PI * isl.r * isl.r;
-      const target = Math.floor(Math.min(2600, Math.max(60, area / 16000 * density)));
+      const raw = Math.max(12, area / 16000 * density * (this.effTrees[i] ?? 1));
+      raws.push(raw);
+      rawSum += raw;
+    }
+    const budgetScale = rawSum > World.VEG_BUDGET ? World.VEG_BUDGET / rawSum : 1;
+    this.vegBudgetHit = rawSum > World.VEG_BUDGET;
+    this.vegPerIsland = new Array(this.islands.length).fill(0);
+    // Task 41: ПАМЯТЬ — при ×1000 это ~1,5 млн инстансов. Никаких
+    // промежуточных объектов: матрицы пишутся в ОДИН плоский
+    // Float32Array на остров (перевыделяется на остров, не на мир),
+    // вид — байтовым тегом; временные Vector3/Quaternion/
+    // Euler/Matrix4 — переиспользуются (без GC-прессинга)
+    const kindNames = Object.keys(types);
+    const kindId: Record<string, number> = {};
+    kindNames.forEach((k, i) => { kindId[k] = i; });
+    const vTmp = new THREE.Vector3();
+    const qTmp = new THREE.Quaternion();
+    const eTmp = new THREE.Euler();
+    const sTmp = new THREE.Vector3();
+    const mTmp = new THREE.Matrix4();
+    for (let islIdx = 0; islIdx < this.islands.length; islIdx++) {
+      const isl = this.islands[islIdx];
+      const vegGroup = new THREE.Group();
+      this.vegGroups.push(vegGroup);
+      this.islGroups[islIdx].add(vegGroup);
+      // Task 36: ГРАДИЕНТ РАСТИТЕЛЬНОСТИ — от редких кустов до
+      // НЕПРОХОДИМЫХ ДЖУНГЛЕЙ по маске jungleMaskAt; лимит — бюджет
+      const target = Math.floor(raws[islIdx] * budgetScale);
       const rng = new RNG(WORLD_SEED + isl.cx * 31 + isl.cz);
-      const byKind: Record<string, { m: THREE.Matrix4; islandType: string; h: number; mask: number }[]> = {};
-      for (const k of Object.keys(types)) byKind[k] = [];
+      const buf = new Float32Array((target + 8) * 16);  // матрицы 4×4
+      const kindOf = new Uint8Array(target + 8);
+      const counts = new Uint32Array(kindNames.length);
       let tries = 0;
       let placed = 0;
-      while (placed < target && tries < target * 12) {
+      while (placed < target && tries < target * 8 + 40) {
         tries++;
         const a = rng.range(0, Math.PI * 2);
         const rr = Math.sqrt(rng.next()) * isl.r * 1.2;
@@ -705,39 +810,46 @@ export class World {
           kind = roll < 0.58 ? 'jungle' : roll < 0.8 ? 'bamboo' : 'ficus';
         }
         const s = rng.range(0.8, 1.55);
-        const m = new THREE.Matrix4().compose(
-          new THREE.Vector3(x, h - 0.15, z),
-          new THREE.Quaternion().setFromEuler(new THREE.Euler(rng.range(-0.06, 0.06), rng.range(0, Math.PI * 2), rng.range(-0.06, 0.06))),
-          new THREE.Vector3(s, s * rng.range(0.85, 1.25), s));
-        byKind[kind].push({ m, islandType: isl.type, h, mask });
+        vTmp.set(x, h - 0.15, z);
+        eTmp.set(rng.range(-0.06, 0.06), rng.range(0, Math.PI * 2), rng.range(-0.06, 0.06));
+        qTmp.setFromEuler(eTmp);
+        sTmp.set(s, s * rng.range(0.85, 1.25), s);
+        mTmp.compose(vTmp, qTmp, sTmp);
+        mTmp.toArray(buf, placed * 16);
+        kindOf[placed] = kindId[kind];
+        counts[kindId[kind]]++;
         placed++;
         const tr = trunkR[kind] ?? 0.4;
         if (tr > 0) this.addVegCollider(x, z, mask > 0.78 ? tr * 2.6 : tr);
       }
-      perIsland.push({ islIdx, byKind });
-    }
-    for (const { islIdx, byKind } of perIsland) {
-      const islGroup = this.islGroups[islIdx];
-      for (const [kind, list] of Object.entries(byKind)) {
-        if (!list.length) continue;
+      this.vegPerIsland[islIdx] = placed;
+      // разложить по видам в InstancedMesh (копирование из буфера)
+      for (let ki = 0; ki < kindNames.length; ki++) {
+        const c = counts[ki];
+        if (!c) continue;
+        const kind = kindNames[ki];
         const geo = types[kind].geo();
         const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
         if (types[kind].sway > 0) applySway(mat, types[kind].sway);
-        const inst = new THREE.InstancedMesh(geo, mat, list.length);
+        const inst = new THREE.InstancedMesh(geo, mat, c);
         inst.userData.wire = 'veg';
-        list.forEach((p, i) => inst.setMatrixAt(i, p.m));
+        const dst = inst.instanceMatrix.array as Float32Array;
+        let w = 0;
+        for (let i = 0; i < placed; i++) {
+          if (kindOf[i] !== ki) continue;
+          dst.set(buf.subarray(i * 16, i * 16 + 16), w * 16);
+          w++;
+        }
         inst.castShadow = true;
         inst.receiveShadow = false;
         inst.frustumCulled = true;
         inst.computeBoundingSphere();
-        islGroup.add(inst);
-        const positions = list.map((p) => new THREE.Vector3().setFromMatrixPosition(p.m));
+        vegGroup.add(inst);
         this.vegSlots.push({
-          inst, positions,
-          broken: new Array(list.length).fill(false),
+          inst,
+          broken: new Array(c).fill(false),
           breakable: kind !== 'rock' && kind !== 'boulder',
           kind,
-          scales: list.map((p) => Math.max(0.5, new THREE.Vector3().setFromMatrixScale(p.m).y)),
           procGeo: geo,
         });
       }
@@ -750,6 +862,149 @@ export class World {
     let arr = this.vegGrid.get(key);
     if (!arr) { arr = []; this.vegGrid.set(key, arr); }
     arr.push({ x, z, r });
+  }
+
+  /** Task 40/41: перестроить растительность (снять старые инстансы,
+   *  собрать новые с текущими множителями по островам). Постройки/
+   *  деревни/животные не трогаются. GLB-модели и каркас применяются
+   *  вызывающим (game.ts) через glbParts.enableAll/applyWireframe. */
+  private rebuildVegetation() {
+    // снять старые инстансы (геометрию GLB-кэша не трогаем)
+    for (const g of this.vegGroups) {
+      for (const child of [...g.children]) {
+        const inst = child as THREE.InstancedMesh;
+        if (inst.isInstancedMesh) {
+          const slot = this.vegSlots.find(s => s.inst === inst);
+          if (slot && slot.inst.geometry !== slot.procGeo) slot.procGeo.dispose();
+          else inst.geometry.dispose();
+          (inst.material as THREE.Material).dispose();
+        }
+      }
+      g.parent?.remove(g);
+    }
+    this.vegGroups = [];
+    this.vegSlots = [];
+    this.vegGrid.clear();
+    this.treesBroken = 0;
+    this.buildVegetation();
+    // категория каркаса для новых мешей
+    this.group.traverse((o) => {
+      if (!o.userData.wire && o.parent && this.vegGroups.some(g => g === o.parent || g === o)) o.userData.wire = 'veg';
+    });
+  }
+
+  /** Task 41: ПЕРЕСБОРИТЬ деревни и жителей (настройки островов):
+   *  активность деревень из пула VILLAGES по villagesMul, число
+   *  жителей — folkMul; тропы красят рельеф только активных —
+   *  тайлы рельефа пересобираются */
+  private rebuildVillages() {
+    for (const g of this.villageGroups) g.parent?.remove(g);
+    this.villageGroups = [];
+    this.villageFolk = [];
+    // ФАКТИЧЕСКОЕ число базовых деревень на остров (первый проход
+    // генерации мог поставить меньше baseN — плотные условия);
+    // множитель считается от него: при ×1 мир = прежний 1:1
+    const baseCount: Record<number, number> = {};
+    for (const v of VILLAGES) {
+      if (v.base) baseCount[v.islandIdx] = (baseCount[v.islandIdx] ?? 0) + 1;
+    }
+    // активация: первые k деревень острова (базовые идут первыми)
+    const activated: Record<number, number> = {};
+    for (const v of VILLAGES) {
+      const mul = this.effVillages[v.islandIdx] ?? 1;
+      const k = Math.max(0, Math.round((baseCount[v.islandIdx] ?? 0) * mul));
+      const cur = activated[v.islandIdx] ?? 0;
+      v.active = cur < k;
+      if (v.active) activated[v.islandIdx] = cur + 1;
+    }
+    // тропы изменились → перезапечь цвет вершин рельефа
+    this.terrain.clear();
+    this.buildVillages();
+  }
+
+  /** Task 41: ПЕРЕСБОИТЬ рыбацкий флот (boatsMul по островам) */
+  private rebuildCoastFleet() {
+    if (this.coastFleet) this.group.remove(this.coastFleet.group);
+    this.coastFleet = buildCoastFleet(ISLANDS, heightAt, WORLD_SEED + 36,
+      { mulAt: (i) => this.effBoats[i] ?? 1 });
+    this.group.add(this.coastFleet.group);
+  }
+
+  /** Task 41: ПРИМЕНИТЬ НАСТРОЙКИ ОСТРОВОВ — глобальные множители +
+   *  переопределения по островам. Перестраивает только изменившееся.
+   *  Возвращает сводку для сообщения игроку. */
+  applyIslandConfig(cfg: IslandsSettings): { trees: boolean; villages: boolean; boats: boolean } {
+    const n = this.islands.length;
+    const trees: number[] = [], villages: number[] = [], folk: number[] = [], boats: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const o = cfg.perIsland[String(i)];
+      trees.push(Math.max(0.25, o?.treesMul ?? cfg.treesMul));
+      villages.push(Math.max(0, o?.villagesMul ?? cfg.villagesMul));
+      folk.push(Math.max(0, o?.folkMul ?? cfg.folkMul));
+      boats.push(Math.max(0, o?.boatsMul ?? cfg.boatsMul));
+    }
+    const changed = (next: number[], cur: number[]) =>
+      !cur.length || next.some((v, i) => Math.abs(v - (cur[i] ?? 1)) > 1e-9);
+    const treesCh = changed(trees, this.effTrees);
+    const villagesCh = changed(villages, this.effVillages);
+    const folkCh = changed(folk, this.effFolk);
+    const boatsCh = changed(boats, this.effBoats);
+    if (treesCh) {
+      this.effTrees = trees;
+      this.rebuildVegetation();
+    }
+    if (villagesCh || folkCh) {
+      this.effVillages = villages;
+      this.effFolk = folk;
+      this.rebuildVillages();
+    }
+    if (boatsCh) {
+      this.effBoats = boats;
+      this.rebuildCoastFleet();
+    }
+    return { trees: treesCh, villages: villagesCh || folkCh, boats: boatsCh };
+  }
+
+  /** Task 41: сводка мира по настройкам островов (телеметрия/E2E) */
+  islandsInfo() {
+    let instances = 0;
+    for (const s of this.vegSlots) instances += s.inst.count;
+    let villagesActive = 0;
+    const villagesByIsland: Record<string, number> = {};
+    for (const v of VILLAGES) {
+      if (v.active === false) continue;
+      villagesActive++;
+      villagesByIsland[String(v.islandIdx)] = (villagesByIsland[String(v.islandIdx)] ?? 0) + 1;
+    }
+    let folkTotal = 0;
+    for (const f of this.villageFolk) folkTotal += f.total;
+    return {
+      trees: {
+        instances,
+        budget: World.VEG_BUDGET,
+        budgetHit: this.vegBudgetHit,
+        globalMul: this.effTrees.length && this.effTrees.every(v => Math.abs(v - this.effTrees[0]) < 1e-9)
+          ? this.effTrees[0] : null,
+        perIsland: this.effTrees.map(v => +v.toFixed(2)),
+        vegPerIsland: this.vegPerIsland,
+      },
+      villages: {
+        total: VILLAGES.length,
+        base: VILLAGES.filter(v => v.base).length,
+        active: villagesActive,
+        byIsland: villagesByIsland,
+        perIsland: this.effVillages.map(v => +v.toFixed(2)),
+      },
+      folk: {
+        total: folkTotal,
+        perIsland: this.effFolk.map(v => +v.toFixed(2)),
+      },
+      boats: {
+        n: this.coastFleet ? this.coastFleet.boats.length : 0,
+        fishermen: this.coastFleet ? this.coastFleet.fishermen : 0,
+        perIsland: this.effBoats.map(v => +v.toFixed(2)),
+      },
+    };
   }
 
   /** Выталкивание пешехода из стволов/валунов (Task 36): густые
@@ -777,7 +1032,8 @@ export class World {
     return res;
   }
 
-  /** Ближайшее НЕсломанное ломаемое растение к точке (E2E) */
+  /** Ближайшее НЕсломанное ломаемое растение к точке (E2E).
+   *  Task 41: позиция инстанса читается из instanceMatrix */
   nearestCuttable(x: number, z: number, maxR = 60, withCollider = false): { x: number; z: number; kind: string } | null {
     const solidKinds = new Set(['palm', 'ficus', 'jungle', 'bamboo', 'stump']);
     let best: { x: number; z: number; kind: string } | null = null;
@@ -785,11 +1041,14 @@ export class World {
     for (const slot of this.vegSlots) {
       if (!slot.breakable) continue;
       if (withCollider && !solidKinds.has(slot.kind)) continue;
-      for (let i = 0; i < slot.positions.length; i++) {
+      const arr = slot.inst.instanceMatrix.array as Float32Array;
+      const n = slot.inst.count;
+      for (let i = 0; i < n; i++) {
         if (slot.broken[i]) continue;
-        const p = slot.positions[i];
-        const d = Math.hypot(p.x - x, p.z - z);
-        if (d < bestD) { bestD = d; best = { x: p.x, z: p.z, kind: slot.kind }; }
+        const o = i * 16;
+        const px = arr[o + 12], pz = arr[o + 14];
+        const d = Math.hypot(px - x, pz - z);
+        if (d < bestD) { bestD = d; best = { x: px, z: pz, kind: slot.kind }; }
       }
     }
     return best;
@@ -811,7 +1070,7 @@ export class World {
       slot.inst.geometry = next;
       slot.inst.geometry.computeBoundingSphere();
       slot.inst.computeBoundingSphere();
-      n += slot.positions.length;
+      n += slot.inst.count;
     }
     return n;
   }
@@ -822,7 +1081,7 @@ export class World {
     for (const slot of this.vegSlots) {
       const v = slot.inst.geometry.getAttribute('position')?.count ?? 0;
       const e = out[slot.kind] ?? { n: 0, verts: v, src: slot.inst.geometry === slot.procGeo ? 'proc' : 'glb' };
-      e.n += slot.positions.length;
+      e.n += slot.inst.count;
       e.verts = v;
       e.src = slot.inst.geometry === slot.procGeo ? 'proc' : 'glb';
       out[slot.kind] = e;
@@ -843,23 +1102,29 @@ export class World {
     const r2 = radius * radius;
     for (const slot of this.vegSlots) {
       if (!slot.breakable) continue;
-      for (let i = 0; i < slot.positions.length; i++) {
+      const arr = slot.inst.instanceMatrix.array as Float32Array;
+      const n = slot.inst.count;
+      for (let i = 0; i < n; i++) {
         if (slot.broken[i]) continue;
-        const p = slot.positions[i];
-        const dx = p.x - x, dz = p.z - z, dy = p.y - y;
+        // Task 41: позиция/масштаб — прямо из instanceMatrix
+        const o = i * 16;
+        const px = arr[o + 12], py = arr[o + 13], pz = arr[o + 14];
+        const dx = px - x, dz = pz - z, dy = py - y;
         if (dx * dx + dz * dz > r2 || dy < -3 || dy > 9) continue;
         slot.broken[i] = true;
+        // масштаб: длина первой колонки матрицы
+        const scale = Math.hypot(arr[o], arr[o + 1], arr[o + 2]);
         // спрятать экземпляр: сдвинуть под дно + сжать в точку
-        this.dummy.position.set(p.x, -40, p.z);
+        this.dummy.position.set(px, -40, pz);
         this.dummy.quaternion.identity();
         this.dummy.scale.setScalar(0.001);
         this.dummy.updateMatrix();
         slot.inst.setMatrixAt(i, this.dummy.matrix);
         slot.inst.instanceMatrix.needsUpdate = true;
         // щепа и листва из точки удара
-        fx?.debris(p.x, p.y + 1.6, p.z, 12, 1.2);
+        fx?.debris(px, py + 1.6, pz, 12, 1.2);
         // разлом на ТРИ части — куски летят от точки попадания
-        if (gibs) this.gibTreePieces(gibs, slot.kind, p, slot.scales[i], { x, y, z });
+        if (gibs) this.gibTreePieces(gibs, slot.kind, this._vTmp.set(px, py, pz), Math.max(0.5, scale), { x, y, z });
         broke++;
       }
     }
@@ -1214,6 +1479,8 @@ export class World {
     const rng = new RNG(WORLD_SEED + 8181);
     const dark = new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 });
     for (const v of VILLAGES) {
+      // Task 41: неактивные деревни (настройки острова) не строятся
+      if (v.active === false) continue;
       const isl = this.islands[v.islandIdx];
       const g = new THREE.Group();
       this.villageGroups.push(g);
@@ -1273,7 +1540,10 @@ export class World {
       rack.position.set(rx, heightAt(rx, rz), rz);
       rack.rotation.y = dirA + Math.PI / 2;
       g.add(rack);
-      const folk = buildVillageFolk(v, { heightAt, seed: WORLD_SEED + v.x * 7 + v.z });
+      const folk = buildVillageFolk(v, {
+        heightAt, seed: WORLD_SEED + v.x * 7 + v.z,
+        folkMul: this.effFolk[v.islandIdx] ?? 1,   // Task 41: жители — настройка острова
+      });
       this.villageFolk.push(folk);
       g.add(folk.group);
       g.add(folk.props);

@@ -861,11 +861,13 @@ export default function Home() {
             </div>
           )}
 
-          {/* ---- ВЫСАДКА: статус моряка на берегу ---- */}
+          {/* ---- ВЫСАДКА / ПРОГУЛКА ПО ПАЛУБЕ: статус капитана ---- */}
           {hud.land?.active && (
             <div className="absolute bottom-24 left-1/2 -translate-x-1/2 text-center">
               <div className="rounded-lg border border-emerald-800 bg-[#08140d]/90 px-5 py-2 text-sm text-emerald-100 shadow-lg">
-                🏝 <b className="text-emerald-300">На берегу</b>
+                {hud.land.mode === 'deck'
+                  ? <>⚓ <b className="text-emerald-300">На палубе</b></>
+                  : <>🏝 <b className="text-emerald-300">На берегу</b></>}
                 <span className="mx-2 text-stone-500">|</span>
                 {hud.land.weaponLabel}
                 <span className="mx-2 text-stone-500">|</span>
@@ -1273,7 +1275,8 @@ export default function Home() {
       {/* ---- настройки ---- */}
       {settingsOpen && (
         <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings}
-          onEditPlayer={() => { closeSettings(); setCharOpen(true); }} />
+          onEditPlayer={() => { closeSettings(); setCharOpen(true); }}
+          islands={gameRef.current?.world.islands.map((isl, idx) => ({ idx, name: isl.name, r: isl.r }))} />
       )}
       {/* ---- Task 39: экран создания капитана (в начале игры) ---- */}
       {charOpen && ready && (

@@ -144,6 +144,19 @@ function makeRoughTexture(): THREE.DataTexture {
   });
 }
 
+/** ЗОНЫ ОСТРОВОВ (Task 40): слоты splat-текстур — песок/трава/
+ *  грязь/скалы; накладываются по ВЫСОТЕ и УКЛОНУ рельефа поверх
+ *  цвета вершин (пока ссылка не задана — зона с цветом биома) */
+const ZONE_SLOTS = ['sand', 'grass', 'dirt', 'rock'] as const;
+type ZoneSlot = typeof ZONE_SLOTS[number];
+
+/** 1×1 белая текстура — «нейтральная» зона, пока своя не грузится */
+function whiteTexture(): THREE.DataTexture {
+  const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+  t.needsUpdate = true;
+  return t;
+}
+
 interface TileRec {
   mesh: THREE.Mesh;
   near: boolean;
@@ -173,6 +186,9 @@ export class TerrainStreamer {
   private _color = new THREE.Color();
   /** текущая конфигурация текстур (для телеметрии/настроек) */
   private cfg: AssetsSettings;
+  /** Task 40: uniforms splat-шейдера зон (после первого рендера) */
+  private zoneUniforms: Record<string, THREE.IUniform> | null = null;
+  private zoneWhite = whiteTexture();
   /** Task 38/39: своя текстура рельефа по ссылке — живёт в ОБЩЕМ
    *  реестре textureUrls (слот 'terrain', каталог assets/textures.ts);
    *  здесь — только подписка: по готовности/ошибке пересобираем
@@ -186,11 +202,20 @@ export class TerrainStreamer {
     this.cfg = opts?.textures ?? {
       islandTextures: 'grain', texScale: 7, terrainShader: 'standard',
       roughness: 0.96, metalness: 0, normalStrength: 1, texUrl: '',
-      texUrls: { terrain: '', hull: '', deck: '', sail: '', water: '' },
+      texUrls: {
+        terrain: '', hull: '', deck: '', sail: '', water: '',
+        sand: '', grass: '', dirt: '', rock: '',
+      },
     };
     textureUrls.listen('terrain', () => this.rebuildMaterial());
+    for (const z of ZONE_SLOTS) textureUrls.listen(z, () => this.rebuildMaterial());
     if (this.cfg.islandTextures === 'url' && this.cfg.texUrls.terrain) {
       textureUrls.setUrl('terrain', this.cfg.texUrls.terrain);
+    }
+    if (this.cfg.islandTextures === 'zones') {
+      for (const z of ZONE_SLOTS) {
+        if (this.cfg.texUrls[z]) textureUrls.setUrl(z, this.cfg.texUrls[z]);
+      }
     }
     this.rebuildMaterial();
     this.group.matrixAutoUpdate = false;
@@ -207,7 +232,65 @@ export class TerrainStreamer {
     const common = {
       vertexColors: true, side: THREE.FrontSide,
     } as Record<string, unknown>;
-    if (shader === 'lambert') {
+    if (m === 'zones') {
+      // === Task 40: ЗОНЫ — СВОИ текстуры песка/травы/грязи/скал ===
+      // splat по высоте (пляжная полоса) и уклону (скалы), грязь —
+      // проплешины; каждая зона умножается на цвет вершин биома,
+      // незаданная зона — нейтральный белый (не чернеет)
+      const std = new THREE.MeshStandardMaterial({ ...common });
+      std.roughness = this.cfg.roughness;
+      std.metalness = this.cfg.metalness;
+      const u = {
+        uZoneScale: { value: Math.max(3, this.cfg.texScale) },
+        uSand: { value: textureUrls.get('sand') ?? this.zoneWhite },
+        uGrass: { value: textureUrls.get('grass') ?? this.zoneWhite },
+        uDirt: { value: textureUrls.get('dirt') ?? this.zoneWhite },
+        uRock: { value: textureUrls.get('rock') ?? this.zoneWhite },
+        uSandOn: { value: textureUrls.get('sand') ? 1 : 0 },
+        uGrassOn: { value: textureUrls.get('grass') ? 1 : 0 },
+        uDirtOn: { value: textureUrls.get('dirt') ? 1 : 0 },
+        uRockOn: { value: textureUrls.get('rock') ? 1 : 0 },
+      };
+      this.zoneUniforms = u;
+      std.onBeforeCompile = (sh) => {
+        Object.assign(sh.uniforms, u);
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying vec3 vWpos;\nvarying vec3 vWnor;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWpos = position;\n vWnor = normal;');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', `#include <common>
+            varying vec3 vWpos;
+            varying vec3 vWnor;
+            uniform float uZoneScale;
+            uniform sampler2D uSand;
+            uniform sampler2D uGrass;
+            uniform sampler2D uDirt;
+            uniform sampler2D uRock;
+            uniform float uSandOn;
+            uniform float uGrassOn;
+            uniform float uDirtOn;
+            uniform float uRockOn;`)
+          .replace('#include <map_fragment>', `
+            // ЗОНЫ: песок (пляж/дно) / трава / грязь (проплешины) / скалы (уклон)
+            vec2 suv = vWpos.xz / uZoneScale;
+            float hh = vWpos.y;
+            float dith = fract(sin(dot(floor(vWpos.xz * 2.0), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+            float sandTop = 2.3 + dith * 1.7;
+            float wSand = 1.0 - smoothstep(sandTop - 0.8, sandTop + 0.8, hh);
+            float slope = 1.0 - clamp(vWnor.y, 0.0, 1.0);
+            float wRock = smoothstep(0.32, 0.46, slope);
+            float pn = fract(sin(dot(floor(vWpos.xz / 7.0), vec2(45.164, 17.233))) * 43758.5453);
+            float wDirt = (1.0 - wSand) * (1.0 - wRock) * step(0.66, pn) * 0.9;
+            float wGrass = max(0.0, 1.0 - wSand - wRock - wDirt);
+            vec3 splat = vec3(1.0);
+            splat = mix(splat, texture2D(uSand, suv).rgb * 1.35, wSand * uSandOn);
+            splat = mix(splat, texture2D(uGrass, suv).rgb * 1.35, wGrass * uGrassOn);
+            splat = mix(splat, texture2D(uDirt, suv).rgb * 1.35, wDirt * uDirtOn);
+            splat = mix(splat, texture2D(uRock, suv).rgb * 1.35, wRock * uRockOn);
+            diffuseColor.rgb *= splat;`);
+      };
+      mat = std;
+    } else if (shader === 'lambert') {
       mat = new THREE.MeshLambertMaterial({ ...common, map: m === 'off' ? null : this.grainTex });
     } else if (shader === 'phong') {
       const pm = new THREE.MeshPhongMaterial({
@@ -242,15 +325,20 @@ export class TerrainStreamer {
       }
       mat = std;
     }
-    // масштаб текстуры: UV запечён wx/7 — повтор = 7/масштаб
-    const allTex: THREE.Texture[] = [this.grainTex, this.albedoTex, this.normalTex, this.roughTex];
-    const urlTex = textureUrls.get('terrain');
-    if (urlTex) allTex.push(urlTex);
-    for (const t of allTex) {
-      t.repeat.set(rep, rep);
+    // масштаб текстуры: UV запечён wx/7 — повтор = 7/масштаб.
+    // В режиме ЗОН масштаб живёт в шейдере (uZoneScale) — repeat не нужен
+    if (m !== 'zones') {
+      const allTex: THREE.Texture[] = [this.grainTex, this.albedoTex, this.normalTex, this.roughTex];
+      const urlTex = textureUrls.get('terrain');
+      if (urlTex) allTex.push(urlTex);
+      for (const t of allTex) {
+        t.repeat.set(rep, rep);
+      }
     }
     (mat as THREE.MeshStandardMaterial).wireframe = this.wire;
     this.mat = mat;
+    // вне режима зон uniforms-ссылки устаревают (материал без них)
+    if (m !== 'zones') this.zoneUniforms = null;
     // раздать новый материал всем построенным тайлам
     for (const t of this.tiles.values()) t.mesh.material = mat;
     if (old && old !== mat) old.dispose();
@@ -262,12 +350,50 @@ export class TerrainStreamer {
     // Task 38/39: сменилась ссылка в режиме 'url' — грузим новую
     // (реестр сам вызовет rebuildMaterial по готовности)
     const url = cfg.islandTextures === 'url' ? cfg.texUrls.terrain : '';
-    if (textureUrls.url('terrain') !== url) textureUrls.setUrl('terrain', url);
-    else this.rebuildMaterial();
+    let urlChanged = false;
+    if (textureUrls.url('terrain') !== url) { textureUrls.setUrl('terrain', url); urlChanged = true; }
+    // Task 40: ЗОНЫ — ссылки песка/травы/грязи/скалов (в этом режиме
+    // слот terrain не активен — гасим, чтобы не висел загруженным)
+    if (cfg.islandTextures === 'zones') {
+      if (url === '' && textureUrls.url('terrain') !== '') textureUrls.setUrl('terrain', '');
+      for (const z of ZONE_SLOTS) {
+        const zu = cfg.texUrls[z] ?? '';
+        if (textureUrls.url(z) !== zu) { textureUrls.setUrl(z, zu); urlChanged = true; }
+      }
+    } else {
+      // режим не «зоны» — очистить слоты зон (вернуть цвет биома)
+      for (const z of ZONE_SLOTS) {
+        if (textureUrls.url(z) !== '') { textureUrls.setUrl(z, ''); urlChanged = true; }
+      }
+    }
+    if (!urlChanged) this.rebuildMaterial();
   }
 
   /** Task 38/39: состояние загрузки своей текстуры рельефа (E2E) */
   urlTexState(): 'none' | 'loading' | 'ok' | 'error' { return textureUrls.state('terrain'); }
+
+  /** Task 40: ЗОНЫ — какие слоты включены + состояния (E2E/настройки) */
+  zoneInfo() {
+    const on: Record<string, number> = {};
+    const states: Record<string, string> = {};
+    for (const z of ZONE_SLOTS) {
+      on[z] = textureUrls.get(z) ? 1 : 0;
+      states[z] = textureUrls.state(z);
+    }
+    const u = this.zoneUniforms;
+    return {
+      on,
+      states,
+      scale: +(this.cfg.texScale || 0),
+      // вне режима зон — все нули (режим не активен)
+      uniformsOn: u
+        ? {
+          sand: +(u.uSandOn.value as number), grass: +(u.uGrassOn.value as number),
+          dirt: +(u.uDirtOn.value as number), rock: +(u.uRockOn.value as number),
+        }
+        : { sand: 0, grass: 0, dirt: 0, rock: 0 },
+    };
+  }
 
   /** Режим текстур по-прежнему включён (не 'off')? */
   texturesOn(): boolean { return this.cfg.islandTextures !== 'off'; }

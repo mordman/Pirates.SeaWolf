@@ -336,7 +336,7 @@ log('\n===== F: сохранение v11 и выживание URL после п
 const ver = jparse(await evR(`(() => { const d = JSON.parse(localStorage.getItem('seawolves.settings.v1')); return JSON.stringify({ v: d.v, mode: d.assets.islandTextures, urlLen: (d.assets.texUrls && d.assets.texUrls.terrain || '').length }); })()`));
 log(JSON.stringify(ver));
 check('F1: схема сохранения v12, режим url и ссылка в localStorage',
-  ver && ver.v === 12 && ver.mode === 'url' && ver.urlLen > 100, JSON.stringify(ver));
+  ver && ver.v === 14 && ver.mode === 'url' && ver.urlLen > 100, JSON.stringify(ver));
 // ошибки ДО перезагрузки (после reload слушатель исчезает)
 const errs1 = jparse(await evR(`JSON.stringify(window.__jsErrors)`, 6));
 run('reload');

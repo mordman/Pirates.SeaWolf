@@ -14,7 +14,7 @@ export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 // PBR: альбедо × цвет вершин (биом) + карта нормалей + карта
 // шероховатости; Lambert/Phong — упрощённые шейдеры (без PBR-карт).
 // ============================================================
-export type IslandTextureMode = 'off' | 'grain' | 'pbr' | 'url';
+export type IslandTextureMode = 'off' | 'grain' | 'pbr' | 'url' | 'zones';
 export type TerrainShaderKind = 'standard' | 'physical' | 'lambert' | 'phong';
 
 export const ISLAND_TEXTURE_MODE_LABELS: Record<IslandTextureMode, string> = {
@@ -22,6 +22,7 @@ export const ISLAND_TEXTURE_MODE_LABELS: Record<IslandTextureMode, string> = {
   grain: 'Зерно (процедурная детализация)',
   pbr: 'PBR (текстуры + нормали + шероховатость)',
   url: 'Своя текстура (ссылка)',
+  zones: 'Зоны: песок/трава/грязь/скалы (свои текстуры)',
 };
 
 export const TERRAIN_SHADER_LABELS: Record<TerrainShaderKind, string> = {
@@ -170,6 +171,7 @@ export interface ControlsSettings {
   oars: string;           // вёсла: вывалить/убрать (гребные суда)
   gunports: string;       // пушечные порты: открыть/закрыть (батареи)
   boat: string;           // шлюпка: спустить на воду / поднять на борт
+  deckWalk: string;       // Task 40: прогуляться по палубе (капитан)
   ammo: [string, string, string, string];
 }
 
@@ -189,6 +191,41 @@ export interface GameplaySettings {
   catsInsteadOfCrew: boolean; // ЗАМЕНИТЬ ВСЕХ МАТРОСОВ НА КОТОВ: экипаж на палубе игрока — коты
 }
 
+// ============================================================
+// ОСТРОВА (Task 41): сколько чего генерится в мире — деревья и
+// кусты, деревни, жители, рыбацкие лодки. ГЛОБАЛЬНЫЕ множители
+// + ПЕРЕОПРЕДЕЛЕНИЯ по каждому острову (вкладка «Острова»).
+// Деревья перестраиваются на лету (с общим бюджетом инстансов —
+// иначе ×1000 убивает GPU); деревни/жители/лодки — пересборка
+// (может подлагнуть, постпроизводительности — секунды).
+// ============================================================
+export interface IslandOverrides {
+  treesMul?: number;    // 0.25..1000 — деревья/кусты (undefined = глобально)
+  villagesMul?: number; // 0..3 — деревни (0 — без деревень)
+  folkMul?: number;     // 0..5 — жители деревень
+  boatsMul?: number;    // 0..5 — рыбацкие лодки
+}
+
+export interface IslandsSettings {
+  treesMul: number;       // деревья и кусты (глобально)
+  villagesMul: number;    // деревни (глобально)
+  folkMul: number;        // жители деревень (глобально)
+  boatsMul: number;       // рыбацкие лодки (глобально)
+  /** переопределения по индексу острова (ключ — String(idx)) */
+  perIsland: Record<string, IslandOverrides>;
+}
+
+export const TREE_MUL_STEPS = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 125, 250, 500, 1000] as const;
+export const SMALL_MUL_STEPS = [0, 0.5, 1, 2, 3, 5] as const;
+
+export const MUL_LABELS: Record<string, (v: number) => string> = {
+  trees: v => v === 0.25 ? '×0.25 — редкие кусты'
+    : v === 0.5 ? '×0.5 — редкий лес'
+    : v === 1 ? '×1 — обычный'
+    : v === 1000 ? '×1000 — ДЖУНГЛИ (бюджет ~1,5 млн)'
+    : `×${v}`,
+};
+
 export interface GameSettings {
   graphics: GraphicsSettings;
   controls: ControlsSettings;
@@ -199,6 +236,7 @@ export interface GameSettings {
   physics: PhysicsSettings;   // режим физики + плавучесть (Task 33)
   assets: AssetsSettings;     // текстуры/шейдеры рельефа + модели (Task 37)
   player: PlayerAppearance;   // внешность капитана (Task 39)
+  islands: IslandsSettings;   // мир: деревья/деревни/жители/лодки (Task 41)
 }
 
 /** Физика корабля и плавучесть (Task 33) */
@@ -224,7 +262,7 @@ export const DEFAULT_ASSETS: AssetsSettings = {
   metalness: 0,
   normalStrength: 1,         // нормали PBR-режима в полную силу
   texUrl: '',                // УСТАРЕЛО (v11→v12): теперь texUrls.terrain
-  texUrls: { terrain: '', hull: '', deck: '', sail: '', water: '' },
+  texUrls: { terrain: '', hull: '', deck: '', sail: '', water: '', sand: '', grass: '', dirt: '', rock: '' },
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -246,6 +284,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     oars: 'KeyO',
     gunports: 'KeyP',
     boat: 'KeyB',
+    deckWalk: 'KeyV',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
   },
   audio: { volume: 0.55 },
@@ -261,6 +300,13 @@ export const DEFAULT_SETTINGS: GameSettings = {
     boatCount: 2,        // шлюпки на обоих бортах (настройка)
     simpleControls: false,
     catsInsteadOfCrew: false,   // экипаж — матросы; коты покупаются в порту
+  },
+  islands: {
+    treesMul: 1,      // обычный лес
+    villagesMul: 1,   // штатное число деревень
+    folkMul: 1,       // штатное число жителей
+    boatsMul: 1,      // штатное число рыбацких лодок
+    perIsland: {},    // переопределений нет — все как глобально
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
@@ -323,7 +369,16 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     (terrain/hull/deck/sail/water, каталог в assets/textures.ts);
 //     texUrl (v11) мигрирует в texUrls.terrain. Новый раздел
 //     player — внешность капитана (экран создания персонажа).
-const SCHEMA_VER = 12;
+// v13 (Task 40): режим 'zones' — СВОИ текстуры ЗОН островов
+//     (песок/трава/грязь/скалы: слоты sand/grass/dirt/rock
+//     накладываются по высоте/уклону поверх цвета вершин);
+//     controls.deckWalk — прогулка капитана по палубе (V);
+//     gameplay.vegDensity — плотность леса на островах (×0.25..8).
+// v14 (Task 41): НОВЫЙ раздел islands — деревья (до ×1000),
+//     деревни, жители, рыбацкие лодки: глобальные множители +
+//     переопределения ПО КАЖДОМУ острову (вкладка «Острова»).
+//     gameplay.vegDensity (v13) мигрирует в islands.treesMul.
+const SCHEMA_VER = 14;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -396,6 +451,33 @@ export function loadSettings(): GameSettings {
       if (typeof data.gameplay.simpleControls === 'boolean') s.gameplay.simpleControls = data.gameplay.simpleControls;
       if (typeof data.gameplay.catsInsteadOfCrew === 'boolean') s.gameplay.catsInsteadOfCrew = data.gameplay.catsInsteadOfCrew;
     }
+    // Task 41: ОСТРОВА — деревья/деревни/жители/лодки (глобально +
+    // переопределения по островам). v13-миграция: gameplay.vegDensity → treesMul
+    if (isObj(data.islands)) {
+      const isl = data.islands;
+      if (typeof isl.treesMul === 'number') s.islands.treesMul = Math.min(1000, Math.max(0.25, isl.treesMul));
+      if (typeof isl.villagesMul === 'number') s.islands.villagesMul = Math.min(3, Math.max(0, isl.villagesMul));
+      if (typeof isl.folkMul === 'number') s.islands.folkMul = Math.min(5, Math.max(0, isl.folkMul));
+      if (typeof isl.boatsMul === 'number') s.islands.boatsMul = Math.min(5, Math.max(0, isl.boatsMul));
+      if (isObj(isl.perIsland)) {
+        for (const [key, ov] of Object.entries(isl.perIsland)) {
+          const idx = Number(key);
+          if (!Number.isInteger(idx) || idx < 0 || idx > 200 || !isObj(ov)) continue;
+          const o: IslandOverrides = {};
+          if (typeof ov.treesMul === 'number') o.treesMul = Math.min(1000, Math.max(0.25, ov.treesMul));
+          if (typeof ov.villagesMul === 'number') o.villagesMul = Math.min(3, Math.max(0, ov.villagesMul));
+          if (typeof ov.folkMul === 'number') o.folkMul = Math.min(5, Math.max(0, ov.folkMul));
+          if (typeof ov.boatsMul === 'number') o.boatsMul = Math.min(5, Math.max(0, ov.boatsMul));
+          if (Object.keys(o).length) s.islands.perIsland[String(idx)] = o;
+        }
+      }
+    }
+    // v13→v14: плотность леса жила в gameplay.vegDensity
+    if (typeof (data.gameplay as Record<string, unknown> | undefined)?.vegDensity === 'number'
+      && typeof (data.islands as Record<string, unknown> | undefined)?.treesMul !== 'number') {
+      const vd = (data.gameplay as Record<string, unknown>).vegDensity;
+      if (typeof vd === 'number') s.islands.treesMul = Math.min(1000, Math.max(0.25, vd));
+    }
     if (isObj(data.weather)) {
       const w = data.weather;
       if (typeof w.mode === 'string' && ['clear', 'rain', 'storm', 'fog'].includes(w.mode)) s.weather.mode = w.mode as WeatherMode;
@@ -427,7 +509,8 @@ export function loadSettings(): GameSettings {
     // v10 (Task 37): раздел assets — текстуры/шейдеры рельефа
     if (isObj(data.assets)) {
       const a = data.assets;
-      if (a.islandTextures === 'off' || a.islandTextures === 'grain' || a.islandTextures === 'pbr' || a.islandTextures === 'url') {
+      if (a.islandTextures === 'off' || a.islandTextures === 'grain' || a.islandTextures === 'pbr'
+        || a.islandTextures === 'url' || a.islandTextures === 'zones') {
         s.assets.islandTextures = a.islandTextures;
       }
       if (typeof a.texScale === 'number') s.assets.texScale = Math.min(30, Math.max(3, a.texScale));
@@ -446,9 +529,10 @@ export function loadSettings(): GameSettings {
         if (u === '' || /^(https?:\/\/|data:image\/|\/)/i.test(u)) s.assets.texUrl = u;
       }
       // v12 (Task 39): ссылки на свои текстуры ВСЕХ поверхностей.
+      // v13 (Task 40): + слоты ЗОН островов (sand/grass/dirt/rock).
       // Миграция v11→v12: texUrl → texUrls.terrain (если та пустая)
       if (isObj(a.texUrls)) {
-        for (const id of ['terrain', 'hull', 'deck', 'sail', 'water'] as const) {
+        for (const id of ['terrain', 'hull', 'deck', 'sail', 'water', 'sand', 'grass', 'dirt', 'rock'] as const) {
           if (typeof a.texUrls[id] === 'string') {
             const raw = (a.texUrls[id] as string).trim();
             const cap = /^data:image\//i.test(raw) ? 200000 : 600;
@@ -542,6 +626,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   oars: 'Вёсла: вывалить/убрать',
   gunports: 'Пушечные порты: открыть/закрыть',
   boat: 'Шлюпка: спустить/поднять (две — правого и левого борта; на воде — вёсла/руль)',
+  deckWalk: 'Прогулка по палубе: капитан сходит с мостика (лесенки на квартердек работают)',
   ammo: 'Боеприпасы 1–4',
 };
 

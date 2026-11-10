@@ -6,7 +6,7 @@ import { Water } from './water/Water';
 import { SEA, waterHeightAt, waveEnvelope, windFactor } from './water/waves';
 import { applyBuoyancyConfig, PHYSICS, CONTROLS, BUOYANCY_CONFIG } from './water/buoyancy';
 import { Ship } from './ship/Ship';
-import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, type FlagKind } from './ship/buildShip';
+import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, deckPlan, type FlagKind } from './ship/buildShip';
 import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
@@ -115,7 +115,7 @@ export interface HudState {
   /** шлюпка за кормой: фаза спуска, ход, расстояние до кормы */
   boat: { phase: string; t: number; dist: number; speed: number; row: number } | null;
   /** ВЫСАДКА (Task 36): моряк на берегу — третье лицо/оружие/прицел */
-  land: { active: boolean; weapon: string; weaponLabel: string; aiming: boolean; nearBoat: boolean; canLand: boolean; hint: string } | null;
+  land: { active: boolean; mode: string; weapon: string; weaponLabel: string; aiming: boolean; nearBoat: boolean; nearWheel: boolean; canLand: boolean; hint: string } | null;
 }
 
 // ---------- товары (рынок в порту) ----------
@@ -322,6 +322,7 @@ export class Game {
     this.world = new World({
       visDistance: g.drawDistance,
       textures: this.settings.assets,
+      islands: this.settings.islands,   // Task 41: настройки островов
     });
     // стрим рельефа: тайлы держим с запасом за дальностью видимости
     this.world.terrain.streamDist = g.drawDistance + 2200;
@@ -362,6 +363,7 @@ export class Game {
     const c = this.settings.controls;
     return new Set([c.sailsUp, c.sailsDown, c.steerLeft, c.steerRight, c.anchor,
       c.camera, c.aimPort, c.aimStarboard, c.fire, c.repair, c.map, c.help, c.oars, c.boat,
+      c.deckWalk,
       ...c.ammo, 'Tab', 'Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
   }
 
@@ -531,6 +533,7 @@ export class Game {
         grain: 'зерно (процедурная детализация)',
         pbr: 'PBR (текстуры + нормали + шероховатость)',
         url: s.assets.texUrls.terrain ? 'своя текстура по ссылке' : 'своя текстура (ссылка не задана — зерно)',
+        zones: 'ЗОНЫ: песок/трава/грязь/скалы',
       };
       this.pushMessage(`Рельеф островов: ${modeLabels[s.assets.islandTextures]} · шейдер ${s.assets.terrainShader}`);
       // сводка по своим текстурам (что загрузилось, что нет)
@@ -538,12 +541,35 @@ export class Game {
       const parts: string[] = [];
       const slotNames: Record<string, string> = {
         terrain: 'земля', hull: 'борт', deck: 'палуба', sail: 'парус', water: 'вода',
+        sand: 'песок', grass: 'трава', dirt: 'грязь', rock: 'скалы',
       };
       for (const k of Object.keys(st) as (keyof typeof st)[]) {
         if (st[k].urlLen === 0) continue;
         parts.push(`${slotNames[k]}: ${st[k].state === 'ok' ? 'загружена' : st[k].state === 'error' ? 'ошибка (процедурная)' : 'грузится…'}`);
       }
       if (parts.length) this.pushMessage(`Свои текстуры — ${parts.join(' · ')}`);
+    }
+    // Task 41: НАСТРОЙКИ ОСТРОВОВ — деревья (до ×1000, с бюджетом),
+    // деревни, жители, рыбацкие лодки; глобально + по островам.
+    // Перестройка на лету (лес — мгновенно, деревни/лодки — секунды)
+    if (JSON.stringify(prev.islands) !== JSON.stringify(s.islands)) {
+      const res = this.world.applyIslandConfig(s.islands);
+      if (res.trees) {
+        if (this.settings.graphics.useGLBModels) this.glbParts.enableAll();
+        this.applyWireframe(this.settings.graphics.wireframe);
+      }
+      const info = this.world.islandsInfo();
+      const parts: string[] = [];
+      if (res.trees) {
+        parts.push(`лес ×${s.islands.treesMul}${info.trees.budgetHit ? ' (бюджет)' : ''}: ${info.trees.instances.toLocaleString('ru-RU')} дер.`);
+      }
+      if (res.villages) {
+        parts.push(`деревни ×${s.islands.villagesMul}: ${info.villages.active} (жителей ${info.folk.total})`);
+      }
+      if (res.boats) {
+        parts.push(`лодки ×${s.islands.boatsMul}: ${info.boats.n}`);
+      }
+      if (parts.length) this.pushMessage(`Острова: ${parts.join(' · ')}`);
     }
     // Task 39: ВНЕШНОСТЬ КАПИТАНА — пересобрать фигурку на берегу
     if (JSON.stringify(prev.player) !== JSON.stringify(s.player)) {
@@ -1540,11 +1566,11 @@ export class Game {
     const c = this.settings.controls;
     const bl = this.boatLaunch;
 
-    // === НА БЕРЕГУ (Task 36: высадка): третье лицо, WASD+мышь,
-    //     сабля/пистолет; управление кораблём/шлюпкой отключено ===
+    // === НА БЕРЕГУ / НА ПАЛУБЕ ПЕШКОМ (Task 36/40): третье лицо,
+    //     WASD+мышь, сабля/пистолет; управление кораблём отключено ===
     if (this.lander && this.lander.active) {
       const bl0 = this.boatLaunch;
-      this.lander.nearBoat = !!(bl0 && bl0.phase === 'afloat'
+      this.lander.nearBoat = this.lander.mode === 'island' && !!(bl0 && bl0.phase === 'afloat'
         && Math.hypot(bl0.pos.x - this.lander.pos.x, bl0.pos.z - this.lander.pos.z) < 6);
       this.lander.handleInput({
         isDown: (code) => inp.isDown(code),
@@ -1552,7 +1578,15 @@ export class Game {
         mouseDX: inp.mouseDX, mouseDY: inp.mouseDY, wheel: inp.wheelDelta,
         lmbJust: inp.lmbJust, rmb: inp.rmb,
       });
-      if (inp.pressed(c.aimStarboard) && this.lander.nearBoat) {
+      if (this.lander.mode === 'deck') {
+        // ВЫХОД С ПАЛУБЫ: та же клавиша (V) или E у штурвала
+        if (inp.pressed(c.deckWalk) || (inp.pressed(c.aimStarboard) && this.lander.nearWheel)) {
+          this.lander.exitDeck();
+          this.lander.restoreCamera();
+          this.rig.snap();
+          this.pushMessage('Капитан снова за штурвалом!');
+        }
+      } else if (inp.pressed(c.aimStarboard) && this.lander.nearBoat) {
         this.lander.despawn();
         this.lander.restoreCamera();
         bl0!.resumeFromShore();
@@ -1598,6 +1632,14 @@ export class Game {
       p.rudderTarget = 0;
       inp.endFrame();
       return;
+    }
+
+    // === ПРОГУЛКА ПО ПАЛУБЕ (Task 40): V — капитан сходит с мостика
+    //     и идёт по палубе/квартердеку (рулевой остаётся у штурвала,
+    //     корабль продолжает идти заданным курсом) ===
+    if (inp.pressed(c.deckWalk)) {
+      this.lander!.enterDeck(deckPlan(p.preset), p.visual.group);
+      this.rig.snap();
     }
 
     // паруса / вёсла: W/S — паруса; на гребных судах Alt+W/S — гребля
@@ -1917,24 +1959,27 @@ export class Game {
           speed: +(Math.abs(this.boatLaunch.vel) * 1.944).toFixed(1),
           row: this.boatLaunch.row }
       : null;
-    // ВЫСАДКА: HUD берега — оружие/прицел/подсказки
+    // ВЫСАДКА/ПАЛУБА: HUD — оружие/прицел/подсказки
     if (this.lander?.active) {
       const lh = this.lander.hud();
+      const onDeck = lh.mode === 'deck';
       h.land = {
-        active: true, weapon: lh.weapon, weaponLabel: lh.weaponLabel,
-        aiming: lh.aiming, nearBoat: lh.nearBoat,
+        active: true, mode: lh.mode, weapon: lh.weapon, weaponLabel: lh.weaponLabel,
+        aiming: lh.aiming, nearBoat: lh.nearBoat, nearWheel: lh.nearWheel,
         canLand: false,
-        hint: lh.nearBoat
-          ? 'E — в шлюпку'
-          : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · WASD — идти'
-          : 'ЛКМ — атака · X — убрать оружие · Shift — бег',
+        hint: onDeck
+          ? (lh.nearWheel ? 'E — за штурвал' : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · V — к штурвалу' : 'ЛКМ — атака · X — убрать · V — к штурвалу')
+          : lh.nearBoat
+            ? 'E — в шлюпку'
+            : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · WASD — идти'
+            : 'ЛКМ — атака · X — убрать оружие · Shift — бег',
       };
     } else {
       const bl = this.boatLaunch;
       const canLand = !!(bl && bl.phase === 'afloat' && !bl.frozen && bl.nearShore());
       h.land = {
-        active: false, weapon: 'none', weaponLabel: '', aiming: false,
-        nearBoat: false, canLand,
+        active: false, mode: 'off', weapon: 'none', weaponLabel: '', aiming: false,
+        nearBoat: false, nearWheel: false, canLand,
         hint: canLand ? 'E — высадиться на берег' : '',
       };
     }
@@ -1972,6 +2017,24 @@ export class Game {
   private lastWashedCrew = 0;
   /** последний визуал погоды (облачность/солнце/туман/дождь) */
   private weatherVis = { cloudiness: 0.35, sunDim: 1, fogMul: 1, rainI: 0 };
+  // Task 40: КАПИТАН РАЗДАЁТ УКАЗАНИЯ — фигурка на мостике машет
+  // рукой, реплика идёт в журнал (не чаще раза в 22–38 с, только
+  // в море под ходом, пока капитан не гуляет по палубе)
+  private captainOrderT = 14;
+  private captainOrders = 0;
+  private lastOrder = '';
+  private readonly ORDER_QUOTES = [
+    'Свистать всех наверх!',
+    'Рулевой, держать курс!',
+    'На вахте смотреть в оба!',
+    'Порох держать сухим!',
+    'Такелаж осмотреть после шторма!',
+    'Глаза вострее — острова близко!',
+    'Канониры, к орудиям!',
+    'Полный вперёд, веселей!',
+    'Свежий ветер — паруса в полный!',
+    'Смотри за борт — рифы коварны!',
+  ];
   private updateWeather(dt: number) {
     // полигон: чистое море, ровный слабый ветер — всегда
     const calm = this.proving;
@@ -2274,9 +2337,10 @@ export class Game {
       land: this.lander
         ? (() => {
             const lh = this.lander!.hud();
+            const plan = this.lander!.deckPlan;
             return {
-              active: lh.active, weapon: lh.weapon, aiming: lh.aiming,
-              nearBoat: lh.nearBoat, moving: lh.moving,
+              active: lh.active, mode: lh.mode, weapon: lh.weapon, aiming: lh.aiming,
+              nearBoat: lh.nearBoat, nearWheel: lh.nearWheel, moving: lh.moving,
               x: +this.lander!.pos.x.toFixed(1), z: +this.lander!.pos.z.toFixed(1),
               h: +this.lander!.pos.y.toFixed(2),
               camYaw: +lh.camYaw.toFixed(2),
@@ -2284,9 +2348,29 @@ export class Game {
               // Task 39: СКОЛЬКО гребцов видно в шлюпке (после
               // высадки — 1: место сошедшего игрока пусто)
               boatRowers: this.boatLaunch?.state().rowersVisibleCount ?? 0,
+              // Task 40: прогулка по палубе — локальные координаты,
+              // уровень (квартердек), пули в полёте, сабля (прямая)
+              deck: lh.mode === 'deck'
+                ? {
+                    x: +this.lander!.pos.x.toFixed(2),
+                    z: +this.lander!.pos.z.toFixed(2),
+                    y: +this.lander!.pos.y.toFixed(2),
+                    onQuarter: !!(plan?.hasQuarter && this.lander!.pos.z < plan.qFrontZ),
+                    onStair: !!(plan && this.lander!.pos.z > plan.qFrontZ && this.lander!.pos.z < plan.stairZ0
+                      && Math.abs(Math.abs(this.lander!.pos.x) - plan.stairX) < 0.46),
+                    bullets: lh.bullets,
+                  }
+                : null,
+              bullets: lh.bullets,
+              saber: this.lander!.saberInfo(),
             };
           })()
         : null,
+      // Task 40/41: капитан раздаёт указания (реплики в журнал)
+      captain: { orders: this.captainOrders, last: this.lastOrder },
+      // Task 41: настройки островов — деревья/деревни/жители/лодки
+      islands: this.world.islandsInfo(),
+      zones: this.world.terrain.zoneInfo(),
       // Task 39: СВОИ текстуры по ссылке — состояние всех слотов
       tex: textureUrls.describe(),
       // Task 39: фигурка капитана (попугай/повязка/детали) — E2E
@@ -2296,10 +2380,12 @@ export class Game {
       terrainTex: this.world.terrain.texturesOn(),
       villages: {
         total: VILLAGES.length,
+        // Task 41: хижины/тропы — только АКТИВНЫЕ деревни (пул шире)
+        active: VILLAGES.filter(v => v.active !== false).length,
         folk: this.world.villageFolk.reduce((s, f) => s + f.shown, 0),
         folkDead: this.world.villageFolk.reduce((s, f) => s + f.dead, 0),
-        huts: VILLAGES.reduce((s, v) => s + v.huts, 0),
-        trails: VILLAGES.reduce((s, v) => s + v.trail.length, 0),
+        huts: VILLAGES.reduce((s, v) => s + (v.active === false ? 0 : v.huts), 0),
+        trails: VILLAGES.reduce((s, v) => s + (v.active === false ? 0 : v.trail.length), 0),
       },
       coastFleet: {
         boats: this.world.coastFleet.boats.length,
@@ -2615,6 +2701,19 @@ export class Game {
       if (this.msgTtl[i] <= 0) { this.messages.splice(i, 1); this.msgTtl.splice(i, 1); }
     }
 
+    // Task 40: КАПИТАН РАЗДАЁТ УКАЗАНИЯ (машик рукой + реплика)
+    this.captainOrderT -= dt;
+    if (this.captainOrderT <= 0) {
+      this.captainOrderT = 22 + Math.random() * 16;
+      const crew3d = this.player.crew3d;
+      if (this.started && !this.dead && !this.uiOpen && !this.lander?.active
+        && !this.dockedPort && crew3d && crew3d.waveCaptain()) {
+        this.lastOrder = this.ORDER_QUOTES[Math.floor(Math.random() * this.ORDER_QUOTES.length)];
+        this.captainOrders++;
+        this.pushMessage(`${crew3d.isCats ? 'Капитан (кот)' : 'Капитан'}: «${this.lastOrder}»`);
+      }
+    }
+
     this.updateHud();
     if (!this.debugNoRender) this.renderer.render(this.scene, this.rig.camera);
     this.input.endFrame();
@@ -2634,8 +2733,12 @@ export class Game {
       if (fig.hasParrot) parrots++;
       if (fig.hasPeg) pegs++;
       if (fig.hasHook) hooks++;
-      verts += fig.verts ?? 0;
-      maxVerts = Math.max(maxVerts, fig.verts ?? 0);
+      // Task 40: руки — ОТДЕЛЬНЫЕ меши: считаем вершины тела+рук
+      let v = fig.verts ?? 0;
+      if (fig.armL) v += (fig.armL.geometry.attributes.position as THREE.BufferAttribute).count;
+      if (fig.armR) v += (fig.armR.geometry.attributes.position as THREE.BufferAttribute).count;
+      verts += v;
+      maxVerts = Math.max(maxVerts, v);
       // ноги: бедро+КОЛЕНО+голень+ботинок — у новой модели ≥ 4 боксов
       if (fig.legL) {
         legVerts += (fig.legL.geometry.attributes.position as THREE.BufferAttribute).count;
@@ -2650,6 +2753,38 @@ export class Game {
       n: count, parrots, parrotPct: +(parrots / count * 100).toFixed(1),
       pegs, hooks, avgVerts: Math.round(verts / count), maxVerts,
       avgLegVerts: legN ? Math.round(legVerts / legN) : 0,
+    };
+  }
+
+  /** Task 40 E2E: форсировать «указание капитана» (мах рукой + реплика
+   *  в журнал) — не ждать таймера 22–38 с */
+  debugCaptainOrder(): boolean {
+    const c = this.player.crew3d;
+    if (!c || !c.waveCaptain()) return false;
+    this.lastOrder = this.ORDER_QUOTES[Math.floor(Math.random() * this.ORDER_QUOTES.length)];
+    this.captainOrders++;
+    this.pushMessage(`Капитан: «${this.lastOrder}»`);
+    return true;
+  }
+
+  /** Task 40 E2E: план палубы текущего корабля (высоты/трапы/границы) */
+  debugDeckPlan() {
+    const plan = deckPlan(this.player.preset);
+    return {
+      length: +plan.length.toFixed(1),
+      hasQuarter: plan.hasQuarter,
+      qHeight: +plan.qHeight.toFixed(2),
+      qFrontZ: +plan.qFrontZ.toFixed(2),
+      stairX: +plan.stairX.toFixed(2),
+      stairZ0: +plan.stairZ0.toFixed(2),
+      wheelZ: +plan.wheelZ.toFixed(2),
+      // вертикальный профиль через трап: главная палуба → ступени → настил
+      profile: Array.from({ length: 7 }, (_, i) => {
+        const z = plan.stairZ0 + (plan.qFrontZ - plan.stairZ0) * (i / 6);
+        return +plan.surfaceY(plan.stairX, z).toFixed(2);
+      }),
+      offStairY: +plan.surfaceY(plan.stairX + 1.2, (plan.stairZ0 + plan.qFrontZ) / 2).toFixed(2),
+      obstacles: plan.obstacles.length,
     };
   }
 
@@ -2711,6 +2846,12 @@ export class Game {
   respawn() {
     if (this.proving) this.exitProving();
     this.boatLaunch?.abort();
+    // Task 40: капитан был на палубе — вернуть за штурвал
+    if (this.lander?.mode === 'deck') {
+      this.lander.exitDeck();
+      this.lander.restoreCamera();
+      this.rig.snap();
+    }
     const p = this.player;
     p.hullHP = p.hullMax;
     p.sailHP = p.sailMax;

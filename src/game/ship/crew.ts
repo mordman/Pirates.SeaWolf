@@ -59,6 +59,12 @@ export interface CrewFigure {
   role: CrewRole;
   legL?: THREE.Mesh;          // у ходоков и «работяг» (анимация шага)
   legR?: THREE.Mesh;
+  /** Task 40: руки отдельными мешами (пивот — плечо) — махи при
+   *  ходьбе, поднятая рука капитана «раздавать указания» */
+  armL?: THREE.Mesh;
+  armR?: THREE.Mesh;
+  /** Task 40: >0 — фигура МАШЕТ рукой (сек до конца анимации) */
+  waveT?: number;
   seed: number;
   // ходьба: путь туда-обратно по палубе
   walkA?: number; walkB?: number; // z-границы пути
@@ -260,12 +266,19 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   // ШЕЯ (голова больше не «висит» над рубахой)
   bake(t, new THREE.CylinderGeometry(0.05, 0.06, 0.06, 6), traits.skin, 0, headY - headR - 0.015, 0);
 
-  // --- руки: ПЛЕЧО → ЛОКОТЬ → КИСТЬ (Task 39) ---
+  // --- руки: ПЛЕЧО → ЛОКОТЬ → КИСТЬ (Task 39; Task 40: у ПОДВИЖНЫХ
+  //     фигур руки — ОТДЕЛЬНЫЕ меши с пивотом в плече — махи при
+  //     ходьбе и поднятая рука капитана; статичные роли (рулевой
+  //     с руками на штурвале, сидячие гребцы) — запечены в тело) ---
   const armLen = 0.5;
   const upA = armLen * 0.52;   // плечо→локоть
   const foA = armLen * 0.5;    // локоть→запястье
   const shoulderY = hipY + torsoH - 0.05;
-  for (const side of [-1, 1] as const) {
+  let armL: THREE.Mesh | undefined;
+  let armR: THREE.Mesh | undefined;
+  // запечь руку в ОБЩИЙ меш тела (абсолютные координаты) — рулевой/
+  // гребцы/статика; в точности прежняя геометрия
+  const bakeArmInto = (target: { pos: number[]; col: number[] }, side: -1 | 1) => {
     const isHook = traits.hook === side;
     const sx = side * (torsoW / 2 + 0.05);
     const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
@@ -275,36 +288,73 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       const S = new THREE.Vector3(sx * 0.8, shoulderY - 0.03, 0.08);
       const E = new THREE.Vector3(sx * 0.92, shoulderY - 0.13, 0.24);
       const W = new THREE.Vector3(sx * 1.0, shoulderY - 0.07, 0.44);
-      segBox(t, 0.1, S, E, sleeve, 0.115);
+      segBox(target, 0.1, S, E, sleeve, 0.115);
       if (isHook) {
-        segBox(t, 0.08, E, E.clone().lerp(W, 0.4), WOOD, 0.09);
+        segBox(target, 0.08, E, E.clone().lerp(W, 0.4), WOOD, 0.09);
       } else {
-        segBox(t, 0.088, E, W, sleeve, 0.098);
+        segBox(target, 0.088, E, W, sleeve, 0.098);
         const dH = W.clone().sub(E).normalize();
         const H = W.clone().addScaledVector(dH, 0.05);
-        segBox(t, 0.082, W, H, traits.skin, 0.09);
+        segBox(target, 0.082, W, H, traits.skin, 0.09);
       }
-      continue;
+      return;
     }
     // висящая рука с СОГНУТЫМ ЛОКТЕМ: локоть в сторону, кисть вперёд
     const S = new THREE.Vector3(sx, shoulderY, 0.01);
     const E = new THREE.Vector3(sx * 1.16, shoulderY - upA, 0.05);
     const W = new THREE.Vector3(sx * 1.26, shoulderY - upA - foA * 0.68, 0.05 + foA * 0.64);
-    segBox(t, 0.1, S, E, sleeve, 0.115);                     // плечо
-    bake(t, new THREE.BoxGeometry(0.105, 0.065, 0.112), sleeve, E.x, E.y, E.z); // локоть
+    segBox(target, 0.1, S, E, sleeve, 0.115);                     // плечо
+    bake(target, new THREE.BoxGeometry(0.105, 0.065, 0.112), sleeve, E.x, E.y, E.z); // локоть
     if (isHook) {
-      // деревянная культа + крюк (препдлечье короткое)
+      // деревянная культа + крюк (предплечье короткое)
       const d = W.clone().sub(E).normalize();
       const st = E.clone().addScaledVector(d, foA * 0.45);
-      segBox(t, 0.08, E, st, WOOD, 0.09);
-      bake(t, new THREE.TorusGeometry(0.06, 0.018, 5, 10, Math.PI * 1.2), METAL,
+      segBox(target, 0.08, E, st, WOOD, 0.09);
+      bake(target, new THREE.TorusGeometry(0.06, 0.018, 5, 10, Math.PI * 1.2), METAL,
         E.x + d.x * foA * 0.62, E.y + d.y * foA * 0.62, E.z + d.z * foA * 0.62,
         new THREE.Euler(0, 0, side * 1.57));
     } else {
-      segBox(t, 0.088, E, W, sleeve, 0.098);                 // предплечье
+      segBox(target, 0.088, E, W, sleeve, 0.098);                 // предплечье
       const dH = W.clone().sub(E).normalize();
       const H = W.clone().addScaledVector(dH, 0.055);
-      segBox(t, 0.082, W, H, traits.skin, 0.09);             // КИСТЬ
+      segBox(target, 0.082, W, H, traits.skin, 0.09);             // КИСТЬ
+    }
+  };
+  // отдельный меш руки: геометрия относительно ПЛЕЧА (пивот),
+  // при rotation.x=0 висит вдоль тела — как запечённая
+  const mkArmMesh = (side: -1 | 1): THREE.Mesh => {
+    const at: { pos: number[]; col: number[] } = { pos: [], col: [] };
+    const isHook = traits.hook === side;
+    const sx = side * (torsoW / 2 + 0.05);
+    const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
+    const E = new THREE.Vector3(sx * 0.16, -upA, 0.04);
+    const W = new THREE.Vector3(sx * 0.26, -upA - foA * 0.68, 0.04 + foA * 0.64);
+    segBox(at, 0.1, new THREE.Vector3(0, 0, 0), E, sleeve, 0.115);  // плечо
+    bake(at, new THREE.BoxGeometry(0.105, 0.065, 0.112), sleeve, E.x, E.y, E.z); // локоть
+    if (isHook) {
+      const d = W.clone().sub(E).normalize();
+      const st = E.clone().addScaledVector(d, foA * 0.45);
+      segBox(at, 0.08, E, st, WOOD, 0.09);
+      bake(at, new THREE.TorusGeometry(0.06, 0.018, 5, 10, Math.PI * 1.2), METAL,
+        E.x + d.x * foA * 0.62, E.y + d.y * foA * 0.62, E.z + d.z * foA * 0.62,
+        new THREE.Euler(0, 0, side * 1.57));
+    } else {
+      segBox(at, 0.088, E, W, sleeve, 0.098);                     // предплечье
+      const dH = W.clone().sub(E).normalize();
+      const H = W.clone().addScaledVector(dH, 0.055);
+      segBox(at, 0.082, W, H, traits.skin, 0.09);                 // КИСТЬ
+    }
+    const m = new THREE.Mesh(bakeGeom(at), CREW_MAT);
+    m.position.set(sx, shoulderY, 0.01);
+    return m;
+  };
+  for (const side of [-1, 1] as const) {
+    if (movable && role !== 'helmsman') {
+      const m = mkArmMesh(side);
+      if (side < 0) armL = m; else armR = m;
+      group.add(m);
+    } else {
+      bakeArmInto(t, side);
     }
   }
 
@@ -424,7 +474,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       leg.position.y = off;
     }
     return {
-      group, role, legL, legR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, baseScaleY: 1,
+      group, role, legL, legR, armL, armR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, baseScaleY: 1,
       walkSpeed: 0.55 + rnd() * 0.5, phase: rnd() * 6.28,
       dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
       skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
@@ -478,6 +528,25 @@ export interface CrewShipState {
   stroke?: { phase: number; active: number; dir: number };
 }
 
+/** Task 40: МАХИ РУКАМИ при ходьбе — противофаза ногам */
+function swingArms(f: CrewFigure, step: number) {
+  if (f.armL && f.armR) {
+    f.armL.rotation.x = -Math.sin(step) * 0.5;
+    f.armR.rotation.x = Math.sin(step) * 0.5;
+    f.armL.rotation.z = 0.05;
+    f.armR.rotation.z = -0.05;
+  }
+}
+/** руки в покое (пауза/idle) — плавно опускаются */
+function swingArmsIdle(f: CrewFigure) {
+  if (f.armL && f.armR) {
+    f.armL.rotation.x *= 0.8;
+    f.armR.rotation.x *= 0.8;
+    f.armL.rotation.z = 0.05;
+    f.armR.rotation.z = -0.05;
+  }
+}
+
 export interface CrewVisual {
   group: THREE.Group;
   total: number;
@@ -487,6 +556,9 @@ export interface CrewVisual {
   isCats?: boolean;
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
+  /** Task 40: капитан РАЗДАЁТ УКАЗАНИЯ — машет рукой (2.2 с);
+   *  false — капитана на палубе нет (погиб/смыт) */
+  waveCaptain(): boolean;
   /** Поражение экипажа вдоль пути снаряда (a→b в ЛОКАЛЬНЫХ координатах
    *  корабля). grape — фигуры падают; ball — разрывает на куски.
    *  Возвращает число убитых (1 фигура = 1 человек). */
@@ -753,6 +825,13 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
   const vis: CrewVisual = {
     group, total: figures.length, shown: figures.length, dead: 0, isCats: allCats,
     setVisible(v: boolean) { group.visible = v; },
+    waveCaptain() {
+      // Task 40: найти ЖИВОГО капитана и поднять руку (2.2 с)
+      const cap = figures.find(f => f.role === 'captain' && !f.dead && f.group.visible);
+      if (!cap) return false;
+      cap.waveT = 2.2;
+      return true;
+    },
     killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
       // ТОЧНОЕ поражение: путь снаряда (a→b, локальные координаты корабля)
       // против вертикальной капсулы КАЖДОЙ фигуры (ноги → голова).
@@ -897,6 +976,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
             if (f.legL && f.legR) {
               f.legL.rotation.x *= 0.8; f.legR.rotation.x *= 0.8;
             }
+            swingArmsIdle(f);
           } else {
             f.walkT += (f.walkDir * f.walkSpeed * dt) / span;
             if (f.walkT > 1) { f.walkT = 1; f.walkDir = -1; f.walkPause = 0.7 + f.phase * 2.2; }
@@ -912,6 +992,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
               f.legL.rotation.x = Math.sin(step) * 0.55;
               f.legR.rotation.x = -Math.sin(step) * 0.55;
             }
+            swingArms(f, step);
             f.group.position.y += Math.abs(Math.sin(step)) * 0.03;
           }
         } else if (f.work) {
@@ -923,6 +1004,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
               f.legL.rotation.x = Math.sin(step) * 0.55;
               f.legR.rotation.x = -Math.sin(step) * 0.55;
             }
+            swingArms(f, step);
             return step;
           };
           if (w.kind === 'circle' && w.cx !== undefined && w.cz !== undefined && w.r !== undefined) {
@@ -982,6 +1064,20 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
           if (f.role === 'helmsman') {
             // рулевой слегка налегает на штурвал по курсу
             f.group.rotation.x = 0.06 + Math.sin(time * 0.9 + f.phase) * 0.02;
+          }
+          swingArmsIdle(f);
+        }
+        // Task 40: КАПИТАН РАЗДАЁТ УКАЗАНИЯ — рука поднята, машет;
+        // перекрывает позу роли (маррут/поворот продолжаются)
+        if ((f.waveT ?? 0) > 0) {
+          f.waveT = Math.max(0, (f.waveT ?? 0) - dt);
+          if (f.armR || f.armL) {
+            const arm = (f.armR ?? f.armL)!;
+            arm.rotation.z = 2.55 + Math.sin(time * 9 + f.phase) * 0.3;
+            arm.rotation.x = 0;
+          } else {
+            // кот-капитан: воодушевлённо прыгает на месте
+            f.group.position.y += Math.abs(Math.sin(time * 9)) * 0.08;
           }
         }
       }

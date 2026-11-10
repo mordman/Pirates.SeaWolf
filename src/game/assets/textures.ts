@@ -27,7 +27,8 @@ import * as THREE from 'three';
 // ============================================================
 
 /** Идентификаторы слотов (ключи в настройках assets.texUrls) */
-export type TextureSlotId = 'terrain' | 'hull' | 'deck' | 'sail' | 'water';
+export type TextureSlotId = 'terrain' | 'hull' | 'deck' | 'sail' | 'water'
+  | 'sand' | 'grass' | 'dirt' | 'rock';
 
 /** Описание слота текстуры — каталог для UI/загрузчика/тестов */
 export interface TextureSlotDef {
@@ -46,6 +47,10 @@ export interface TextureSlotDef {
   maxLink: number;
   /** Максимум символов для data:URL */
   maxDataUrl: number;
+  /** Task 40: группа «рельеф» — поля показываются в разделе
+   *  «Текстуры островов» (режим url — слот terrain, режим zones —
+   *  слоты зон), а НЕ в общем списке «Свои текстуры» */
+  group?: 'terrain';
 }
 
 /** КАТАЛОГ ВСЕХ СЛОТОВ — единственное место перечисления */
@@ -57,6 +62,7 @@ export const TEXTURE_SLOTS: TextureSlotDef[] = [
     placeholder: 'https://…/sand_ground.jpg',
     repeat: [1, 1],          // масштаб — настройка «Масштаб текстуры» (texScale)
     maxLink: 600, maxDataUrl: 200000,
+    group: 'terrain',
   },
   {
     id: 'hull',
@@ -89,6 +95,46 @@ export const TEXTURE_SLOTS: TextureSlotDef[] = [
     placeholder: 'https://…/water.png',
     repeat: [1, 1],          // не используется: масштаб в шейдере (мир, 80 м/плитка)
     maxLink: 600, maxDataUrl: 200000,
+  },
+  // Task 40: ЗОНЫ ОСТРОВОВ — свои текстуры песка/травы/грязи/скал
+  // накладываются по высоте и уклону рельефа (режим «Зоны»);
+  // пока ссылка не задана/грузится/ошибка — зона остаётся с цветом
+  // вершин (ничего не чернеет)
+  {
+    id: 'sand',
+    label: 'Песок (пляжи)',
+    hint: 'полоса пляжа у воды и морское дно у кромки; включается режимом «Зоны» выше',
+    placeholder: 'https://…/sand.jpg',
+    repeat: [1, 1],
+    maxLink: 600, maxDataUrl: 200000,
+    group: 'terrain',
+  },
+  {
+    id: 'grass',
+    label: 'Трава (луга)',
+    hint: 'зелёные склоны выше пляжа (зона по умолчанию)',
+    placeholder: 'https://…/grass.jpg',
+    repeat: [1, 1],
+    maxLink: 600, maxDataUrl: 200000,
+    group: 'terrain',
+  },
+  {
+    id: 'dirt',
+    label: 'Земля / грязь (тропы)',
+    hint: 'грязевые проплешины на лугах и склонах',
+    placeholder: 'https://…/dirt.jpg',
+    repeat: [1, 1],
+    maxLink: 600, maxDataUrl: 200000,
+    group: 'terrain',
+  },
+  {
+    id: 'rock',
+    label: 'Скалы / камни',
+    hint: 'крутые склоны и обрывы',
+    placeholder: 'https://…/rock.jpg',
+    repeat: [1, 1],
+    maxLink: 600, maxDataUrl: 200000,
+    group: 'terrain',
   },
 ];
 

@@ -518,6 +518,8 @@ export function buildCoastFleet(
   islands: IslandDef[],
   heightAt: (x: number, z: number) => number,
   seed = 20261102,
+  /** Task 41: множитель числа лодок по индексу острова (настройки) */
+  opts?: { mulAt?: (islandIdx: number) => number },
 ): CoastFleet {
   const group = new THREE.Group();
   const boats: CoastBoat[] = [];
@@ -525,9 +527,13 @@ export function buildCoastFleet(
   const rng = new RNG(seed);
   let fishermen = 0;
 
-  for (const isl of islands) {
-    // плотность: от 3 лодок у мелкой до 14 у большой (Task 36)
-    const n = Math.max(3, Math.min(14, Math.round(isl.r / 240)));
+  for (let islIdx = 0; islIdx < islands.length; islIdx++) {
+    const isl = islands[islIdx];
+    // Task 41: число лодок — из настроек острова (mulAt);
+    // базовая плотность: от 3 у мелкой до 14 у большой (Task 36)
+    const mul = Math.max(0, opts?.mulAt?.(islIdx) ?? 1);
+    const n = Math.round(Math.max(3, Math.min(14, Math.round(isl.r / 240))) * mul);
+    if (n <= 0) continue;
     // кромка берега в направлении ang (двоичный поиск): берега
     // трёх типов и сложная форма — фиксированные доли радиуса
     // промахивались (то песок, то глубина)

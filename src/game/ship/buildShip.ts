@@ -775,6 +775,108 @@ export function wheelZFor(P: ShipPreset): number {
   return P.masts === 3 ? -P.length * 0.40 : THREE.MathUtils.lerp(-P.length / 2, P.length / 2, 0.2);
 }
 
+// ============================================================
+// Task 40: ПЛАН ПАЛУБЫ — прогулка капитана по кораблю (lander,
+// режим deck). Единая геометрия поверхностей: главная палуба,
+// настил КВАРТЕРДЕКА и ТРАПЫ-лесенки между ними (плавный подъём),
+// коллайдеры мачт/шпиля/нактоуза, границы у транца и бака.
+// Локальные координаты корабля: +Z — нос, +X — порт.
+// ============================================================
+export interface DeckObstacle { x: number; z: number; r: number; }
+
+export interface DeckPlan {
+  length: number;
+  hasQuarter: boolean;    // есть квартердек
+  qHeight: number;        // его подъём над главной палубой, м
+  qFrontZ: number;        // передняя кромка настила (стена с проёмами)
+  qSternZ: number;        // транец квартердека
+  stairX: number;         // x-позиции трапов (±, ступени 0.86 шириной)
+  stairZ0: number;        // низ трапа (главная палуба; z больше)
+  stairZ1: number;        // верх трапа (у кромки квартердека)
+  bowLimitZ: number;      // дальше в нос не пройти (стенка бака/сужение)
+  sternLimitZ: number;    // дальше в корму не пройти
+  wheelZ: number;         // штурвал (точка выхода «к рулевому»)
+  deckYAt(z: number): number;      // высота ГЛАВНОЙ палубы
+  floorY(z: number): number;       // высота настила квартердека
+  surfaceY(x: number, z: number): number; // палуба/трап/настил в точке
+  onStair(x: number, z: number): boolean; // точка на полосе трапа
+  halfWidthAt(z: number): number;  // полуширина корпуса на высоте палубы
+  obstacles: DeckObstacle[];       // мачты, шпиль, нактоуз
+}
+
+export function deckPlan(P: ShipPreset): DeckPlan {
+  const L = P.length;
+  const q = P.quarter ?? 0;
+  const frontZ = quarterFrontZ(P);
+  const sternZ = -L / 2 + Math.max(0.35, L * 0.012);
+  const nSteps = Math.max(3, Math.ceil(q / 0.26));
+  const runLen = nSteps * 0.34;
+  const deckYAt = (z: number) => {
+    const t = clamp2((z + L / 2) / L, 0, 1);
+    return hullProfile(t, P).bulwark - 1.0;
+  };
+  const ttStair = clamp2((frontZ + L / 2) / L, 0, 1);
+  const stairX = q > 0
+    ? Math.max(0.55, hullHalfWidthAt(P, ttStair, deckYAt(frontZ)) - 0.78)
+    : 0;
+  const plan: DeckPlan = {
+    length: L,
+    hasQuarter: q > 0,
+    qHeight: q,
+    qFrontZ: frontZ,
+    qSternZ: sternZ,
+    stairX,
+    stairZ0: frontZ + runLen,
+    stairZ1: frontZ,
+    // нос: у когга — стенка бака (лесенок на бак нет), у галеона —
+    // гальюн, у остальных — сужение к штевню + фальшборт
+    bowLimitZ: P.castleH ? THREE.MathUtils.lerp(-L / 2, L / 2, 0.74) - 0.5
+      : P.beakhead ? L * 0.36 : L * 0.44,
+    // корма: квартердек (транец), ахтеркастель когга (стенка), иначе корма
+    sternLimitZ: q > 0 ? sternZ + 0.45
+      : P.castleH ? THREE.MathUtils.lerp(-L / 2, L / 2, 0.24) + 0.5
+      : -L * 0.40,
+    wheelZ: wheelZFor(P),
+    deckYAt,
+    floorY: (z) => deckYAt(z) + q,
+    onStair(x, z) {
+      if (q <= 0) return false;
+      if (z < frontZ || z > frontZ + runLen) return false;
+      return Math.abs(Math.abs(x) - stairX) <= 0.46;
+    },
+    surfaceY(x, z) {
+      if (q > 0 && z <= frontZ && z >= sternZ) return deckYAt(z) + q; // настил
+      if (q > 0 && z > frontZ && z <= frontZ + runLen) {
+        for (const side of [-1, 1] as const) {
+          if (Math.abs(x - side * stairX) <= 0.46) {
+            // плавный подъём трапа: 0 у нижней ступени → 1 у кромки
+            const f = 1 - (z - frontZ) / runLen;
+            return deckYAt(z) + q * Math.min(1, Math.max(0, f));
+          }
+        }
+      }
+      return deckYAt(z); // главная палуба
+    },
+    halfWidthAt: (z) => {
+      const t = clamp2((z + L / 2) / L, 0, 1);
+      return hullHalfWidthAt(P, t, deckYAt(z));
+    },
+    obstacles: [],
+  };
+  // мачты проходят палубу насквозь (включая бизань на квартердеке)
+  const mastZs = P.masts === 2 ? [L * 0.16, -L * 0.10] : [L * 0.18, -L * 0.05, -L * 0.28];
+  for (const mz of mastZs) plan.obstacles.push({ x: 0, z: mz, r: 0.62 });
+  // шпиль (перед квартердеком / на палубе)
+  const capstanZ = q > 0 ? frontZ + Math.max(1.2, L * 0.05) : -L * 0.16;
+  plan.obstacles.push({ x: 0, z: capstanZ, r: 0.62 });
+  // нактоуз с компасом (только на квартердеке)
+  if (q > 0) {
+    const binnacleZ = frontZ - THREE.MathUtils.clamp(L * 0.02, 0.7, 1.2);
+    plan.obstacles.push({ x: 0, z: binnacleZ, r: 0.44 });
+  }
+  return plan;
+}
+
 function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
   const S = 26, R = 8;
   const L = P.length;

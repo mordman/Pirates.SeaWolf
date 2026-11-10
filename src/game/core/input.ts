@@ -35,16 +35,29 @@ export class InputManager {
       if (this.preventCodes.has(code)) ev.preventDefault();
     });
     bind(window, 'keyup', (e) => this.keys.delete((e as KeyboardEvent).code));
+    // Task 40 ФИКС «не стреляет при прицеливании»: pointerdown по
+    // спецификации Pointer Events срабатывает ТОЛЬКО при переходе
+    // из «нет кнопок» в «есть кнопки» — нажатие ЛКМ при УЖЕ
+    // зажатом ПКМ (прицел пистолета) не даёт события, выстрел был
+    // невозможен. mousedown/mouseup срабатывают на КАЖДУЮ кнопку —
+    // дублируем обработку (boolean-флаги идемпотентны; synthetic
+    // pointerdown из E2E продолжает работать).
+    bind(window, 'mousedown', (e) => {
+      const ev = e as MouseEvent;
+      this.mouseX = ev.clientX; this.mouseY = ev.clientY;
+      if (ev.button === 0) { this.lmb = true; this.lmbJust = true; }
+      if (ev.button === 2) { this.rmb = true; this.rmbJust = true; }
+    });
+    bind(window, 'mouseup', (e) => {
+      const ev = e as MouseEvent;
+      if (ev.button === 0) this.lmb = false;
+      if (ev.button === 2) this.rmb = false;
+    });
     bind(el, 'pointerdown', (e) => {
       const ev = e as PointerEvent;
       this.mouseX = ev.clientX; this.mouseY = ev.clientY;
       if (ev.button === 0) { this.lmb = true; this.lmbJust = true; }
       if (ev.button === 2) { this.rmb = true; this.rmbJust = true; }
-    });
-    bind(window, 'pointerup', (e) => {
-      const ev = e as PointerEvent;
-      if (ev.button === 0) this.lmb = false;
-      if (ev.button === 2) this.rmb = false;
     });
     bind(window, 'pointermove', (e) => {
       const ev = e as PointerEvent;

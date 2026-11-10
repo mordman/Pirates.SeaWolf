@@ -1,24 +1,34 @@
 import * as THREE from 'three';
-import { buildFigure, rollTraits, mulberry32, type CrewFigure } from '../ship/crew';
+import { buildFigure, type CrewFigure } from '../ship/crew';
 import type { Particles } from '../fx/particles';
 import { heightAt, type World } from '../world/world';
 import type { PlayerAppearance } from '../core/settings';
 import { DEFAULT_APPEARANCE } from '../core/settings';
 import { appearanceToTraits } from './appearance';
+import type { DeckPlan } from '../ship/buildShip';
 
 // ============================================================
-// ВЫСАДКА НА ОСТРОВ (Task 36): моряк сходит с шлюпки на берег.
-// ВИД СЗАДИ (третье лицо): камера за спиной, вращение мышью,
-// зум колесом; WASD — движение ОТНОСИТЕЛЬНО КАМЕРЫ (как в
-// шутерах), Shift — бег. Персонаж идёт по рельефу (heightAt),
-// не заходит глубже полуметра воды, огибает стволы (коллайдеры
-// world.collideLand — густые джунгли НЕПРОХОДИМЫ).
-// ОРУЖИЕ: 1 — САБЛЯ (рубит кусты и жителей), 2 — ПИСТОЛЕТ
-// (ЛКМ выстрел, ПКМ — ПРИЦЕЛ С ВИДОМ ОТ ПРИЦЕЛА: камера к плечу,
-// узкий FOV, перекрестие на HUD), X — убрать оружие.
+// КАПИТАН ПЕШКОМ (Task 36/40). ДВА мира:
+//  • 'island' — ВЫСАДКА НА БЕРЕГ: третье лицо, камера за спиной,
+//    WASD относительно камеры, Shift — бег, сабля/пистолет;
+//    персонаж идёт по рельефу (heightAt), огибает стволы.
+//  • 'deck' — ПРОГУЛКА ПО ПАЛУБЕ СВОЕГО КОРАБЛЯ (Task 40): те же
+//    органы управления, но координаты ЛОКАЛЬНЫЕ корабля (фигурка
+//    прикреплена к визуалу судна и качается вместе с ним);
+//    высоту даёт DeckPlan: главная палуба → ТРАПЫ-лесенки →
+//    настил КВАРТЕРДЕКА, у мачт/шпиля/нактоуза — коллайдеры,
+//    у бортов — фальшборт; сквозь переднюю стену квартердека
+//    можно пройти ТОЛЬКО по трапам (в них проёмы).
+// ОРУЖИЕ: 1 — САБЛЯ (Task 40: ПРЯМАЯ, ровный сужающийся клинок),
+// 2 — ПИСТОЛЕТ — стреляет ТОЛЬКО НА ПРИЦЕЛЕ (ПКМ): вид от прицела,
+// узкий FOV, перекрестие; выстрел — ВИДИМАЯ ПУЛЯ в полёте (свинцовый
+// шарик по лучу камеры + дымный след) и ОБЛАКО ДЫМА у дула.
+// X — убрать оружие. Руки фигурки МАШАТ при ходьбе; в покое
+// капитан периодически поднимает руку — «раздаёт указания».
 // ============================================================
 
 export type LanderWeapon = 'none' | 'saber' | 'pistol';
+export type LanderMode = 'off' | 'island' | 'deck';
 
 export interface LanderAudio {
   shot: () => void;
@@ -40,30 +50,54 @@ export interface LanderDeps {
 
 export interface LanderHud {
   active: boolean;
+  mode: LanderMode;
   weapon: LanderWeapon;
   weaponLabel: string;
   aiming: boolean;
   nearBoat: boolean;
+  nearWheel: boolean;
   moving: boolean;
   camYaw: number;
+  bullets: number;
 }
 
 const WALK = 3.6;
 const RUN = 6.4;
+const WALK_DECK = 2.7;
+const RUN_DECK = 5.0;
 const WADE_MUL = 0.45;
 const MAX_DEPTH = -0.55;
 const SLOPE_MAX = 1.9;
 const CAM_DIST = 5.4;
 const CAM_AIM_DIST = 1.85;
 const AIM_FOV = 40;
+const BULLET_SPEED = 95;    // м/с — свинцовый шарик из кремнёвого пистолета
+const BULLET_LIFE = 1.1;    // сек (~100 м полёта)
+
+interface Bullet {
+  mesh: THREE.Mesh;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  life: number;
+  trailT: number;
+}
 
 export class Lander {
   group = new THREE.Group();
-  active = false;
+  mode: LanderMode = 'off';
   weapon: LanderWeapon = 'none';
   aiming = false;
   nearBoat = false;
+  nearWheel = false;
 
+  /** Task 40: план палубы + носитель (визуал корабля) для режима deck */
+  deckPlan: DeckPlan | null = null;
+  deckHost: THREE.Group | null = null;
+  /** геометрия оружия — открыта для E2E-проб (прямая сабля) */
+  saberG: THREE.Group | null = null;
+  pistolG: THREE.Group | null = null;
+
+  get active(): boolean { return this.mode !== 'off'; }
   get pos(): THREE.Vector3 { return this.group.position; }
   yaw = 0;
   camYaw = Math.PI;
@@ -73,20 +107,28 @@ export class Lander {
   private fovSm = 55;
 
   private fig: CrewFigure | null = null;
-  private saberG: THREE.Group | null = null;
-  private pistolG: THREE.Group | null = null;
   private walkPhase = 0;
   private moving = false;
   private swingT = -1;
   private shotCd = 0;
   private recoil = 0;
   private stepDustCd = 0;
+  /** в покое: таймер до следующего «указания» рукой */
+  private idleWaveCd = 3;
+  private waveT = 0;
   /** текущая внешность (для E2E/проб); ставится в buildCharacter */
   appearance!: PlayerAppearance;
+
+  /** Task 40: ВИДИМЫЕ ПУЛИ в полёте (пул мешей) */
+  private bullets: Bullet[] = [];
+  private bulletPool: THREE.Mesh[] = [];
 
   private deps: LanderDeps;
   private shift = new THREE.Vector3();
   private _v = new THREE.Vector3();
+  private _w1 = new THREE.Vector3();
+  private _w2 = new THREE.Vector3();
+  private _e = new THREE.Euler();
 
   constructor(deps: LanderDeps) {
     this.deps = deps;
@@ -97,22 +139,30 @@ export class Lander {
 
   private buildCharacter() {
     // Task 39: фигурка капитана — по ВЫБРАННОЙ внешности (экран
-    // создания персонажа); по умолчанию — «случайный моряк»
+    // создания персонажа); по умолчанию — «случайный моряк».
+    // Task 40: walker → руки ОТДЕЛЬНЫМИ мешами (махи/прицел/привет)
     this.appearance = this.deps.appearance ?? DEFAULT_APPEARANCE;
     const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
     this.fig = fig;
     this.group.add(fig.group);
-    // --- САБЛЯ ---
+    // --- САБЛЯ (Task 40: ПРЯМАЯ — ровный клинок, сужающийся к
+    //     острию БЕЗ смещений и изломов; «сломанный верх» убран) ---
     const saber = new THREE.Group();
     const steel = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.25, metalness: 0.85 });
     const brass = new THREE.MeshStandardMaterial({ color: 0xb08d3c, roughness: 0.4, metalness: 0.6 });
     const gripM = new THREE.MeshStandardMaterial({ color: 0x3a2c1c, roughness: 0.9 });
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.92, 0.012), steel);
-    blade.position.y = 0.56;
-    saber.add(blade);
-    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.01), steel);
-    tip.position.set(0.05, 1.06, 0);
-    tip.rotation.z = -0.5;
+    // клинок: три ровных сегнала с сужением 0.035 → 0.024 м
+    let y0 = 0.1; // от гарды
+    const segs: [number, number][] = [[0.035, 0.55], [0.03, 0.25], [0.024, 0.12]];
+    for (const [w, len] of segs) {
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(w, len, 0.012), steel);
+      seg.position.y = y0 + len / 2;
+      saber.add(seg);
+      y0 += len;
+    }
+    // ровное остриё-клин (продолжение прямой линии клинка)
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.09, 0.008), steel);
+    tip.position.y = y0 + 0.045;
     saber.add(tip);
     const guard = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.035, 0.05), brass);
     guard.position.y = 0.1;
@@ -173,16 +223,33 @@ export class Lander {
       hook: this.appearance.hook,
       pegLeg: this.appearance.pegLeg,
       verts: this.fig?.verts ?? 0,
+      hasArms: !!(this.fig?.armL && this.fig?.armR),
     };
   }
+
+  /** E2E: детали САБЛИ — все части клинка должны быть ПРЯМЫМИ
+   *  (x=0, наклоны 0 — сабля ровная, изгиб только у группы) */
+  saberInfo() {
+    if (!this.saberG) return null;
+    return this.saberG.children.map(m => ({
+      x: +m.position.x.toFixed(3),
+      y: +m.position.y.toFixed(3),
+      rx: +m.rotation.x.toFixed(3),
+      rz: +m.rotation.z.toFixed(3),
+    }));
+  }
+
+  /** E2E: сколько пуль сейчас в полёте */
+  bulletsInFlight(): number { return this.bullets.length; }
 
   /** Высадиться в точке (мир); faceX/faceZ — направление взгляда
    *  (с моря к суше): камера за спиной, видно остров */
   spawn(x: number, z: number, faceX = 0, faceZ = 1) {
+    this.detachFromShip();
     const h = heightAt(x, z);
     this.group.position.set(x, Math.max(h, 0), z);
     this.group.visible = true;
-    this.active = true;
+    this.mode = 'island';
     this.weapon = 'none';
     this.aiming = false;
     this.swingT = -1;
@@ -195,18 +262,65 @@ export class Lander {
     this.deps.msg('Высадка на берег! WASD — идти, мышь — камера, 1 — сабля, 2 — пистолет, E — в шлюпку');
   }
 
+  /** Task 40: КАПИТАН СХОДИТ С МОСТИКА — прогулка по палубе.
+   *  host — визуальная группа корабля (фигурка качается с судном) */
+  enterDeck(plan: DeckPlan, host: THREE.Group) {
+    this.detachFromShip();
+    this.deckPlan = plan;
+    this.deckHost = host;
+    host.add(this.group);
+    // старт — на квартердеке у штурвала (или у рулевого на палубе)
+    const sx = plan.hasQuarter ? 0.62 : 0.5;
+    const sz = plan.hasQuarter ? plan.wheelZ - 1.35 : plan.wheelZ - 1.1;
+    this.group.position.set(sx, plan.surfaceY(sx, sz), sz);
+    this.group.visible = true;
+    this.mode = 'deck';
+    this.weapon = 'none';
+    this.aiming = false;
+    this.swingT = -1;
+    this.shotCd = 0;
+    this.idleWaveCd = 1.2;
+    this.waveT = 0;
+    this.saberG!.visible = false;
+    this.pistolG!.visible = false;
+    this.yaw = Math.PI; // лицом к корме (к штурвалу)
+    this.camYaw = 0;    // камера с носа, видит капитана и штурвал
+    this.camPitch = 0.3;
+    this.deps.msg('Капитан на палубе! WASD — идти, лесенки — на квартердек, V/E у штурвала — вернуться к рулению');
+  }
+
+  /** Task 40: вернуться к штурвалу (режим корабля) */
+  exitDeck() {
+    this.detachFromShip();
+    this.mode = 'off';
+    this.aiming = false;
+    this.group.visible = false;
+  }
+
+  /** убрать фигурку с корабля, вернуть в мир (без смены mode) */
+  private detachFromShip() {
+    if (this.deckHost && this.group.parent === this.deckHost) {
+      this.deckHost.remove(this.group);
+      this.deps.worldGroup.add(this.group);
+    }
+    this.deckHost = null;
+    this.deckPlan = null;
+  }
+
   despawn() {
-    this.active = false;
+    this.detachFromShip();
+    this.mode = 'off';
     this.group.visible = false;
     this.aiming = false;
   }
 
   hud(): LanderHud {
     return {
-      active: this.active, weapon: this.weapon,
+      active: this.active, mode: this.mode,
+      weapon: this.weapon,
       weaponLabel: this.weapon === 'saber' ? 'Сабля' : this.weapon === 'pistol' ? 'Пистолет' : 'Без оружия',
-      aiming: this.aiming, nearBoat: this.nearBoat,
-      moving: this.moving, camYaw: this.camYaw,
+      aiming: this.aiming, nearBoat: this.nearBoat, nearWheel: this.nearWheel,
+      moving: this.moving, camYaw: this.camYaw, bullets: this.bullets.length,
     };
   }
 
@@ -232,7 +346,7 @@ export class Lander {
       this.aiming = false;
       this.pistolG!.visible = this.weapon === 'pistol';
       this.saberG!.visible = false;
-      this.deps.msg(this.weapon === 'pistol' ? 'Пистолет заряжен! ЛКМ — выстрел, ПКМ — прицел' : 'Пистолет за пояс');
+      this.deps.msg(this.weapon === 'pistol' ? 'Пистолет заряжен! ПКМ — прицел, ЛКМ — выстрел (только прицелившись)' : 'Пистолет за пояс');
     }
     if (inp.pressed('KeyX') && this.weapon !== 'none') {
       this.weapon = 'none';
@@ -249,43 +363,99 @@ export class Lander {
       if (this.weapon === 'saber' && this.swingT < 0) {
         this.swingT = 0;
         this.deps.audio.saber();
-      } else if (this.weapon === 'pistol' && this.shotCd <= 0) {
-        this.fire();
+      } else if (this.weapon === 'pistol') {
+        // Task 40: стрелять можно ТОЛЬКО ПРИЦЕЛИВШИСЬ (ПКМ)
+        if (this.aiming && this.shotCd <= 0) this.fire();
+        else if (!this.aiming && this.shotCd <= 0) {
+          this.deps.msg('Сначала прицелитесь — удерживайте ПКМ');
+        }
       }
     }
   }
 
+  /** Выстрел: дым у дула + ВИДИМАЯ пуля по лучу камеры */
   private fire() {
     this.shotCd = 1.15;
     this.recoil = 1;
     this.deps.audio.shot();
-    const mp = this._v.set(this.pos.x + Math.sin(this.yaw) * 0.6, this.pos.y + 1.25, this.pos.z + Math.cos(this.yaw) * 0.6);
-    this.deps.particles.smoke(mp.x, mp.y, mp.z, 0, 0.4, 0, 0.7, 1.1);
     const cam = this.deps.camera;
     const dir = new THREE.Vector3();
     cam.getWorldDirection(dir);
-    const origin = cam.position.clone().sub(this.shift);
-    let killed = 0, chopped = 0;
-    for (let d = 2; d <= 70; d += 2) {
-      const x = origin.x + dir.x * d;
-      const y = origin.y + dir.y * d;
-      const z = origin.z + dir.z * d;
-      const th = heightAt(x, z);
-      if (y < th) {
-        this.deps.particles.debris(x, th + 0.3, z, 5, 0.7);
-        break;
-      }
-      if (y < 0 && th < -10) break;
-      killed += this.deps.folkKill(x, y, z, 1.5, 'grape', dir.x, dir.z);
-      chopped += this.deps.chop(x, y, z, 1.0);
-      if (killed > 0) break;
+    // дуло: мировая позиция ствола (сцена → мир: минус shift)
+    this.pistolG!.getWorldPosition(this._v);
+    const mp = this._v.sub(this.shift).clone();
+    // ДЫМ ВЫСТРЕЛА: облако из трёх клубов у дула + вспышка вперёд
+    this.deps.particles.smoke(mp.x, mp.y, mp.z, dir.x * 1.6, 0.55, dir.z * 1.6, 0.55, 0.85);
+    this.deps.particles.smoke(mp.x + dir.x * 0.25, mp.y + 0.05, mp.z + dir.z * 0.25, dir.x * 0.7, 0.9, dir.z * 0.7, 0.38, 1.15);
+    this.deps.particles.smoke(mp.x, mp.y + 0.12, mp.z, 0, 0.45, 0, 0.3, 1.4);
+    // ПУЛЯ: свинцовый шарик летит по лучу камеры (виден в полёте)
+    this.spawnBullet(mp, dir);
+  }
+
+  private spawnBullet(pos: THREE.Vector3, dir: THREE.Vector3) {
+    let mesh = this.bulletPool.pop();
+    if (!mesh) {
+      mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.052, 6, 5),
+        new THREE.MeshStandardMaterial({ color: 0x30343c, roughness: 0.35, metalness: 0.85 }));
+      this.deps.worldGroup.add(mesh);
     }
-    if (killed > 0) this.deps.msg(`Меткий выстрел! Поражено: ${killed}`);
-    else if (chopped > 0) this.deps.msg('Ветку срезало пулей');
+    mesh.position.copy(pos);
+    mesh.visible = true;
+    this.bullets.push({
+      mesh, pos: pos.clone(),
+      vel: dir.clone().multiplyScalar(BULLET_SPEED),
+      life: BULLET_LIFE, trailT: 0,
+    });
+  }
+
+  /** Полёт пуль: движение + попадания (рельеф/жители/кусты/море) */
+  private updateBullets(dt: number) {
+    for (let i = this.bullets.length - 1; i >= 0; i--) {
+      const b = this.bullets[i];
+      b.life -= dt;
+      let dead = b.life <= 0;
+      const move = b.vel.length() * dt;
+      const steps = Math.max(1, Math.ceil(move / 1.4));
+      for (let s = 0; s < steps && !dead; s++) {
+        b.pos.addScaledVector(b.vel, dt / steps);
+        const th = heightAt(b.pos.x, b.pos.z);
+        if (b.pos.y < th) {
+          this.deps.particles.debris(b.pos.x, th + 0.3, b.pos.z, 5, 0.7);
+          dead = true;
+          break;
+        }
+        if (b.pos.y < -0.5 && th < -10) { dead = true; break; } // ушла в море
+        const killed = this.deps.folkKill(b.pos.x, b.pos.y, b.pos.z, 1.5, 'grape', b.vel.x, b.vel.z);
+        if (killed > 0) {
+          this.deps.msg(`Меткий выстрел! Поражено: ${killed}`);
+          dead = true;
+          break;
+        }
+        const chopped = this.deps.chop(b.pos.x, b.pos.y, b.pos.z, 1.0);
+        if (chopped > 0) {
+          this.deps.msg('Ветку срезало пулей');
+          dead = true;
+          break;
+        }
+      }
+      b.mesh.position.copy(b.pos);
+      // дымный след за пулей
+      b.trailT -= dt;
+      if (!dead && b.trailT <= 0) {
+        b.trailT = 0.06;
+        this.deps.particles.smoke(b.pos.x, b.pos.y, b.pos.z, 0, 0.03, 0, 0.15, 0.5);
+      }
+      if (dead) {
+        b.mesh.visible = false;
+        this.bulletPool.push(b.mesh);
+        this.bullets.splice(i, 1);
+      }
+    }
   }
 
   update(dt: number, time: number, shift: THREE.Vector3, keysDown: (c: string) => boolean) {
-    if (!this.active) return;
+    if (!this.active) { this.updateBullets(dt); return; }
     this.shift.copy(shift);
     const p = this.pos;
     let mx = 0, mz = 0;
@@ -295,7 +465,11 @@ export class Lander {
     if (keysDown('KeyD')) mx += 1;
     const running = keysDown('ShiftLeft') || keysDown('ShiftRight');
     this.moving = mx !== 0 || mz !== 0;
-    if (this.moving) {
+
+    if (this.mode === 'deck') {
+      this.updateDeckMove(dt, mx, mz, running);
+    } else if (this.moving) {
+      // === БЕРЕГ: движение в мировых координатах ===
       const fx = -Math.sin(this.camYaw), fz = -Math.cos(this.camYaw);
       const rx = -fz, rz = fx;
       let dx = fx * mz + rx * mx;
@@ -339,8 +513,10 @@ export class Lander {
     } else {
       this.walkPhase += dt * 1.6;
     }
-    p.y = heightAt(p.x, p.z);
     this.group.rotation.y = this.yaw;
+
+    // --- фигурка: ноги + РУКИ (Task 40: махи при ходьбе, прицел,
+    //     взмах саблей, в покое — «указания» поднятой рукой) ---
     if (this.fig) {
       const amp = this.moving ? 0.55 : 0.0;
       const s = Math.sin(this.walkPhase);
@@ -350,7 +526,43 @@ export class Lander {
       }
       this.fig.group.position.y = this.moving ? Math.abs(s) * 0.05 : 0;
       this.fig.group.rotation.z = this.moving ? 0 : Math.sin(time * 1.4) * 0.02;
+      const armL = this.fig.armL, armR = this.fig.armR;
+      if (armL && armR) {
+        if (this.aiming && this.weapon === 'pistol') {
+          // прицел: правая рука с пистолетом вытянута вперёд
+          armR.rotation.set(-(Math.PI / 2 - this.camPitch * 0.6), 0, -0.06);
+          armL.rotation.set(0.25, 0, 0.18);
+        } else if (this.weapon === 'saber' && this.swingT >= 0) {
+          // рубящий замах правой рукой
+          const t = this.swingT;
+          const sw = t < 0.35 ? -t / 0.35 * 1.5
+            : t < 0.65 ? -1.5 + (t - 0.35) / 0.3 * 2.6
+            : 1.1 - (t - 0.65) / 0.35 * 1.1;
+          armR.rotation.set(-1.15 - sw * 0.35, 0, -0.1);
+          armL.rotation.set(0.3 + sw * 0.2, 0, 0.3);
+        } else if (this.moving) {
+          armL.rotation.set(-s * 0.5, 0, 0.05);
+          armR.rotation.set(s * 0.5, 0, -0.05);
+        } else {
+          // покой: лёгкое покачивание + периодически ПОДНЯТАЯ РУКА
+          this.idleWaveCd -= dt;
+          if (this.idleWaveCd <= 0 && this.waveT <= 0) {
+            this.waveT = 1.8;
+            this.idleWaveCd = 5 + Math.sin(this.fig.seed) * 3;
+          }
+          if (this.waveT > 0) {
+            this.waveT -= dt;
+            armR.rotation.set(0, 0, 2.55 + Math.sin(time * 9) * 0.3);
+            armL.rotation.set(0, 0, 0.06);
+          } else {
+            armL.rotation.set(Math.sin(time * 1.4) * 0.04, 0, 0.06);
+            armR.rotation.set(Math.sin(time * 1.4 + 1) * 0.04, 0, -0.06);
+          }
+        }
+      }
     }
+
+    // --- взмах сабли: анимация оружия + поражение ---
     if (this.swingT >= 0) {
       this.swingT += dt / 0.55;
       const t = this.swingT;
@@ -364,10 +576,13 @@ export class Lander {
       if (t >= 0.45 && t - dt / 0.55 < 0.45) {
         const ax = p.x + Math.sin(this.yaw) * 1.1;
         const az = p.z + Math.cos(this.yaw) * 1.1;
-        const chopped = this.deps.chop(ax, p.y + 0.8, az, 2.6);
-        const killed = this.deps.folkKill(ax, p.y + 1.0, az, 2.3, 'grape', Math.sin(this.yaw), Math.cos(this.yaw));
-        if (chopped > 0) this.deps.msg(`Срублено: ${chopped}`);
-        if (killed > 0) this.deps.msg(`Сабля нашла цель: ${killed}`);
+        // на палубе координаты локальные — попадания не ищем
+        if (this.mode === 'island') {
+          const chopped = this.deps.chop(ax, p.y + 0.8, az, 2.6);
+          const killed = this.deps.folkKill(ax, p.y + 1.0, az, 2.3, 'grape', Math.sin(this.yaw), Math.cos(this.yaw));
+          if (chopped > 0) this.deps.msg(`Срублено: ${chopped}`);
+          if (killed > 0) this.deps.msg(`Сабля нашла цель: ${killed}`);
+        }
       }
       if (t >= 1) this.swingT = -1;
     }
@@ -380,7 +595,86 @@ export class Lander {
     if (this.saberG) this.saberG.visible = this.weapon === 'saber';
     if (this.pistolG) this.pistolG.visible = this.weapon === 'pistol';
     this.shotCd = Math.max(0, this.shotCd - dt);
-    this.updateCamera(dt);
+    this.updateBullets(dt);
+    if (this.mode === 'deck') this.updateCameraDeck(dt);
+    else this.updateCamera(dt);
+  }
+
+  /** === ПАЛУБА: движение в ЛОКАЛЬНЫХ координатах корабля === */
+  private updateDeckMove(dt: number, mx: number, mz: number, running: boolean) {
+    const plan = this.deckPlan!;
+    const p = this.pos;
+    if (this.moving) {
+      // желаемое направление в МИРЕ (от камеры)
+      const fx = -Math.sin(this.camYaw), fz = -Math.cos(this.camYaw);
+      const rx = -fz, rz = fx;
+      let dx = fx * mz + rx * mx;
+      let dz = fz * mz + rz * mx;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len; dz /= len;
+      // → в ЛОКАЛЬНЫЕ оси корабля (курс носителя)
+      const h = this.hostYaw();
+      const ch = Math.cos(h), sh = Math.sin(h);
+      const lx = dx * ch - dz * sh;
+      const lz = dx * sh + dz * ch;
+      const spd = (running ? RUN_DECK : WALK_DECK) * (this.aiming ? 0.55 : 1);
+      let nx = p.x + lx * spd * dt;
+      let nz = p.z + lz * spd * dt;
+      // границы: транец/бак и борта (фальшборт)
+      nz = THREE.MathUtils.clamp(nz, plan.sternLimitZ, plan.bowLimitZ);
+      let lim = Math.max(0.35, plan.halfWidthAt(nz) - 0.42);
+      nx = THREE.MathUtils.clamp(nx, -lim, lim);
+      // передняя стена квартердека: проход ТОЛЬКО через проёмы трапов
+      const wasAft = p.z <= plan.qFrontZ;
+      const nowAft = nz <= plan.qFrontZ;
+      if (plan.hasQuarter && wasAft !== nowAft
+        && !plan.onStair(nx, nz) && !plan.onStair(p.x, p.z)) {
+        nz = p.z; // стена — скользим вдоль
+      }
+      // с трапа нельзя шагнуть вбок (перила): держим полосу
+      if (plan.hasQuarter && nz > plan.qFrontZ && nz < plan.stairZ0
+        && plan.onStair(p.x, p.z) && !plan.onStair(nx, nz)) {
+        nx = p.x;
+      }
+      // коллайдеры: мачты, шпиль, нактоуз
+      for (const o of plan.obstacles) {
+        const ddx = nx - o.x, ddz = nz - o.z;
+        const d = Math.hypot(ddx, ddz);
+        const min = o.r + 0.34;
+        if (d < min && d > 1e-4) {
+          nx = o.x + (ddx / d) * min;
+          nz = o.z + (ddz / d) * min;
+        }
+      }
+      // повторный зажим после выталкивания
+      nz = THREE.MathUtils.clamp(nz, plan.sternLimitZ, plan.bowLimitZ);
+      lim = Math.max(0.35, plan.halfWidthAt(nz) - 0.42);
+      nx = THREE.MathUtils.clamp(nx, -lim, lim);
+      p.x = nx;
+      p.z = nz;
+      // разворот: лицом по движению; на прицеле — за камерой
+      const awx = -Math.sin(this.camYaw), awz = -Math.cos(this.camYaw);
+      const wantYaw = this.aiming
+        ? Math.atan2(awx * ch - awz * sh, awx * sh + awz * ch)
+        : Math.atan2(lx, lz);
+      let dY = wantYaw - this.yaw;
+      dY = Math.atan2(Math.sin(dY), Math.cos(dY));
+      this.yaw += dY * Math.min(1, dt * 12);
+      this.walkPhase += dt * (running ? 10 : 6.6);
+    } else {
+      this.walkPhase += dt * 1.6;
+    }
+    // высота: палуба/трап/квартердек (плавный подъём по ступеням)
+    const ty = plan.surfaceY(p.x, p.z);
+    p.y += (ty - p.y) * Math.min(1, dt * 14);
+    // у штурвала? (выход к рулению)
+    this.nearWheel = Math.hypot(p.x, p.z - plan.wheelZ) < 2.0;
+  }
+
+  /** курс корабля-носителя (рад, вокруг Y) */
+  private hostYaw(): number {
+    if (!this.deckHost) return 0;
+    return this._e.setFromQuaternion(this.deckHost.quaternion, 'YXZ').y;
   }
 
   private updateCamera(dt: number) {
@@ -416,6 +710,53 @@ export class Lander {
     cam.rotateZ(this.recoil * 0.02);
   }
 
+  /** камера режима палубы: цель — МИРОВАЯ позиция фигурки (корабль
+   *  качается — берём позицию через трансформ носителя) */
+  private updateCameraDeck(dt: number) {
+    const cam = this.deps.camera;
+    const wantDist = this.aiming ? CAM_AIM_DIST : this.camDist;
+    this.camDistSm += (wantDist - this.camDistSm) * Math.min(1, dt * 8);
+    const wantFov = this.aiming ? AIM_FOV : 55;
+    this.fovSm += (wantFov - this.fovSm) * Math.min(1, dt * 8);
+    if (Math.abs(cam.fov - this.fovSm) > 0.05) { cam.fov = this.fovSm; cam.updateProjectionMatrix(); }
+    // свежие матрицы носителя (getWorldPosition обновляет цепочку)
+    this.group.getWorldPosition(this._w1);
+    const head = this.aiming ? 1.5 : 1.7;
+    const d = this.camDistSm;
+    const cp = Math.cos(this.camPitch), sp = Math.sin(this.camPitch);
+    let cx = this._w1.x + Math.sin(this.camYaw) * cp * d;
+    let cz = this._w1.z + Math.cos(this.camYaw) * cp * d;
+    let cy = this._w1.y + head + sp * d;
+    if (this.aiming) {
+      const rx = -Math.cos(this.camYaw), rz = Math.sin(this.camYaw);
+      cx += rx * 0.55; cz += rz * 0.55;
+    }
+    // не дать камере нырнуть под палубу: локальная высота поверхности
+    if (this.deckPlan && this.deckHost) {
+      this._w2.set(cx, cy, cz);
+      this.deckHost.worldToLocal(this._w2);
+      const inside = Math.abs(this._w2.x) < this.deckPlan.halfWidthAt(this._w2.z) + 0.8
+        && this._w2.z > this.deckPlan.qSternZ - 1.2
+        && this._w2.z < this.deckPlan.bowLimitZ + 2.5;
+      const minY = inside
+        ? this.deckPlan.surfaceY(this._w2.x, this._w2.z) + 0.35
+        : Math.max(this._w1.y - head + 0.4, 0.8);
+      if (this._w2.y < minY) {
+        this._w2.y = minY;
+        this.deckHost.localToWorld(this._w2);
+        cx = this._w2.x; cy = this._w2.y; cz = this._w2.z;
+      }
+    }
+    cy += this.recoil * 0.05;
+    cam.position.set(cx, cy, cz);
+    const lookDist = this.aiming ? 30 : 6;
+    cam.lookAt(
+      this._w1.x - Math.sin(this.camYaw) * lookDist,
+      this._w1.y + head - Math.sin(this.camPitch) * lookDist * 0.6,
+      this._w1.z - Math.cos(this.camYaw) * lookDist);
+    cam.rotateZ(this.recoil * 0.02);
+  }
+
   restoreCamera() {
     const cam = this.deps.camera;
     cam.fov = 55;
@@ -427,6 +768,14 @@ export class Lander {
     this.camPitch = THREE.MathUtils.clamp(pitch, -0.5, 1.15);
   }
   debugTeleport(x: number, z: number) {
+    if (this.mode === 'deck') {
+      const plan = this.deckPlan!;
+      this.group.position.set(
+        THREE.MathUtils.clamp(x, -2.4, 2.4),
+        plan.surfaceY(THREE.MathUtils.clamp(x, -2.4, 2.4), z),
+        THREE.MathUtils.clamp(z, plan.sternLimitZ, plan.bowLimitZ));
+      return;
+    }
     this.group.position.set(x, Math.max(heightAt(x, z), 0), z);
   }
 }

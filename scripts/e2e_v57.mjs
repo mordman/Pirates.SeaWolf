@@ -135,7 +135,7 @@ const afterApply = jparse(await evR(`(() => {
 log(JSON.stringify(afterApply));
 check('C3: «В море!» закрывает экран, ввод отпущен, выбор сохранён (v12)',
   applied.includes('clicked') && afterApply && afterApply.closed === true
-    && afterApply.uiOpen === false && afterApply.v === 12
+    && afterApply.uiOpen === false && afterApply.v === 14
     && afterApply.parrot === true, JSON.stringify(afterApply));
 check('C4: фигурка капитана — с попугаем (выбор с экрана)',
   afterApply && afterApply.fig && afterApply.fig.parrot === true,
@@ -148,7 +148,7 @@ log('\n===== A: центральный каталог текстур =====');
 const slots = jparse(await evR(`JSON.stringify(window.__sea.tex)`));
 log(JSON.stringify(slots));
 const slotIds = ['terrain', 'hull', 'deck', 'sail', 'water'];
-check('A1: каталог __sea.tex — все 5 слотов (земля/борт/палуба/парус/вода)',
+check('A1: каталог __sea.tex — все 9 слотов (земля/борт/палуба/парус/вода + песок/трава/грязь/скалы)',
   slots && slotIds.every(id => slots[id] && typeof slots[id].state === 'string'),
   JSON.stringify(slots));
 

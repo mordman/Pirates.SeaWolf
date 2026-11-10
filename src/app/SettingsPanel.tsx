@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode, IslandTextureMode, TerrainShaderKind } from '@/game/core/settings';
-import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS, ISLAND_TEXTURE_MODE_LABELS, TERRAIN_SHADER_LABELS } from '@/game/core/settings';
+import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS, ISLAND_TEXTURE_MODE_LABELS, TERRAIN_SHADER_LABELS, TREE_MUL_STEPS, SMALL_MUL_STEPS } from '@/game/core/settings';
+import type { IslandsSettings, IslandOverrides } from '@/game/core/settings';
 import { PART_REGISTRY, PART_GROUP_ORDER, type PartGroup } from '@/game/glb/glbParts';
 import { TEXTURE_SLOTS, type TextureSlotId } from '@/game/assets/textures';
 
@@ -14,7 +15,7 @@ import { TEXTURE_SLOTS, type TextureSlotId } from '@/game/assets/textures';
 // сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'assets' | 'weather' | 'physics' | 'gameplay' | 'controls' | 'audio';
+type Tab = 'graphics' | 'assets' | 'weather' | 'physics' | 'gameplay' | 'islands' | 'controls' | 'audio';
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
@@ -125,11 +126,15 @@ function TexUrlInput({ url, onCommit }: { url: string; onCommit: (u: string) => 
   );
 }
 
-export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer }:
-{ initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void; onEditPlayer?: () => void }) {
+export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer, islands }:
+{ initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void; onEditPlayer?: () => void;
+  /** Task 41: список островов мира — переопределения по каждому */
+  islands?: { idx: number; name: string; r: number }[] }) {
   const [s, setS] = useState<GameSettings>(() => structuredClone(initial));
   const [tab, setTab] = useState<Tab>('graphics');
   const [binding, setBinding] = useState<{ key: keyof ControlsSettings; ammoIdx?: number } | null>(null);
+  // Task 41: выбранный остров для переопределений
+  const [islSel, setIslSel] = useState<number>(-1);
   // зеркало актуального состояния — обновление из обработчиков событий
   // (НЕ из фазы рендера: вызов onApply внутри setS(prev=>...) —
   // setState-в-рендере, React ругается «Cannot update a component…»)
@@ -200,7 +205,7 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
         <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
           <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
           <div className="flex gap-1">
-            {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['islands', '🏝 Острова'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-3 py-1 text-xs font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -336,6 +341,25 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
                       onCommit={u => update(d => { d.assets.texUrls.terrain = u; })} />
                   </Row>
                 )}
+                {/* Task 40: режим 'zones' — СВОИ текстуры ЗОН: песок/
+                    трава/грязь/скалы (накладываются по высоте/уклону) */}
+                {s.assets.islandTextures === 'zones' && (
+                  <>
+                    <div className="mb-1 text-[10px] leading-relaxed text-stone-500">
+                      Задайте картинки зон — они лягут по рельефу: песок на пляжах
+                      и у кромки воды, трава выше пляжа, грязь проплешинами на
+                      лугах, скалы на крутых склонах. Незаданная зона остаётся
+                      с цветом биома (не чернеет).
+                    </div>
+                    {TEXTURE_SLOTS.filter(sl => sl.group === 'terrain' && sl.id !== 'terrain').map(sl => (
+                      <Row key={sl.id} label={sl.label} hint={sl.hint}>
+                        <TexUrlInput key={s.assets.texUrls[sl.id as TextureSlotId] + sl.id}
+                          url={s.assets.texUrls[sl.id as TextureSlotId]}
+                          onCommit={u => update(d => { d.assets.texUrls[sl.id as TextureSlotId] = u; })} />
+                      </Row>
+                    ))}
+                  </>
+                )}
                 <Row label="Масштаб текстуры" hint="размер повторения на местности: меньше — мельче зерно">
                   <Slider value={s.assets.texScale} min={3} max={30} step={1}
                     onChange={v => update(d => { d.assets.texScale = v; })}
@@ -369,8 +393,9 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
                   Биом (песок/трава/джунгли/скалы) задаётся цветом вершин рельефа,
                   текстура — детализация поверх: «зерно» — нейтральная крошка,
                   «PBR» — альбедо + карта нормалей + карта шероховатости
-                  (реакция на свет), «своя текстура» — ваша картинка по ссылке
-                  (пока грузится или при ошибке — остаётся зерно).
+                  (реакция на свет), «своя текстура» — ваша картинка по ссылке,
+                  «зоны» — до четырёх своих картинок по зонам рельефа
+                  (песок/трава/грязь/скалы по высоте и уклону).
                   Применяется мгновенно, без перестройки мира.
                 </div>
               </div>
@@ -386,9 +411,9 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
                   <span className="font-mono text-stone-400"> public/</span> или
                   <span className="font-mono text-stone-400"> data:image</span> (до 200К).
                   Пока грузится или при ошибке — остаётся процедурная текстура игры.
-                  Земля включается режимом «Своя текстура» выше.
+                  Земля и зоны островов включаются режимами выше.
                 </div>
-                {TEXTURE_SLOTS.filter(sl => sl.id !== 'terrain').map(sl => (
+                {TEXTURE_SLOTS.filter(sl => sl.group !== 'terrain').map(sl => (
                   <Row key={sl.id} label={sl.label} hint={sl.hint}>
                     <TexUrlInput key={s.assets.texUrls[sl.id as TextureSlotId] + sl.id}
                       url={s.assets.texUrls[sl.id as TextureSlotId]}
@@ -641,6 +666,13 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
                     onChange={e => update(d => { d.gameplay.catsInsteadOfCrew = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                {/* Task 41: плотность леса переехала во вкладку «Острова» */}
+                <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
+                  🏝 Деревья, деревни, жители и рыбацкие лодки —
+                  во вкладке <b className="text-amber-300">Острова</b>:
+                  глобальные множители и отдельные настройки для каждого острова
+                  (лес — до ×1000).
+                </div>
               </div>
               <div className="py-2">
                 <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Кошелёк капитана</div>
@@ -692,6 +724,130 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer 
                   ×0.5 — «стеклянные» корпуса, ×3 — морские крепости.
                     При смене прочности текущие повреждения сохраняются пропорционально.
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ============ ОСТРОВА (Task 41) ============
+              Мир: сколько чего генерится — глобально и ПО КАЖДОМУ
+              острову (переопределения). Деревья — до ×1000 с общим
+              бюджетом инстансов; деревни/жители/лодки — пересборка */}
+          {tab === 'islands' && (
+            <div className="divide-y divide-stone-800/60">
+              <div className="py-2">
+                <div className="mb-1.5 text-[11px] font-semibold text-amber-200/90">Глобально (все острова)</div>
+                <Row label="🌴 Деревья и кусты" hint="лес на всех островах; применяется на лету; ×1000 упирается в общий бюджет ~1,5 млн инстансов (иначе GPU не вытянет) — фактическое число в сообщении">
+                  <select value={s.islands.treesMul}
+                    onChange={e => update(d => { d.islands.treesMul = Number(e.target.value); })}
+                    className={inputCls}>
+                    {TREE_MUL_STEPS.map(v => (
+                      <option key={v} value={v}>
+                        {v === 0.25 ? '×0.25 — редкие кусты' : v === 0.5 ? '×0.5 — редкий лес'
+                          : v === 1 ? '×1 — обычный' : v === 1000 ? '×1000 — ДЖУНГЛИ (бюджет)'
+                          : `×${v}`}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <Row label="🏘 Деревни" hint="деревни с хижинами и тропами; ×2/×3 — дополнительные деревни из пула; 0 — без деревень (жители тоже пропадут)">
+                  <select value={s.islands.villagesMul}
+                    onChange={e => update(d => { d.islands.villagesMul = Number(e.target.value); })}
+                    className={inputCls}>
+                    {SMALL_MUL_STEPS.map(v => (
+                      <option key={v} value={v}>{v === 0 ? '0 — без деревень' : v === 1 ? '×1 — штатно' : `×${v}`}</option>
+                    ))}
+                  </select>
+                </Row>
+                <Row label="👥 Жители деревень" hint="ходят по тропам и толпятся у костра; 0 — пустые деревни, ×5 — толпа">
+                  <select value={s.islands.folkMul}
+                    onChange={e => update(d => { d.islands.folkMul = Number(e.target.value); })}
+                    className={inputCls}>
+                    {SMALL_MUL_STEPS.map(v => (
+                      <option key={v} value={v}>{v === 0 ? '0 — никого' : v === 1 ? '×1 — штатно' : `×${v}`}</option>
+                    ))}
+                  </select>
+                </Row>
+                <Row label="🎣 Рыбацкие лодки" hint="шхуны с рыбаками вдоль берегов; 0 — чистая вода, ×5 — флотилия">
+                  <select value={s.islands.boatsMul}
+                    onChange={e => update(d => { d.islands.boatsMul = Number(e.target.value); })}
+                    className={inputCls}>
+                    {SMALL_MUL_STEPS.map(v => (
+                      <option key={v} value={v}>{v === 0 ? '0 — без лодок' : v === 1 ? '×1 — штатно' : `×${v}`}</option>
+                    ))}
+                  </select>
+                </Row>
+                <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
+                  Всё применяется сразу: лес пересобирается мгновенно, деревни
+                  и лодки — пару секунд (мир перестраивается). При ×1000 лес
+                  распределяется по общему бюджету ~1,5 млн инстансов —
+                  реальный прирост ~×50 от обычного, дальше GPU не тянет.
+                </div>
+              </div>
+
+              {/* ---- переопределения ПО ОСТРОВУ ---- */}
+              <div className="py-2">
+                <div className="mb-1.5 text-[11px] font-semibold text-amber-200/90">Настройки отдельного острова</div>
+                <div className="mb-2 text-[10px] leading-relaxed text-stone-500">
+                  Выберите остров и задайте свои количества — они перекроют
+                  глобальные. «Как глобально» — наследует значения выше.
+                </div>
+                <Row label="🏝 Остров" hint="переопределения применяются к выбранному острову">
+                  <select value={islSel}
+                    onChange={e => setIslSel(Number(e.target.value))}
+                    className={inputCls}>
+                    <option value={-1}>— выбрать остров —</option>
+                    {(islands ?? []).map(isl => (
+                      <option key={isl.idx} value={isl.idx}>
+                        {isl.idx + 1}. {isl.name} (r {Math.round(isl.r)} м)
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                {islSel >= 0 && (() => {
+                  const ov: IslandOverrides = s.islands.perIsland[String(islSel)] ?? {};
+                  // v === null — «как глобально»: удалить ключ из переопределений
+                  const setOv = (key: keyof IslandOverrides, v: number | null) => update(d => {
+                    const cur: IslandOverrides = { ...(d.islands.perIsland[String(islSel)] ?? {}) };
+                    if (v === null) delete cur[key];
+                    else cur[key] = v;
+                    if (Object.keys(cur).length) d.islands.perIsland[String(islSel)] = cur;
+                    else delete d.islands.perIsland[String(islSel)];
+                  });
+                  const ovSelect = (label: string, hint: string, key: keyof IslandOverrides, steps: readonly number[], globalVal: number, zeroLabel: string) => (
+                    <Row label={label} hint={hint}>
+                      <select value={ov[key] ?? -1}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          setOv(key, v === -1 ? null : v);
+                        }}
+                        className={inputCls}>
+                        <option value={-1}>Как глобально (×{globalVal})</option>
+                        {steps.map(v => (
+                          <option key={v} value={v}>{v === 0 ? zeroLabel : `×${v}`}</option>
+                        ))}
+                      </select>
+                    </Row>
+                  );
+                  return (
+                    <>
+                      {ovSelect('🌴 Деревья здесь', 'сколько леса на ЭТОМ острове (перекрывает глобальное)', 'treesMul', TREE_MUL_STEPS, s.islands.treesMul, 'нет деревьев')}
+                      {ovSelect('🏘 Деревни здесь', 'деревни этого острова', 'villagesMul', SMALL_MUL_STEPS, s.islands.villagesMul, '0 — без деревень')}
+                      {ovSelect('👥 Жители здесь', 'жители деревень этого острова', 'folkMul', SMALL_MUL_STEPS, s.islands.folkMul, '0 — никого')}
+                      {ovSelect('🎣 Лодки здесь', 'рыбацкие лодки у этого острова', 'boatsMul', SMALL_MUL_STEPS, s.islands.boatsMul, '0 — без лодок')}
+                      <div className="mt-1 flex items-center justify-between">
+                        <div className="text-[10px] text-stone-500">
+                          Переопределений: {Object.keys(ov).length || 'нет'} (наследует глобальные)
+                        </div>
+                        {Object.keys(ov).length > 0 && (
+                          <button onClick={() => update(d => { delete d.islands.perIsland[String(islSel)]; })}
+                            className="rounded border border-stone-700 bg-stone-900/60 px-2 py-1 text-[10px] text-stone-300 transition hover:border-amber-700 hover:text-amber-200">
+                            Сбросить переопределения
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
