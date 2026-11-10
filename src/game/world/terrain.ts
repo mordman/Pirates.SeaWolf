@@ -1,15 +1,22 @@
 import * as THREE from 'three';
 import { ISLANDS, heightAt, terrainColorAt } from './world';
+import type { AssetsSettings, IslandTextureMode, TerrainShaderKind } from '../core/settings';
 
 // ============================================================
-// РЕЛЬЕФ ОСТРОВОВ — СТРИМЕР ТАЙЛОВ (Task 36).
+// РЕЛЬЕФ ОСТРОВОВ — СТРИМЕР ТАЙЛОВ (Task 36/37).
 // Мир вырос в 100 раз: острова 1–3.3 км радиусом не вытянуть
 // одним мешем на остров. Рельеф собирается ТАЙЛАМИ вокруг
 // игрока: дальние — ячейка 24 м (силуэт с моря), ближние
 // (< 900 м) — ячейка 8 м (ходьба, пляжи, тропы, обрывы).
 // У каждого тайла ЮБКА (skirt) по периметру — стыки LOD без дыр.
 // Построение — через ОЧЕРЕДЬ (без фризов). ЦВЕТ —
-// terrainColorAt; ТЕКСТУРА — процедурное зерно (настройка).
+// terrainColorAt; ТЕКСТУРЫ — Task 37: три режима (выкл /
+// зерно / PBR с картой нормалей и шероховатости), выбор шейдера
+// (Standard/Physical/Lambert/Phong), масштаб и PBR-параметры —
+// из настроек (вкладка «Ресурсы»).
+// ФИКС Task 37: прежняя DataTexture делалась в RGBFormat —
+// формат удалён из WebGL-конвейера, текстура грузилась битой
+// и рендерилась ЧЁРНОЙ (острова были чёрными) — теперь RGBA.
 // ============================================================
 
 const TILE = 480;            // сторона тайла, м
@@ -18,35 +25,49 @@ const NEAR_SEG = 60;         // ближний тайл: ячейка 8 м
 const NEAR_DIST = 900;       // радиус детальных тайлов вокруг игрока
 const SKIRT = 10;            // глубина юбки, м
 const BUILD_PER_FRAME = 4;   // построить тайлов за кадр
+const UV_BASE = 7;           // UV запечён как wx/7 — масштаб через texture.repeat
 
-/** Процедурная текстура зерна рельефа: мелкая крошка + средние
- *  пятна, нейтральный серый вокруг 1.0 (умножается на цвет вершин) */
-function makeDetailTexture(): THREE.DataTexture {
-  const S = 256;
-  const data = new Uint8Array(S * S * 3);
-  const hash = (x: number, y: number) => {
-    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return s - Math.floor(s);
-  };
-  const vnoise = (x: number, y: number) => {
-    const xi = Math.floor(x), yi = Math.floor(y);
-    const xf = x - xi, yf = y - yi;
-    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-    const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
-    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-  };
+// ---------- детерминированный шум (общий для всех текстур) ----------
+function hash2(x: number, y: number): number {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x: number, y: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+/** Поле высот детализации (общая база зерна/альбедо/нормалей —
+ *  рельеф нормалей СОВПАДАЕТ со светлыми пятнами альбедо) */
+function detailHeightField(S: number): Float32Array {
+  const h = new Float32Array(S * S);
   for (let j = 0; j < S; j++) {
     for (let i = 0; i < S; i++) {
       const fine = vnoise(i * 0.9, j * 0.9);
       const mid = vnoise(i * 0.11 + 37, j * 0.11 + 91);
-      let v = 0.5 + (fine - 0.5) * 0.34 + (mid - 0.5) * 0.30;
-      v = Math.max(0, Math.min(1, v));
-      const g = Math.round(200 * (0.78 + v * 0.38));
-      const o = (j * S + i) * 3;
-      data[o] = g; data[o + 1] = g; data[o + 2] = g;
+      const cracks = vnoise(i * 0.33 + 713, j * 0.33 + 29);
+      // мелкая крошка + средние пятна + редкие «трещины» потемнее
+      h[j * S + i] = 0.5 + (fine - 0.5) * 0.34 + (mid - 0.5) * 0.30
+        + (cracks < 0.18 ? -0.22 : 0) + (cracks > 0.9 ? 0.14 : 0);
     }
   }
-  const tex = new THREE.DataTexture(data, S, S, THREE.RGBFormat);
+  return h;
+}
+function makeDataTexture(S: number, fill: (i: number, j: number, h: number) => [number, number, number, number]): THREE.DataTexture {
+  const hfield = detailHeightField(S);
+  const data = new Uint8Array(S * S * 4);
+  for (let j = 0; j < S; j++) {
+    for (let i = 0; i < S; i++) {
+      const [r, g, b, a] = fill(i, j, hfield[j * S + i]);
+      const o = (j * S + i) * 4;
+      data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = a;
+    }
+  }
+  // RGBAFormat — ЕДИНСТВЕННЫЙ надёжный формат DataTexture в WebGL2:
+  // RGBFormat из конвейера удалён и грузится битой (чёрный рендер)
+  const tex = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.magFilter = THREE.LinearFilter;
@@ -54,6 +75,73 @@ function makeDetailTexture(): THREE.DataTexture {
   tex.generateMipmaps = true;
   tex.needsUpdate = true;
   return tex;
+}
+
+/** Процедурная текстура зерна рельефа (Task 36): мелкая крошка +
+ *  средние пятна, нейтральный серый вокруг 1.0 (умножается на
+ *  цвет вершин). ФИКС: RGBA, 4 байта/пиксель */
+function makeDetailTexture(): THREE.DataTexture {
+  const S = 256;
+  return makeDataTexture(S, (_i, _j, v) => {
+    const g = Math.round(255 * Math.max(0, Math.min(1, 0.78 + v * 0.38)));
+    return [g, g, g, 255];
+  });
+}
+
+/** PBR-альбедо рельефа: нейтральная основа ~1.0 (биом задаёт цвет
+ *  вершин) + цветные вкрапления — песчаная крошка, тёмные
+ *  «трещины», редкие светлые камешки и травяные штрихи */
+function makeAlbedoTexture(): THREE.DataTexture {
+  const S = 256;
+  return makeDataTexture(S, (i, j, v) => {
+    // базовый нейтральный с лёгким тёплым уклоном
+    let r = 236, g = 232, b = 224;
+    const k = 0.78 + v * 0.38;                    // яркость из поля высот
+    r *= k; g *= k; b *= k;
+    // травяные штрихи на «высоких» местах поля
+    if (v > 0.62) {
+      const t = Math.min(1, (v - 0.62) / 0.3);
+      r = r * (1 - t * 0.25) ; g = g * (1 - t * 0.08); b = b * (1 - t * 0.32);
+    }
+    // трещины/впадины — темнее и холоднее
+    if (v < 0.36) {
+      const t = Math.min(1, (0.36 - v) / 0.25);
+      r *= 1 - t * 0.38; g *= 1 - t * 0.34; b *= 1 - t * 0.28;
+    }
+    // редкие светлые камешки
+    if (hash2(i * 3.7 + 11, j * 2.9 + 5) > 0.987) { r = 250; g = 248; b = 242; }
+    return [Math.min(255, r), Math.min(255, g), Math.min(255, b), 255];
+  });
+}
+
+/** Карта нормалей из поля высот (Sobel, бесшовная завёртка) */
+function makeNormalTexture(): THREE.DataTexture {
+  const S = 256;
+  const h = detailHeightField(S);
+  const amp = 1.6; // условная высота рельефа в «пикселях»
+  return makeDataTexture(S, (i, j) => {
+    const H = (pi: number, pj: number) => h[(((pj % S) + S) % S) * S + (((pi % S) + S) % S)];
+    const dx = (H(i + 1, j) - H(i - 1, j)) * amp;
+    const dy = (H(i, j + 1) - H(i, j - 1)) * amp;
+    // нормаль плоскости (0,1,0) с возмущением (-dx, 1, -dy)
+    const len = Math.hypot(dx, 1, dy);
+    return [
+      Math.round((-dx / len * 0.5 + 0.5) * 255),
+      Math.round((1 / len * 0.5 + 0.5) * 255),
+      Math.round((-dy / len * 0.5 + 0.5) * 255),
+      255,
+    ];
+  });
+}
+
+/** Карта шероховатости: крошка/трещины матовые, камешки глаже */
+function makeRoughTexture(): THREE.DataTexture {
+  const S = 256;
+  return makeDataTexture(S, (i, j, v) => {
+    let rr = 0.82 + (v - 0.5) * 0.3;               // 0.67..0.97
+    if (hash2(i * 5.1 + 91, j * 4.3 + 17) > 0.987) rr = 0.45; // камешек — глаже
+    return [Math.round(Math.min(1, Math.max(0, rr)) * 255), 0, 0, 255];
+  });
 }
 
 interface TileRec {
@@ -72,29 +160,104 @@ export class TerrainStreamer {
   streamDist = 9000;
   private tiles = new Map<string, TileRec>();
   private queue: { key: string; cx: number; cz: number; near: boolean; d: number }[] = [];
-  private mat: THREE.MeshStandardMaterial;
-  private detailTex: THREE.DataTexture;
+  /** текущий материал рельефа (тип зависит от настройки шейдера) */
+  private mat!: THREE.Material;
+  /** каркас (переносится при пересоздании материала) */
+  private wire = false;
+  private grainTex: THREE.DataTexture;
+  private albedoTex: THREE.DataTexture;
+  private normalTex: THREE.DataTexture;
+  private roughTex: THREE.DataTexture;
   private refreshT = -1;
   private totalBuilt = 0;
   private _color = new THREE.Color();
+  /** текущая конфигурация текстур (для телеметрии/настроек) */
+  private cfg: AssetsSettings;
 
-  constructor(opts?: { textures?: boolean; streamDist?: number }) {
+  constructor(opts?: { textures?: AssetsSettings; streamDist?: number }) {
     if (opts?.streamDist) this.streamDist = opts.streamDist;
-    this.detailTex = makeDetailTexture();
-    this.mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, roughness: 0.96, metalness: 0,
-      map: (opts?.textures ?? true) ? this.detailTex : null,
-    });
+    this.grainTex = makeDetailTexture();
+    this.albedoTex = makeAlbedoTexture();
+    this.normalTex = makeNormalTexture();
+    this.roughTex = makeRoughTexture();
+    this.cfg = opts?.textures ?? {
+      islandTextures: 'grain', texScale: 7, terrainShader: 'standard',
+      roughness: 0.96, metalness: 0, normalStrength: 1,
+    };
+    this.rebuildMaterial();
     this.group.matrixAutoUpdate = false;
   }
 
-  /** Включить/выключить текстуру зерна (настройка) */
-  setTextures(on: boolean) {
-    this.mat.map = on ? this.detailTex : null;
-    this.mat.needsUpdate = true;
+  /** Собрать материал рельефа по настройкам: режим текстур +
+   *  шейдер + PBR-параметры. Все меши тайлов делят ОДИН материал */
+  private rebuildMaterial() {
+    const old = this.mat;
+    const m = this.cfg.islandTextures;
+    const shader = this.cfg.terrainShader;
+    const rep = UV_BASE / Math.max(3, this.cfg.texScale);
+    let mat: THREE.Material;
+    const common = {
+      vertexColors: true, side: THREE.FrontSide,
+    } as Record<string, unknown>;
+    if (shader === 'lambert') {
+      mat = new THREE.MeshLambertMaterial({ ...common, map: m === 'off' ? null : this.grainTex });
+    } else if (shader === 'phong') {
+      const pm = new THREE.MeshPhongMaterial({
+        ...common, shininess: 4, specular: new THREE.Color(0x17140e),
+        map: m === 'off' ? null : this.grainTex,
+      });
+      if (m === 'pbr') {
+        // Phong понимает normalMap — даём рельеф и альбедо вместо зерна
+        pm.map = this.albedoTex;
+        pm.normalMap = this.normalTex;
+        pm.normalScale = new THREE.Vector2(this.cfg.normalStrength, this.cfg.normalStrength);
+      }
+      mat = pm;
+    } else {
+      const std = shader === 'physical'
+        ? new THREE.MeshPhysicalMaterial({ ...common, clearcoat: 0.04, sheen: 0.05 })
+        : new THREE.MeshStandardMaterial({ ...common });
+      std.roughness = this.cfg.roughness;
+      std.metalness = this.cfg.metalness;
+      if (m === 'grain') {
+        std.map = this.grainTex;
+      } else if (m === 'pbr') {
+        std.map = this.albedoTex;
+        std.normalMap = this.normalTex;
+        std.roughnessMap = this.roughTex;
+        std.normalScale = new THREE.Vector2(this.cfg.normalStrength, this.cfg.normalStrength);
+      }
+      mat = std;
+    }
+    // масштаб текстуры: UV запечён wx/7 — повтор = 7/масштаб
+    for (const t of [this.grainTex, this.albedoTex, this.normalTex, this.roughTex]) {
+      t.repeat.set(rep, rep);
+    }
+    (mat as THREE.MeshStandardMaterial).wireframe = this.wire;
+    this.mat = mat;
+    // раздать новый материал всем построенным тайлам
+    for (const t of this.tiles.values()) t.mesh.material = mat;
+    if (old && old !== mat) old.dispose();
   }
 
-  texturesOn(): boolean { return this.mat.map === this.detailTex; }
+  /** Применить настройки текстур/шейдера на лету (вкладка «Ресурсы») */
+  setTextureConfig(cfg: AssetsSettings) {
+    this.cfg = { ...cfg };
+    this.rebuildMaterial();
+  }
+
+  /** Режим текстур по-прежнему включён (не 'off')? */
+  texturesOn(): boolean { return this.cfg.islandTextures !== 'off'; }
+
+  /** Телеметрия: текущий режим (E2E/настройки) */
+  mode(): IslandTextureMode { return this.cfg.islandTextures; }
+  shaderKind(): TerrainShaderKind { return this.cfg.terrainShader; }
+
+  /** Каркас рельефа (переносится на пересобранный материал) */
+  setWireframe(on: boolean) {
+    this.wire = on;
+    (this.mat as THREE.MeshStandardMaterial).wireframe = on;
+  }
 
   stats(): TerrainStats {
     let near = 0, tris = 0;
@@ -197,7 +360,7 @@ export class TerrainStreamer {
       const slope = Math.hypot(hx, hz) / (2 * e);
       const c = terrainColorAt(islIdx, wx, wz, h, slope, this._color);
       colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
-      uvs[i * 2] = wx / 7; uvs[i * 2 + 1] = wz / 7;
+      uvs[i * 2] = wx / UV_BASE; uvs[i * 2 + 1] = wz / UV_BASE;
     }
     g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));

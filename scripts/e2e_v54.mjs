@@ -207,7 +207,7 @@ check('F1: вода НЕпрозрачная (transparent=false, depthWrite=true
   water.transparent === false && water.depthWrite === true);
 
 // ================= G: ТЕКСТУРИРОВАНИЕ =================
-log('\n===== G: ТЕКСТУРИРОВАНИЕ ОСТРОВОВ (настройка) =====');
+log('\n===== G: ТЕКСТУРИРОВАНИЕ ОСТРОВОВ (вкладка «Ресурсы», схема v10) =====');
 ev(`window.__game.stepDebugNR(6)`);
 await sleep(300);
 const tex1 = jparse(ev(`(() => {
@@ -215,25 +215,31 @@ const tex1 = jparse(ev(`(() => {
   let v = null;
   try { v = JSON.parse(localStorage.getItem('seawolves.settings.v1')).v; } catch { }
   return JSON.stringify({
-    setting: g.settings.graphics.islandTextures,
+    setting: g.settings.assets.islandTextures,
     applied: g.world.terrain.texturesOn(),
+    mode: g.world.terrain.mode(),
+    shader: g.world.terrain.shaderKind(),
+    texFormat: g.world.terrain.group.children[0]?.material?.map?.format ?? null,
+    texDataLen: g.world.terrain.group.children[0]?.material?.map?.image?.data?.length ?? 0,
     tiles: window.__sea.terrain.tiles,
     nearTiles: window.__sea.terrain.nearTiles,
     schema: v,
   });
 })()`));
 log(JSON.stringify(tex1));
-check('G1: текстурирование ВКЛЮЧЕНО по умолчанию и применено',
-  tex1.setting === true && tex1.applied === true);
+check('G1: текстурирование ЗЕРНО по умолчанию и применено (RGBA-фикс чёрных островов)',
+  tex1.setting === 'grain' && tex1.applied === true && tex1.mode === 'grain'
+  && tex1.texFormat === 1023 && tex1.texDataLen === 256 * 256 * 4);
 check('G2: рельеф-стример построил тайлы (≥ 60, есть детальные)',
   tex1.tiles >= 60 && tex1.nearTiles >= 1, `тайлов ${tex1.tiles}, детальных ${tex1.nearTiles}`);
-ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.graphics.islandTextures = false; g.applySettings(s); return 'off'; })()`);
+ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'off'; g.applySettings(s); return 'off'; })()`);
 const tex2 = jparse(ev(`(() => {
   const g = window.__game;
-  return JSON.stringify({ applied: g.world.terrain.texturesOn(), setting: g.settings.graphics.islandTextures });
+  return JSON.stringify({ applied: g.world.terrain.texturesOn(), setting: g.settings.assets.islandTextures, hasMap: !!g.world.terrain.group.children[0]?.material?.map });
 })()`));
-check('G3: выключается настройкой', tex2.applied === false && tex2.setting === false);
-ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.graphics.islandTextures = true; g.applySettings(s); return 'on'; })()`);
+check('G3: выключается настройкой (режим off, map=null)',
+  tex2.applied === false && tex2.setting === 'off' && tex2.hasMap === false);
+ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'grain'; g.applySettings(s); return 'on'; })()`);
 const tex3 = jparse(ev(`JSON.stringify({ applied: window.__game.world.terrain.texturesOn() })`));
 check('G4: включается обратно', tex3.applied === true);
 

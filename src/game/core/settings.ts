@@ -7,6 +7,37 @@
 export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 
 // ============================================================
+// РЕСУРСЫ (Task 37): текстуры рельефа островов (3 режима —
+// выкл / процедурное зерно / PBR-карты) + шейдер рельефа.
+// PBR: альбедо × цвет вершин (биом) + карта нормалей + карта
+// шероховатости; Lambert/Phong — упрощённые шейдеры (без PBR-карт).
+// ============================================================
+export type IslandTextureMode = 'off' | 'grain' | 'pbr';
+export type TerrainShaderKind = 'standard' | 'physical' | 'lambert' | 'phong';
+
+export const ISLAND_TEXTURE_MODE_LABELS: Record<IslandTextureMode, string> = {
+  off: 'Выкл (ровный цвет вершин)',
+  grain: 'Зерно (процедурная детализация)',
+  pbr: 'PBR (текстуры + нормали + шероховатость)',
+};
+
+export const TERRAIN_SHADER_LABELS: Record<TerrainShaderKind, string> = {
+  standard: 'Standard (PBR, сбалансированный)',
+  physical: 'Physical (PBR, продвинутый: клиркоут/блик)',
+  lambert: 'Lambert (быстрый, без бликов)',
+  phong: 'Phong (дешёвый блик)',
+};
+
+export interface AssetsSettings {
+  islandTextures: IslandTextureMode; // режим текстурирования рельефа
+  texScale: number;        // м: размер повторения текстуры на местности (3..30)
+  terrainShader: TerrainShaderKind; // шейдер рельефа островов
+  roughness: number;       // 0..1 — шероховатость PBR-материала рельефа
+  metalness: number;       // 0..1 — металличность (камень ~0)
+  normalStrength: number;  // 0..2 — сила карты нормалей (только PBR)
+}
+
+// ============================================================
 // Погода: режим явлений + ветер. ОТ ВЕТРА ЗАВИСЯТ ВОЛНЫ —
 // высота волн прямо следует силе ветра (единое море Task 33).
 // ============================================================
@@ -71,7 +102,7 @@ export interface GraphicsSettings {
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
   useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
   wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
-  islandTextures: boolean; // ТЕКСТУРИРОВАНИЕ ОСТРОВОВ (Task 36): зерно песка/травы/скал
+  // ТЕКСТУРЫ/ШЕЙДЕРЫ РЕЛЬЕФА ПЕРЕЕХАЛИ в раздел assets (вкладка «Ресурсы», Task 37)
 }
 
 export interface ControlsSettings {
@@ -118,6 +149,7 @@ export interface GameSettings {
   weather: WeatherSettings;
   fx: FxSettings;
   physics: PhysicsSettings;   // режим физики + плавучесть (Task 33)
+  assets: AssetsSettings;     // текстуры/шейдеры рельефа + модели (Task 37)
 }
 
 /** Физика корабля и плавучесть (Task 33) */
@@ -126,7 +158,7 @@ export interface PhysicsSettings {
   buoyancy: BuoyancySettings; // посадка/углы/смыв матросов
 }
 
-export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe' | 'islandTextures'>> = {
+export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
   low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true },
   medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true },
   high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true },
@@ -135,8 +167,17 @@ export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'pres
 
 export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };
 
+export const DEFAULT_ASSETS: AssetsSettings = {
+  islandTextures: 'grain',   // зерно по умолчанию (быстро, детализирует рельеф)
+  texScale: 7,               // м на повтор — выверенный масштаб зерна
+  terrainShader: 'standard', // MeshStandardMaterial — базовый PBR
+  roughness: 0.96,           // матовая земля/песок/камень
+  metalness: 0,
+  normalStrength: 1,         // нормали PBR-режима в полную силу
+};
+
 export const DEFAULT_SETTINGS: GameSettings = {
-  graphics: { preset: 'high', ...QUALITY_PRESETS.high, wireframe: { ...DEFAULT_WIREFRAME }, islandTextures: true },
+  graphics: { preset: 'high', ...QUALITY_PRESETS.high, wireframe: { ...DEFAULT_WIREFRAME } },
   controls: {
     sailsUp: 'KeyW',
     sailsDown: 'KeyS',
@@ -182,6 +223,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
       washProbabilityPct: 30, washCooldownS: 8,
     },
   },
+  assets: { ...DEFAULT_ASSETS },
 };
 
 /** Рекомендуемые параметры погоды по режиму (кнопка режима подтягивает ветер) */
@@ -217,7 +259,12 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     коты покупаются в порту (до 5) — состояние игры, не настроек.
 // v9 (Task 36): ОСТРОВА — graphics.islandTextures: процедурное
 //     текстурирование рельефа. Мир и острова ×10 по площади.
-const SCHEMA_VER = 9;
+// v10 (Task 37): РЕСУРСЫ — новый раздел assets: islandTextures
+//     теперь РЕЖИМ ('off'|'grain'|'pbr', было boolean в graphics),
+//     texScale/terrainShader/roughness/metalness/normalStrength.
+//     Миграция: graphics.islandTextures=true → 'grain', false → 'off'.
+//     Все процедурные объекты — в каталоге GLB с габаритами.
+const SCHEMA_VER = 10;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -242,7 +289,10 @@ export function loadSettings(): GameSettings {
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
       if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
-      if (typeof g.islandTextures === 'boolean') s.graphics.islandTextures = g.islandTextures;
+      // v10: graphics.islandTextures (boolean) переехал в assets.islandTextures (режим)
+      if (typeof g.islandTextures === 'boolean') {
+        s.assets.islandTextures = g.islandTextures ? 'grain' : 'off';
+      }
       if (isObj(g.wireframe)) {
         const w = g.wireframe;
         for (const k of ['water', 'ships', 'islands', 'vegetation'] as const) {
@@ -315,6 +365,20 @@ export function loadSettings(): GameSettings {
       if (typeof f.smokeDensity === 'number') s.fx.smokeDensity = Math.min(2, Math.max(0, f.smokeDensity));
       if (typeof f.smokeTransparency === 'number') s.fx.smokeTransparency = Math.min(0.95, Math.max(0, f.smokeTransparency));
     }
+    // v10 (Task 37): раздел assets — текстуры/шейдеры рельефа
+    if (isObj(data.assets)) {
+      const a = data.assets;
+      if (a.islandTextures === 'off' || a.islandTextures === 'grain' || a.islandTextures === 'pbr') {
+        s.assets.islandTextures = a.islandTextures;
+      }
+      if (typeof a.texScale === 'number') s.assets.texScale = Math.min(30, Math.max(3, a.texScale));
+      if (a.terrainShader === 'standard' || a.terrainShader === 'physical' || a.terrainShader === 'lambert' || a.terrainShader === 'phong') {
+        s.assets.terrainShader = a.terrainShader;
+      }
+      if (typeof a.roughness === 'number') s.assets.roughness = Math.min(1, Math.max(0, a.roughness));
+      if (typeof a.metalness === 'number') s.assets.metalness = Math.min(1, Math.max(0, a.metalness));
+      if (typeof a.normalStrength === 'number') s.assets.normalStrength = Math.min(2, Math.max(0, a.normalStrength));
+    }
     // МИГРАЦИЯ v3: сохранение сделано до «реалистичного» боекомплекта —
     // сбрасываем только стартовый боезапас на новые дефолты.
     // v4: новые разделы sea/buoyancy просто берут дефолты (выше).
@@ -338,10 +402,11 @@ export function saveSettings(s: GameSettings) {
   }
 }
 
-/** Применить пресет к графике (копируем поля пресета; каркас и
- *  текстурирование островов — настройки пользователя, не перетираются) */
+/** Применить пресет к графике (копируем поля пресета; каркас —
+ *  настройка пользователя, не перетирается; текстуры рельефа —
+ *  в разделе assets, пресетом не трогаются) */
 export function applyPreset(g: GraphicsSettings, preset: QualityPreset): GraphicsSettings {
-  return { preset, ...QUALITY_PRESETS[preset], wireframe: { ...g.wireframe }, islandTextures: g.islandTextures };
+  return { preset, ...QUALITY_PRESETS[preset], wireframe: { ...g.wireframe } };
 }
 
 /** Реалистичная «недостача» боезапаса при выходе в море: каждый тип

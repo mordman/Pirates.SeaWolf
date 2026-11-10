@@ -1,17 +1,19 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode } from '@/game/core/settings';
-import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS } from '@/game/core/settings';
-import { PART_REGISTRY } from '@/game/glb/glbParts';
+import type { GameSettings, QualityPreset, ControlsSettings, WeatherMode, IslandTextureMode, TerrainShaderKind } from '@/game/core/settings';
+import { QUALITY_PRESETS, CONTROL_LABELS, keyLabel, DEFAULT_SETTINGS, applyPreset, WEATHER_PRESETS, ISLAND_TEXTURE_MODE_LABELS, TERRAIN_SHADER_LABELS } from '@/game/core/settings';
+import { PART_REGISTRY, PART_GROUP_ORDER, type PartGroup } from '@/game/glb/glbParts';
 
 // ============================================================
-// Экран настроек: Графика (пресеты, дальность, вода, тени),
-// Управление (переназначение клавиш), Звук. Всё применяется
-// сразу и сохраняется в localStorage.
+// Экран настроек: Графика, Погода, Физика, Игра, Управление,
+// Звук + РЕСУРСЫ (Task 37): текстуры рельефа (3 режима, шейдер,
+// PBR-параметры) и каталог всех процедурных объектов с
+// габаритами для подмены на GLB. Всё применяется сразу и
+// сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'weather' | 'physics' | 'gameplay' | 'controls' | 'audio';
+type Tab = 'graphics' | 'assets' | 'weather' | 'physics' | 'gameplay' | 'controls' | 'audio';
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
@@ -86,6 +88,9 @@ function MoneyInput({ value, onChange }: { value: number; onChange: (v: number) 
 }
 
 const inputCls = 'rounded border border-stone-600 bg-stone-900 px-2 py-1 text-[11px] text-stone-200 focus:border-amber-500 focus:outline-none';
+
+/** Габарит модели: до 2 знаков без хвостовых нулей (0.5, 1.72, 3.4) */
+const fmtM = (v: number) => String(+(+v).toFixed(2));
 
 export default function SettingsPanel({ initial, onApply, onClose }:
 { initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void }) {
@@ -162,7 +167,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
         <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
           <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
           <div className="flex gap-1">
-            {([['graphics', 'Графика'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-3 py-1 text-xs font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -246,14 +251,7 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     onChange={v => update(d => { d.graphics.pixelRatio = v; })}
                     format={v => `×${v.toFixed(2)}`} />
                 </Row>
-                <Row label="3D-модели деталей (GLB)" hint="загруженные .glb-модели вместо процедурных деталей; при ошибке — процедурные">
-                  <input type="checkbox" checked={g.useGLBModels} onChange={e => update(d => { d.graphics.useGLBModels = e.target.checked; })}
-                    className="h-4 w-4 accent-amber-500" />
-                </Row>
-                <Row label="Текстурирование островов" hint="процедурное зерно песка/травы/скал на рельефе островов (выкл — ровный цвет вершин)">
-                  <input type="checkbox" checked={g.islandTextures} onChange={e => update(d => { d.graphics.islandTextures = e.target.checked; })}
-                    className="h-4 w-4 accent-amber-500" />
-                </Row>
+                {/* Текстуры рельефа и GLB-модели — вкладка «Ресурсы» (Task 37) */}
               </div>
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Каркас: только треугольники без текстур</div>
@@ -278,31 +276,113 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
               </div>
-              {/* Каталог заменяемых деталей: единые описания + промпты генерации */}
+            </div>
+          )}
+
+          {tab === 'assets' && (
+            <div className="divide-y divide-stone-800/60">
+              {/* ============ ТЕКСТУРЫ ОСТРОВОВ ============ */}
               <div className="py-2">
-                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Замена деталей на GLB-модели</div>
-                <div className="space-y-1.5">
-                  {PART_REGISTRY.map(p => (
-                    <details key={p.id} className="group rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5">
-                      <summary className="flex cursor-pointer list-none items-center justify-between text-[11px] font-semibold text-stone-300 group-open:text-amber-200">
-                        <span>{p.label}</span>
-                        <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
-                          p.file ? 'text-emerald-300 bg-emerald-950/60' : 'text-stone-400 bg-stone-800/60'}`}>
-                          {p.file ? '.glb готова' : 'процедурная'}
-                        </span>
-                      </summary>
-                      <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-stone-400">
-                        <div>{p.description}</div>
-                        <div className="text-stone-500">Куда встраивается: <span className="text-stone-400">{p.target}</span></div>
-                        <div className="rounded bg-black/40 p-1.5 font-mono text-[9px] text-stone-500">{p.prompt}</div>
-                      </div>
-                    </details>
+                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Текстуры рельефа островов</div>
+                <div className="mb-2 flex gap-1.5">
+                  {(Object.keys(ISLAND_TEXTURE_MODE_LABELS) as IslandTextureMode[]).map(m => (
+                    <button key={m} onClick={() => update(d => { d.assets.islandTextures = m; })}
+                      className={`flex-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition ${
+                        s.assets.islandTextures === m
+                          ? 'border-amber-400 bg-amber-700/50 text-amber-100'
+                          : 'border-stone-700 bg-stone-900/60 text-stone-300 hover:border-amber-700'}`}>
+                      {ISLAND_TEXTURE_MODE_LABELS[m]}
+                    </button>
                   ))}
                 </div>
-                <div className="mt-1.5 text-[10px] text-stone-500">
-                  Промпт — для генерации модели внешним инструментом (текст→3D);
-                  готовый .glb кладётся в public/models и прописывается в реестре.
+                <Row label="Масштаб текстуры" hint="размер повторения на местности: меньше — мельче зерно">
+                  <Slider value={s.assets.texScale} min={3} max={30} step={1}
+                    onChange={v => update(d => { d.assets.texScale = v; })}
+                    format={v => `${v} м`} />
+                </Row>
+                <Row label="Шейдер рельефа" hint="Standard/Physical — PBR-материалы; Lambert/Phong — упрощённые (быстрее)">
+                  <select value={s.assets.terrainShader}
+                    onChange={e => update(d => { d.assets.terrainShader = e.target.value as TerrainShaderKind; })}
+                    className={inputCls}>
+                    {(Object.keys(TERRAIN_SHADER_LABELS) as TerrainShaderKind[]).map(k => (
+                      <option key={k} value={k}>{TERRAIN_SHADER_LABELS[k]}</option>
+                    ))}
+                  </select>
+                </Row>
+                <Row label="Шероховатость" hint={s.assets.terrainShader === 'lambert' ? 'не поддерживается Lambert' : '0 — глянец, 1 — матовая земля'}>
+                  <Slider value={s.assets.roughness} min={0} max={1} step={0.05}
+                    onChange={v => update(d => { d.assets.roughness = v; })}
+                    format={v => v.toFixed(2)} />
+                </Row>
+                <Row label="Металличность" hint="земля/камень — 0; блеск появляется у металла">
+                  <Slider value={s.assets.metalness} min={0} max={1} step={0.05}
+                    onChange={v => update(d => { d.assets.metalness = v; })}
+                    format={v => v.toFixed(2)} />
+                </Row>
+                <Row label="Сила рельефа (нормали)" hint={s.assets.islandTextures === 'pbr' ? '0 — гладко, 2 — грубая крошка' : 'только в режиме PBR'}>
+                  <Slider value={s.assets.normalStrength} min={0} max={2} step={0.1}
+                    onChange={v => update(d => { d.assets.normalStrength = v; })}
+                    format={v => `×${v.toFixed(1)}`} />
+                </Row>
+                <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
+                  Биом (песок/трава/джунгли/скалы) задаётся цветом вершин рельефа,
+                  текстура — детализация поверх: «зерно» — нейтральная крошка,
+                  «PBR» — альбедо + карта нормалей + карта шероховатости
+                  (реакция на свет). Применяется мгновенно, без перестройки мира.
                 </div>
+              </div>
+
+              {/* ============ 3D-МОДЕЛИ (GLB) ============ */}
+              <div className="py-2">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-wide text-stone-500">3D-модели: подмена процедурных объектов на GLB</div>
+                </div>
+                <Row label="Использовать GLB-модели" hint="загруженные .glb вместо процедурных деталей; при ошибке — тихий фолбэк на процедурные">
+                  <input type="checkbox" checked={g.useGLBModels} onChange={e => update(d => { d.graphics.useGLBModels = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <div className="mb-2 text-[10px] leading-relaxed text-stone-500">
+                  Каталог ВСЕХ процедурных объектов игры с габаритами (Ш×В×Г, м) —
+                  эталон для подгонки готовой GLB-модели под правильный размер.
+                  Файл кладётся в <span className="font-mono text-stone-400">public/models/</span> и
+                  прописывается в реестре (<span className="font-mono text-stone-400">src/game/glb/glbParts.ts</span>).
+                  Растительность подменяется сразу; остальные слоты — по мере подключения.
+                </div>
+                {PART_GROUP_ORDER.map((grp: PartGroup) => {
+                  const parts = PART_REGISTRY.filter(p => p.group === grp);
+                  if (!parts.length) return null;
+                  return (
+                    <div key={grp} className="mb-2">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-amber-600/80">{grp}</div>
+                      <div className="space-y-1.5">
+                        {parts.map(p => (
+                          <details key={p.id} className="group rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5">
+                            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[11px] font-semibold text-stone-300 group-open:text-amber-200">
+                              <span className="min-w-0 truncate">{p.label}</span>
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                <span className="rounded bg-black/50 px-1.5 py-0.5 font-mono text-[9px] text-stone-400"
+                                  title="Габариты процедурной модели: ширина × высота × глубина, м">
+                                  {fmtM(p.size.w)}×{fmtM(p.size.h)}×{fmtM(p.size.d)} м
+                                </span>
+                                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                                  p.file ? 'text-emerald-300 bg-emerald-950/60' : p.wired ? 'text-amber-500/90 bg-amber-950/40' : 'text-stone-400 bg-stone-800/60'}`}>
+                                  {p.file ? '.glb' : p.wired ? 'слот готов' : 'процедурная'}
+                                </span>
+                              </span>
+                            </summary>
+                            <div className="mt-1.5 space-y-1 text-[10px] leading-relaxed text-stone-400">
+                              <div>{p.description}</div>
+                              <div className="text-stone-500">Куда встраивается: <span className="font-mono text-stone-400">{p.target}</span>
+                                {p.normHeight > 0 && <> · нормализация по высоте: <span className="text-stone-400">{p.normHeight} м</span></>}
+                              </div>
+                              <div className="rounded bg-black/40 p-1.5 font-mono text-[9px] text-stone-500">{p.prompt}</div>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

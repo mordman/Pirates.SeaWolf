@@ -312,10 +312,10 @@ export class Game {
     this.applyFx(this.settings.fx);
     this.updateParticleScale();
     // МИР ×10 (Task 36): видимость статики — от дальности прорисовки;
-    // текстурирование рельефа — из настроек
+    // текстуры/шейдер рельефа — раздел assets (Task 37)
     this.world = new World({
       visDistance: g.drawDistance,
-      textures: g.islandTextures,
+      textures: this.settings.assets,
     });
     // стрим рельефа: тайлы держим с запасом за дальностью видимости
     this.world.terrain.streamDist = g.drawDistance + 2200;
@@ -513,13 +513,16 @@ export class Game {
     if (JSON.stringify(prev.graphics.wireframe) !== JSON.stringify(g.wireframe)) {
       this.applyWireframe(g.wireframe);
     }
-    // Task 36: МИР ×10 — текстурирование островов + дальность
-    // видимости статики/стрима рельефа
-    if (prev.graphics.islandTextures !== g.islandTextures) {
-      this.world.setTerrainTextures(g.islandTextures);
-      this.pushMessage(g.islandTextures
-        ? 'Текстурирование островов: ВКЛ (зерно песка/травы/скал)'
-        : 'Текстурирование островов: ВЫКЛ (ровный цвет)');
+    // Task 37: РЕСУРСЫ — режим текстур/шейдер/PBR-параметры рельефа
+    // (вкладка «Ресурсы»); применяется на лету без перестройки тайлов
+    if (JSON.stringify(prev.assets) !== JSON.stringify(s.assets)) {
+      this.world.setTerrainAssets(s.assets);
+      const modeLabels: Record<string, string> = {
+        off: 'ВЫКЛ (ровный цвет вершин)',
+        grain: 'зерно (процедурная детализация)',
+        pbr: 'PBR (текстуры + нормали + шероховатость)',
+      };
+      this.pushMessage(`Рельеф островов: ${modeLabels[s.assets.islandTextures]} · шейдер ${s.assets.terrainShader}`);
     }
     if (prev.graphics.drawDistance !== g.drawDistance) {
       this.world.visDistance = g.drawDistance;
@@ -546,7 +549,10 @@ export class Game {
       });
     }
     // острова (рельеф + постройки + животные) и растительность:
-    // категория помечена в userData.wire при сборке мира
+    // категория помечена в userData.wire при сборке мира.
+    // РЕЛЬЕФ — через метод стримера: флаг каркаса переносится на
+    // ЛЮБОЙ будущий материал (шейдер меняется — каркас остаётся)
+    this.world.setTerrainWireframe(w.islands);
     this.world.group.traverse((o) => {
       const cat = o.userData.wire as string | undefined;
       if (cat !== 'island' && cat !== 'veg') return;

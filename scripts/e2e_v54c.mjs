@@ -43,11 +43,12 @@ const check = (name, cond, extra = '') => {
   if (!cond) fails++;
 };
 
-log('\n===== G-финал: миграция настроек v8 → v9 =====');
+log('\n===== G-финал: миграция настроек v8 → v10 =====');
 ev(`(() => {
   const g = window.__game;
   const data = { ...structuredClone(g.settings), v: 8 };
   delete data.graphics.islandTextures;
+  delete data.assets;
   localStorage.setItem('seawolves.settings.v1', JSON.stringify(data));
   return 'v8 saved';
 })()`);
@@ -65,11 +66,11 @@ const mig = jparse(ev(`(() => {
   const g = window.__game;
   let v = null;
   try { v = JSON.parse(localStorage.getItem('seawolves.settings.v1')).v; } catch { }
-  return JSON.stringify({ v, tex: g.settings.graphics.islandTextures, applied: g.world.terrain.texturesOn() });
+  return JSON.stringify({ v, tex: g.settings.assets.islandTextures, applied: g.world.terrain.texturesOn() });
 })()`));
 log('loaded after reload:', reloaded, JSON.stringify(mig));
-check('G6: сохранение v8 читается, islandTextures=true по умолчанию, схема перезаписана в v9',
-  reloaded && mig.v === 9 && mig.tex === true && mig.applied === true);
+check('G6: сохранение v8 читается, islandTextures=\'grain\' по умолчанию, схема перезаписана в v10',
+  reloaded && mig.v === 10 && mig.tex === 'grain' && mig.applied === true);
 
 // скриншот: остров с моря (фикс прозрачности + текстуры)
 ev(`(() => {

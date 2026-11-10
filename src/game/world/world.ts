@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RNG, fbm2, clamp, smoothstep } from '../core/rng';
+import type { AssetsSettings } from '../core/settings';
 import { buildFishingVillage, type FishingVillage, type WorldBoat, buildCoastFleet, type CoastFleet } from './fishing';
 import { TerrainStreamer } from './terrain';
 import { buildVillageFolk, type LandFolk } from './islandFolk';
@@ -607,10 +608,11 @@ export class World {
   private vegGrid = new Map<number, { x: number; z: number; r: number }[]>();
   private static VEG_CELL = 48;
 
-  constructor(opts?: { visDistance?: number; textures?: boolean }) {
+  constructor(opts?: { visDistance?: number; textures?: AssetsSettings }) {
     if (opts?.visDistance) this.visDistance = opts.visDistance;
-    // РЕЛЬЕФ: тайлы вокруг игрока (детальные вблизи, грубые вдали)
-    this.terrain = new TerrainStreamer({ textures: opts?.textures ?? true });
+    // РЕЛЬЕФ: тайлы вокруг игрока (детальные вблизи, грубые вдали);
+    // режим текстур/шейдера — из раздела assets (Task 37)
+    this.terrain = new TerrainStreamer({ textures: opts?.textures });
     this.group.add(this.terrain.group);
     this.buildVegetation();
     this.buildPorts();
@@ -631,8 +633,11 @@ export class World {
     });
   }
 
-  /** включить/выключить процедурную текстуру рельефа (настройка) */
-  setTerrainTextures(on: boolean) { this.terrain.setTextures(on); }
+  /** применить настройки текстур/шейдера рельефа (вкладка «Ресурсы») */
+  setTerrainAssets(cfg: AssetsSettings) { this.terrain.setTextureConfig(cfg); }
+
+  /** каркас рельефа переносится на ЛЮБОЙ текущий материал рельефа */
+  setTerrainWireframe(on: boolean) { this.terrain.setWireframe(on); }
 
   // ---------- растительность ----------
   // ДЕРЕВЬЯ ПО ОСТРОВУ: раньше все деревья всех островов сидели в
