@@ -423,8 +423,8 @@ if (!islE) {
   check('E: главный остров вырос (r≥330)', islE.baseR >= 330, `r=${islE.baseR}`);
   check('E: проливы между берегами ≥ 750 м', islE.minGap >= 750, `мин=${islE.minGap}`);
   check('E: карта растянута (острова дальше 3.5 км)', islE.far > 3500, `макс=${islE.far}`);
-  check('E: «Плёс» на новом месте (375,−2100)',
-    islE.ples && Math.abs(islE.ples.x - 375) < 5 && Math.abs(islE.ples.z + 2100) < 5,
+  check('E: «Плёс» на новом месте (3750,−21000 — мир ×10, Task 36)',
+    islE.ples && Math.abs(islE.ples.x - 3750) < 50 && Math.abs(islE.ples.z + 21000) < 50,
     JSON.stringify(islE.ples));
 }
 const travE = jparse(ev(`(() => {
@@ -434,7 +434,7 @@ const travE = jparse(ev(`(() => {
 })()`));
 log('E-телепорт:', JSON.stringify(travE));
 check('E: быстрое перемещение на «Плёс» живо',
-  travE && travE.err === null && Math.hypot(travE.x - 375, travE.z + 2100) < 900,
+  travE && travE.err === null && Math.hypot(travE.x - 3750, travE.z + 21000) < 9000,
   JSON.stringify(travE));
 
 // ================= F: гальюнные фигуры =================
@@ -471,7 +471,11 @@ if (!figF) {
   check('F: фигура переносится на новый корабль',
     figF.sloopOn === 'figure.mermaid' && figF.onSloop > 5,
     `sloop=${figF.onSloop}`);
-  check('F: штатный шток возвращается', figF.stockBack <= 2, `примитивов=${figF.stockBack}`);
+  // Task 38: штатный шток — РЕЗНОЙ СВИТОК (5 примитивов: стержень,
+  // завиток, 2 усика, навершие), а не один конус-«артефакт»
+  check('F: штатный свиток возвращается (не конус)',
+    figF.stockBack === figF.stockChildren && figF.stockBack >= 4,
+    `примитивов=${figF.stockBack}`);
 }
 
 // ================= G: украшения бортов (золото блестит) =================

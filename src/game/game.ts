@@ -521,6 +521,7 @@ export class Game {
         off: 'ВЫКЛ (ровный цвет вершин)',
         grain: 'зерно (процедурная детализация)',
         pbr: 'PBR (текстуры + нормали + шероховатость)',
+        url: this.settings.assets.texUrl ? 'своя текстура по ссылке' : 'своя текстура (ссылка не задана — зерно)',
       };
       this.pushMessage(`Рельеф островов: ${modeLabels[s.assets.islandTextures]} · шейдер ${s.assets.terrainShader}`);
     }

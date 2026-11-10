@@ -74,6 +74,28 @@ function WindCompass({ hud }: { hud: HudState }) {
 }
 
 // ============================================================
+// НАВИГАЦИОННАЯ КАРТА (большая, Tab): масштаб из РЕАЛЬНЫХ границ
+// архипелага — весь мир ×10 (±45×36 км) вписывается в холст
+// 640×520. До Task 38 стоял фикс 0.048 px/м (эпоха мира ±4.5 км):
+// после роста островов ×10 карта покрывала лишь ±6.7 км, и почти
+// весь архипелаг лежал за краем. Одна функция и для отрисовки,
+// и для клика-перехода — координаты не разъезжаются.
+// ============================================================
+const NAVMAP_MARGIN = 1.06; // запас, чтобы подписи не резались
+function navMapScale(isls: { x: number; z: number; r: number; pts?: { x: number; z: number }[] }[]): number {
+  let mx = 9000, mz = 7000; // нижняя граница (малыши не сжимают карту)
+  for (const isl of isls) {
+    mx = Math.max(mx, Math.abs(isl.x) + isl.r * 1.5);
+    mz = Math.max(mz, Math.abs(isl.z) + isl.r * 1.5);
+    for (const p of isl.pts ?? []) {
+      mx = Math.max(mx, Math.abs(p.x));
+      mz = Math.max(mz, Math.abs(p.z));
+    }
+  }
+  return Math.min(640 / (2 * mx * NAVMAP_MARGIN), 520 / (2 * mz * NAVMAP_MARGIN));
+}
+
+// ============================================================
 // МИНИ-КАРТА: круглый радар вокруг корабля (острова, суда, ветер)
 // ============================================================
 function MiniMap({ hud }: { hud: HudState }) {
@@ -368,6 +390,14 @@ export default function Home() {
     gameRef.current?.applySettings(s);
   }, []);
 
+  // НАВИГАЦИОННАЯ КАРТА: масштаб под МИР ×10 (Task 36: архипелаг
+  // ±45×36 км). Прежний фикс 0.048 px/м покрывал лишь ±6.7 км —
+  // почти все острова были ЗА краем карты. Теперь масштаб считается
+  // ПО ФАКТИЧЕСКИМ ГРАНИЦАМ полигонов островов (весь мир вписывается
+  // в холст 640×520 с запасом 6%). ЕДИНАЯ функция для отрисовки и
+  // клика-перехода — координаты всегда совпадают.
+  const scale = navMapScale(hud?.mapIslands ?? []); // мир -> пиксели
+
   // отрисовка карты
   useEffect(() => {
     if (!mapOpen || !hud || !mapCanvasRef.current) return;
@@ -381,7 +411,6 @@ export default function Home() {
     ctx.strokeStyle = 'rgba(255,255,255,0.05)';
     for (let x = 0; x < W; x += 60) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
     for (let y = 0; y < H; y += 60) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-    const scale = 0.048; // мир -> пиксели (увеличенная карта до ±4.5 км)
     const cx = W / 2, cy = H / 2;
     const px = (x: number) => cx + x * scale;
     const pz = (z: number) => cy + z * scale;
@@ -460,7 +489,6 @@ export default function Home() {
     const rect = cv.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (cv.width / rect.width);
     const my = (e.clientY - rect.top) * (cv.height / rect.height);
-    const scale = 0.048;
     const wx = (mx - cv.width / 2) / scale;
     const wz = (my - cv.height / 2) / scale;
     let bestName: string | null = null;

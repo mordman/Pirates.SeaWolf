@@ -92,6 +92,38 @@ const inputCls = 'rounded border border-stone-600 bg-stone-900 px-2 py-1 text-[1
 /** Габарит модели: до 2 знаков без хвостовых нулей (0.5, 1.72, 3.4) */
 const fmtM = (v: number) => String(+(+v).toFixed(2));
 
+/** Task 38: ввод ссылки на СВОЮ текстуру рельефа (режим 'url').
+ *  Локальное поле — коммит по Enter/потере фокуса: не дёргаем
+ *  загрузку на каждый символ. Разрешены http(s)://, data:image/
+ *  и относительные /пути (CORS — на стороне сервера-источника). */
+function TexUrlInput({ url, onCommit }: { url: string; onCommit: (u: string) => void }) {
+  const [v, setV] = useState(url);
+  const [err, setErr] = useState<string | null>(null);
+  // внешняя синхронизация — через key={url} у родителя (ремонт с
+  // свежим начальным значением), без setState в эффекте
+  const commit = () => {
+    // data:URL длинные (вшитая картинка) — им даём 200К, ссылкам 600
+    const cap = /^data:image\//i.test(v) ? 200000 : 600;
+    const u = v.trim().slice(0, cap);
+    if (u === '' || /^(https?:\/\/|data:image\/|\/)/i.test(u)) {
+      setErr(null);
+      if (u !== url) onCommit(u);
+    } else {
+      setErr('Только http(s)://, data:image/… или /путь');
+    }
+  };
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <input type="text" value={v} placeholder="https://…/sand.png или /textures/rock.jpg"
+        onChange={e => { setV(e.target.value); setErr(null); }}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        className="w-64 rounded border border-stone-600 bg-stone-900 px-2 py-1 text-[11px] text-stone-200 focus:border-amber-500 focus:outline-none" />
+      {err && <span className="text-[9px] text-red-400">{err}</span>}
+    </div>
+  );
+}
+
 export default function SettingsPanel({ initial, onApply, onClose }:
 { initial: GameSettings; onApply: (s: GameSettings) => void; onClose: () => void }) {
   const [s, setS] = useState<GameSettings>(() => structuredClone(initial));
@@ -284,10 +316,10 @@ export default function SettingsPanel({ initial, onApply, onClose }:
               {/* ============ ТЕКСТУРЫ ОСТРОВОВ ============ */}
               <div className="py-2">
                 <div className="mb-1.5 text-[10px] uppercase tracking-wide text-stone-500">Текстуры рельефа островов</div>
-                <div className="mb-2 flex gap-1.5">
+                <div className="mb-2 grid grid-cols-2 gap-1.5">
                   {(Object.keys(ISLAND_TEXTURE_MODE_LABELS) as IslandTextureMode[]).map(m => (
                     <button key={m} onClick={() => update(d => { d.assets.islandTextures = m; })}
-                      className={`flex-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition ${
+                      className={`rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition ${
                         s.assets.islandTextures === m
                           ? 'border-amber-400 bg-amber-700/50 text-amber-100'
                           : 'border-stone-700 bg-stone-900/60 text-stone-300 hover:border-amber-700'}`}>
@@ -295,6 +327,13 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                     </button>
                   ))}
                 </div>
+                {/* Task 38: режим 'url' — своя текстура по ссылке */}
+                {s.assets.islandTextures === 'url' && (
+                  <Row label="Ссылка на текстуру" hint="png/jpg/webp; плиткой поверх цвета вершин; Enter — применить">
+                    <TexUrlInput key={s.assets.texUrl} url={s.assets.texUrl}
+                      onCommit={u => update(d => { d.assets.texUrl = u; })} />
+                  </Row>
+                )}
                 <Row label="Масштаб текстуры" hint="размер повторения на местности: меньше — мельче зерно">
                   <Slider value={s.assets.texScale} min={3} max={30} step={1}
                     onChange={v => update(d => { d.assets.texScale = v; })}
@@ -328,7 +367,9 @@ export default function SettingsPanel({ initial, onApply, onClose }:
                   Биом (песок/трава/джунгли/скалы) задаётся цветом вершин рельефа,
                   текстура — детализация поверх: «зерно» — нейтральная крошка,
                   «PBR» — альбедо + карта нормалей + карта шероховатости
-                  (реакция на свет). Применяется мгновенно, без перестройки мира.
+                  (реакция на свет), «своя текстура» — ваша картинка по ссылке
+                  (пока грузится или при ошибке — остаётся зерно).
+                  Применяется мгновенно, без перестройки мира.
                 </div>
               </div>
 

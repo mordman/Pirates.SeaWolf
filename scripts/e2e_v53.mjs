@@ -145,8 +145,8 @@ const afterReload = jparse(ev(`(() => {
   });
 })()`));
 log(JSON.stringify(afterReload));
-check('A5: схема v9 (Task 36): флаг сохранён, после перезагрузки экипаж — коты',
-  afterReload.v === 9 && afterReload.flag === true && afterReload.isCats === true);
+check('A5: флаг сохранён, после перезагрузки экипаж — коты (схема перезаписана в v11, Task 38)',
+  afterReload.v === 11 && afterReload.flag === true && afterReload.isCats === true);
 // вернуть матросов (чистый стенд для B/C/D)
 ev(`(() => {
   const g = window.__game;

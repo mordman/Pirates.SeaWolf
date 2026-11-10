@@ -504,8 +504,8 @@ const afterReload = jparse(ev(`(() => {
   });
 })()`));
 log(JSON.stringify(afterReload));
-check('H5: настройки v6 читаются после перезагрузки и ПРИМЕНЯЮТСЯ (режим/шлюпки/каркас)',
-  afterReload.v === 6 && afterReload.mode === 'simple' && afterReload.physApplied === 'simple'
+check('H5: настройки v6 читаются после перезагрузки и ПРИМЕНЯЮТСЯ (режим/шлюпки/каркас; схема перезаписана в v11, Task 38)',
+  afterReload.v === 11 && afterReload.mode === 'simple' && afterReload.physApplied === 'simple'
   && afterReload.boats === 1 && afterReload.ctl === true && afterReload.wf === true,
   JSON.stringify(afterReload));
 // вернуть дефолты в localStorage

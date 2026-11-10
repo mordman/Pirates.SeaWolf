@@ -12,13 +12,14 @@ export type QualityPreset = 'low' | 'medium' | 'high' | 'ultra';
 // PBR: альбедо × цвет вершин (биом) + карта нормалей + карта
 // шероховатости; Lambert/Phong — упрощённые шейдеры (без PBR-карт).
 // ============================================================
-export type IslandTextureMode = 'off' | 'grain' | 'pbr';
+export type IslandTextureMode = 'off' | 'grain' | 'pbr' | 'url';
 export type TerrainShaderKind = 'standard' | 'physical' | 'lambert' | 'phong';
 
 export const ISLAND_TEXTURE_MODE_LABELS: Record<IslandTextureMode, string> = {
   off: 'Выкл (ровный цвет вершин)',
   grain: 'Зерно (процедурная детализация)',
   pbr: 'PBR (текстуры + нормали + шероховатость)',
+  url: 'Своя текстура (ссылка)',
 };
 
 export const TERRAIN_SHADER_LABELS: Record<TerrainShaderKind, string> = {
@@ -35,6 +36,7 @@ export interface AssetsSettings {
   roughness: number;       // 0..1 — шероховатость PBR-материала рельефа
   metalness: number;       // 0..1 — металличность (камень ~0)
   normalStrength: number;  // 0..2 — сила карты нормалей (только PBR)
+  texUrl: string;          // ссылка на СВОЮ текстуру рельефа (http(s)/data:/относительная) — режим 'url'
 }
 
 // ============================================================
@@ -174,6 +176,7 @@ export const DEFAULT_ASSETS: AssetsSettings = {
   roughness: 0.96,           // матовая земля/песок/камень
   metalness: 0,
   normalStrength: 1,         // нормали PBR-режима в полную силу
+  texUrl: '',                // своя текстура не задана (режим 'url' отключён)
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -264,7 +267,10 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     texScale/terrainShader/roughness/metalness/normalStrength.
 //     Миграция: graphics.islandTextures=true → 'grain', false → 'off'.
 //     Все процедурные объекты — в каталоге GLB с габаритами.
-const SCHEMA_VER = 10;
+// v11 (Task 38): режим 'url' — СВОЯ текстура рельефа по ссылке
+//     (assets.texUrl): png/jpg/webp/http(s)/data:, укладывается
+//     плиткой поверх цвета вершин; пока грузится/ошибка — зерно.
+const SCHEMA_VER = 11;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -368,7 +374,7 @@ export function loadSettings(): GameSettings {
     // v10 (Task 37): раздел assets — текстуры/шейдеры рельефа
     if (isObj(data.assets)) {
       const a = data.assets;
-      if (a.islandTextures === 'off' || a.islandTextures === 'grain' || a.islandTextures === 'pbr') {
+      if (a.islandTextures === 'off' || a.islandTextures === 'grain' || a.islandTextures === 'pbr' || a.islandTextures === 'url') {
         s.assets.islandTextures = a.islandTextures;
       }
       if (typeof a.texScale === 'number') s.assets.texScale = Math.min(30, Math.max(3, a.texScale));
@@ -378,6 +384,14 @@ export function loadSettings(): GameSettings {
       if (typeof a.roughness === 'number') s.assets.roughness = Math.min(1, Math.max(0, a.roughness));
       if (typeof a.metalness === 'number') s.assets.metalness = Math.min(1, Math.max(0, a.metalness));
       if (typeof a.normalStrength === 'number') s.assets.normalStrength = Math.min(2, Math.max(0, a.normalStrength));
+      // v11 (Task 38): ссылка на свою текстуру рельефа (режим 'url').
+      // data:URL — до 200К символов (вшитая картинка), ссылки — до 600
+      if (typeof a.texUrl === 'string') {
+        const raw = a.texUrl.trim();
+        const cap = /^data:image\//i.test(raw) ? 200000 : 600;
+        const u = raw.slice(0, cap);
+        if (u === '' || /^(https?:\/\/|data:image\/|\/)/i.test(u)) s.assets.texUrl = u;
+      }
     }
     // МИГРАЦИЯ v3: сохранение сделано до «реалистичного» боекомплекта —
     // сбрасываем только стартовый боезапас на новые дефолты.

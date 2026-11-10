@@ -18,7 +18,7 @@ export interface FigureDef {
 }
 
 export const FIGUREHEADS: FigureDef[] = [
-  { id: 'figure.stock', name: 'Резной шток', price: 0, desc: 'Штатный позолоченный конус верфи', swatch: '#c9a24a' },
+  { id: 'figure.stock', name: 'Резной шток', price: 0, desc: 'Штатный свиток верфи: спиральный завиток с навершием', swatch: '#c9a24a' },
   { id: 'figure.mermaid', name: 'Золотая русалка', price: 900, desc: 'Русалка с зеркалом и гребнем — гребцам силу, штурману — верный путь', swatch: '#e8c56a' },
   { id: 'figure.lion', name: 'Лев Бискайи', price: 800, desc: 'Оскаленный лев — герб бискайских мореходов, пугает вражеских вахтенных', swatch: '#d9a441' },
   { id: 'figure.skull', name: 'Костяной жнец', price: 1000, desc: 'Череп на скрещённых костях: «сдавайся, пока живой»', swatch: '#e5ddc8' },
@@ -284,10 +284,35 @@ export function buildFigurehead(P: ShipPreset, id: string): THREE.Group {
     put(tail, 0, s * 0.35, -s * 0.42, -0.4);
     g.add(tail);
   } else {
-    // figure.stock — штатный золотой конус (как был до того)
-    const spike = cone(s * 0.3, s * 1.1, gold);
-    put(spike, 0, s * 0.5, s * 0.2, -0.5);
-    g.add(spike);
+    // figure.stock — резной СВИТОК (billet head): спиральный завиток
+    // на стержне с навершием-шаром и боковыми усиками. ФИКС Task 38:
+    // прежний «штатный конус» (один ConeGeometry остриём вверх)
+    // на носу выглядел посторонним артефактом.
+    // стержень с лёгким наклоном вперёд
+    const stem = cyl(s * 0.09, s * 0.13, s * 0.95, gold);
+    put(stem, 0, s * 0.47, s * 0.04, 0.16);
+    g.add(stem);
+    // главный завиток — спиральная труба в плоскости борта:
+    // хвост снизу у стержня закручивается внутрь-вверх
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 12; i++) {
+      const t = i / 12;
+      const a = -0.55 * Math.PI + t * Math.PI * 2.05;
+      const rr = s * 0.40 * (1 - t * 0.78);
+      pts.push(new THREE.Vector3(0, s * 1.0 + Math.sin(a) * rr, s * 0.10 + Math.cos(a) * rr));
+    }
+    const volute = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 28, s * 0.075, 8), gold);
+    g.add(volute);
+    // боковые усики-завитки (зеркальные дуги)
+    for (const dx of [-1, 1]) {
+      const whisker = new THREE.Mesh(
+        new THREE.TorusGeometry(s * 0.20, s * 0.05, 6, 10, Math.PI * 1.45), gold);
+      put(whisker, dx * s * 0.24, s * 0.58, s * 0.06, 0.35, dx * 0.55, dx * 0.5);
+      g.add(whisker);
+    }
+    // навершие — шар
+    g.add(put(sph(s * 0.13, gold), 0, s * 1.32, s * 0.10));
   }
 
   for (const o of g.children) (o as THREE.Mesh).castShadow = true;

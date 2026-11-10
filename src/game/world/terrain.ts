@@ -3,20 +3,19 @@ import { ISLANDS, heightAt, terrainColorAt } from './world';
 import type { AssetsSettings, IslandTextureMode, TerrainShaderKind } from '../core/settings';
 
 // ============================================================
-// РЕЛЬЕФ ОСТРОВОВ — СТРИМЕР ТАЙЛОВ (Task 36/37).
+// РЕЛЬЕФ ОСТРОВОВ — СТРИМЕР ТАЙЛОВ (Task 36/37/38).
 // Мир вырос в 100 раз: острова 1–3.3 км радиусом не вытянуть
 // одним мешем на остров. Рельеф собирается ТАЙЛАМИ вокруг
 // игрока: дальние — ячейка 24 м (силуэт с моря), ближние
 // (< 900 м) — ячейка 8 м (ходьба, пляжи, тропы, обрывы).
-// У каждого тайла ЮБКА (skirt) по периметру — стыки LOD без дыр.
-// Построение — через ОЧЕРЕДЬ (без фризов). ЦВЕТ —
-// terrainColorAt; ТЕКСТУРЫ — Task 37: три режима (выкл /
-// зерно / PBR с картой нормалей и шероховатости), выбор шейдера
-// (Standard/Physical/Lambert/Phong), масштаб и PBR-параметры —
-// из настроек (вкладка «Ресурсы»).
-// ФИКС Task 37: прежняя DataTexture делалась в RGBFormat —
-// формат удалён из WebGL-конвейера, текстура грузилась битой
-// и рендерилась ЧЁРНОЙ (острова были чёрными) — теперь RGBA.
+// У каждого тайла ЮБКА (skirt) по периметру — стыки LOD без дыр
+// (ФИКС Task 38: индексы юбки считались от ИНДЕКСОВ ВЕРШИН и
+// выходили за буфер — рисовали мусорные «шторы»/«паруса» у
+// островов; теперь от ПОЗИЦИЙ в массиве кромки + наружный
+// обход). Построение — через ОЧЕРЕДЬ (без фризов). ЦВЕТ —
+// terrainColorAt; ТЕКСТУРЫ — Task 37: режимы выкл/зерно/PBR,
+// Task 38: режим 'url' — СВОЯ текстура по ссылке из настроек
+// (вкладка «Ресурсы»): пока грузится или при ошибке — зерно.
 // ============================================================
 
 const TILE = 480;            // сторона тайла, м
@@ -173,6 +172,10 @@ export class TerrainStreamer {
   private _color = new THREE.Color();
   /** текущая конфигурация текстур (для телеметрии/настроек) */
   private cfg: AssetsSettings;
+  /** Task 38: своя текстура по ссылке — загруженная, её URL и состояние */
+  private urlTex: THREE.Texture | null = null;
+  private urlKey = '';
+  private urlState: 'none' | 'loading' | 'ok' | 'error' = 'none';
 
   constructor(opts?: { textures?: AssetsSettings; streamDist?: number }) {
     if (opts?.streamDist) this.streamDist = opts.streamDist;
@@ -182,8 +185,9 @@ export class TerrainStreamer {
     this.roughTex = makeRoughTexture();
     this.cfg = opts?.textures ?? {
       islandTextures: 'grain', texScale: 7, terrainShader: 'standard',
-      roughness: 0.96, metalness: 0, normalStrength: 1,
+      roughness: 0.96, metalness: 0, normalStrength: 1, texUrl: '',
     };
+    if (this.cfg.islandTextures === 'url' && this.cfg.texUrl) this.loadUrlTexture(this.cfg.texUrl);
     this.rebuildMaterial();
     this.group.matrixAutoUpdate = false;
   }
@@ -226,11 +230,17 @@ export class TerrainStreamer {
         std.normalMap = this.normalTex;
         std.roughnessMap = this.roughTex;
         std.normalScale = new THREE.Vector2(this.cfg.normalStrength, this.cfg.normalStrength);
+      } else if (m === 'url') {
+        // Task 38: СВОЯ текстура по ссылке. Пока не загрузилась (или
+        // ошибка/пустая ссылка) — НЕ оставляем рельеф голым: зерно.
+        std.map = this.urlTex ?? this.grainTex;
       }
       mat = std;
     }
     // масштаб текстуры: UV запечён wx/7 — повтор = 7/масштаб
-    for (const t of [this.grainTex, this.albedoTex, this.normalTex, this.roughTex]) {
+    const allTex: THREE.Texture[] = [this.grainTex, this.albedoTex, this.normalTex, this.roughTex];
+    if (this.urlTex) allTex.push(this.urlTex);
+    for (const t of allTex) {
       t.repeat.set(rep, rep);
     }
     (mat as THREE.MeshStandardMaterial).wireframe = this.wire;
@@ -242,8 +252,47 @@ export class TerrainStreamer {
 
   /** Применить настройки текстур/шейдера на лету (вкладка «Ресурсы») */
   setTextureConfig(cfg: AssetsSettings) {
+    const prev = this.cfg;
     this.cfg = { ...cfg };
+    // Task 38: сменилась ссылка в режиме 'url' — грузим новую
+    if (this.cfg.islandTextures === 'url' && this.cfg.texUrl && this.cfg.texUrl !== prev.texUrl) {
+      this.loadUrlTexture(this.cfg.texUrl);
+    }
     this.rebuildMaterial();
+  }
+
+  /** Task 38: состояние загрузки своей текстуры (E2E/настройки) */
+  urlTexState(): 'none' | 'loading' | 'ok' | 'error' { return this.urlState; }
+
+  /** Task 38: асинхронная загрузка СВОЕЙ текстуры рельефа по ссылке.
+   *  png/jpg/webp, http(s)/data:/относительный путь; CORS на стороне
+   *  сервера. После загрузки — пересборка материала (пока грузится
+   *  или при ошибке рельеф остаётся с зерном, не чёрным). */
+  private loadUrlTexture(url: string) {
+    if (this.urlKey === url && this.urlTex) return; // уже загружена
+    this.urlState = 'loading';
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
+    loader.load(url, tex => {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      const old = this.urlTex;
+      this.urlTex = tex;
+      this.urlKey = url;
+      this.urlState = 'ok';
+      this.rebuildMaterial();
+      old?.dispose();
+    }, undefined, () => {
+      // не загрузилось (CORS/404/битый файл) — прежняя текстура
+      // уже не соответствует ссылке: сбрасываем, рельеф — с зерном
+      this.urlState = 'error';
+      this.urlTex?.dispose();
+      this.urlTex = null;
+      this.urlKey = '';
+      this.rebuildMaterial();
+    });
   }
 
   /** Режим текстур по-прежнему включён (не 'off')? */
@@ -395,14 +444,24 @@ export class TerrainStreamer {
       skirtUv[k * 2 + 1] = uArr[vi * 2 + 1];
     }
     const idx: number[] = [];
-    const pushQuad = (a: number, b: number) => {
-      const a2 = n + a, b2 = n + b;
-      idx.push(a, b, b2, a, b2, a2);
+    // ЮБКА: quad между СОСЕДНИМИ кромочными вершинами. Дубль кромки
+    // №k живёт на позиции n + k, где k — ПОЗИЦИЯ В МАССИВЕ border.
+    // ФИКС Task 38: раньше pushQuad получал ИНДЕКС ВЕРШИНЫ (до
+    // seg²·2), а не позицию в border — для нижней/боковых кромок
+    // индексы уходили ЗА ПРЕДЕЛЫ буфера вершин, и WebGL рисовал
+    // мусорные треугольники из видеопамяти: чёрные «шторы»,
+    // висящие «паруса», пики у корабля. flip — обход наружу для
+    // кромок, идущих в обратную сторону (низ и левый борт).
+    const pushQuad = (k: number, k2: number, flip = false) => {
+      const a = border[k], b = border[k2];
+      const a2 = n + k, b2 = n + k2;
+      if (flip) idx.push(b, a, a2, b, a2, b2);
+      else idx.push(a, b, b2, a, b2, a2);
     };
-    for (let i = 0; i + 1 < side; i++) pushQuad(border[i], border[i + 1]);
-    for (let i = 0; i + 1 < side; i++) pushQuad(border[side + i], border[side + i + 1]);
-    for (let j = 0; j + 1 < side; j++) pushQuad(border[2 * side + j], border[2 * side + j + 1]);
-    for (let j = 0; j + 1 < side; j++) pushQuad(border[3 * side + j], border[3 * side + j + 1]);
+    for (let i = 0; i + 1 < side; i++) pushQuad(i, i + 1);                             // z=−TILE/2, наружу −Z
+    for (let i = 0; i + 1 < side; i++) pushQuad(side + i, side + i + 1, true);         // z=+TILE/2, наружу +Z
+    for (let j = 0; j + 1 < side; j++) pushQuad(2 * side + j, 2 * side + j + 1, true); // x=−TILE/2, наружу −X
+    for (let j = 0; j + 1 < side; j++) pushQuad(3 * side + j, 3 * side + j + 1);       // x=+TILE/2, наружу +X
     const merged = new THREE.BufferGeometry();
     const allPos = new Float32Array(n * 3 + nb * 3);
     allPos.set(pArr); allPos.set(skirtPos, n * 3);
