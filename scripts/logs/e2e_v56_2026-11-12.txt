@@ -1,0 +1,60 @@
+GAME LOADED: true
+
+===== A: ЮБКИ ТАЙЛОВ — индексы в границах буфера =====
+{"oob":0,"total":284,"noSkirt":0,"wrongTris":0,"triSample":[{"seg":60,"verts":3965,"tris":7680,"want":7680},{"seg":60,"verts":3965,"tris":7680,"want":7680}]}
+OK   A1: НИ ОДНОГО тайла с индексами за буфером (были мусорные треугольники) | тайлов=284, битых=0
+OK   A2: у всех тайлов юбка построена и все её вершины в индексах | тайлов без юбки=0
+OK   A3: треугольников ровно сетка+юбка (у дальнего 800+160, ближнего 7200+480) | [{"seg":60,"verts":3965,"tris":7680,"want":7680},{"seg":60,"verts":3965,"tris":7680,"want":7680}]
+A4 RAW: "{\"checked\":5280,\"wrong\":0}"
+{"checked":5280,"wrong":0}
+OK   A4: юбочные нормали направлены НАРУЖУ (flip winding) | проверено=5280, мимо=0
+
+===== B: штатная носовая фигура — резной свиток =====
+{"children":5,"cones":0,"kinds":["CylinderGeometry","TubeGeometry","TorusGeometry","TorusGeometry","SphereGeometry"],"id":null}
+OK   B1: штатный шток — скульптура из 5 примитивов (стержень/завиток/2 усика/навершие) | примитивов=5
+OK   B2: НИ ОДНОГО ConeGeometry в штатной фигуре (конус-«артефакт» убран) | ["CylinderGeometry","TubeGeometry","TorusGeometry","TorusGeometry","SphereGeometry"]
+
+===== C: навигационная карта — весь архипелаг в кадре =====
+C RAW: "{\"n\":30,\"scale\":0.00641,\"out\":0,\"maxX\":47075,\"maxZ\":35697.5,\"farthest\":53537.37012592232}"
+{"n":30,"scale":0.00641,"out":0,"maxX":47075,"maxZ":35697.5,"farthest":53537.37012592232}
+OK   C1: масштаб карты ~0.0069 px/м (мир ×10), а НЕ 0.048 (эпоха ±4.5 км) | scale=0.00641
+OK   C2: ВСЕ острова (включая Логово пиратов за 44 км) в кадре 640×520 | островов=30, за краем=0
+fastTravel → "42032,29330"
+OK   C3: быстрый переход к дальнему острову работает (клик-навигация жива) | "42032,29330"
+
+===== D: своя текстура по ссылке (режим url) =====
+пустая ссылка: {"mode":"url","state":"none","map":256}
+OK   D1: режим url без ссылки — откат на зерно (не чёрный рельеф) | {"mode":"url","state":"none","map":256}
+data URL длина: 7634
+data:URL: {"mode":"url","state":"ok","isData":true,"colorSpace":"srgb","repeat":1}
+OK   D2: своя текстура ЗАГРУЖЕНА (64×64 из data:URL, состояние ok) | {"mode":"url","state":"ok","isData":true,"colorSpace":"srgb","repeat":1}
+OK   D3: масштаб повторения применяется к своей текстуре (7/7 = 1.0) | repeat=1
+texScale=14: {"repeat":0.5}
+OK   D4: texScale 14 → repeat 0.5 у СВОЕЙ текстуры | repeat=0.5
+битая ссылка: {"state":"error","map":256}
+OK   D5: битая ссылка → состояние error, рельеф со ЗЕРНОМ (не чёрный) | {"state":"error","map":256}
+
+===== E: вкладка «Ресурсы» — режим url и поле ссылки =====
+{"urlBtn":true,"urlModeHint":true,"fourModes":true}
+OK   E1: вкладка «Ресурсы» открывается, 4 режима включая «Своя текстура (ссылка)» | {"urlBtn":true,"urlModeHint":true,"fourModes":true}
+fill: ok | press: ok | состояние: {"texUrlLen":7634,"mode":"url","state":"ok"}
+OK   E2: поле «Ссылка на текстуру» появляется и ввод применяется (Enter/blur) | {"texUrlLen":7634,"mode":"url","state":"ok"}
+OK   E3: применённая через UI текстура загрузилась (state ok) | {"texUrlLen":7634,"mode":"url","state":"ok"}
+
+===== F: сохранение v11 и выживание URL после перезагрузки =====
+{"v":15,"mode":"url","urlLen":7634}
+OK   F1: схема сохранения v12, режим url и ссылка в localStorage | {"v":15,"mode":"url","urlLen":7634}
+RELOADED: true
+{"mode":"url","urlLen":7634}
+OK   F2: после перезагрузки режим url и ссылка на месте (валидация пропускает data:) | {"mode":"url","urlLen":7634}
+JS errors (до+после reload): []
+OK   G1: 0 ошибок JS | до=0, после=0
+
+===== ИТОГ e2e_v56: ALL OK =====
+
+===== H: скриншоты (панорама острова / нос / карта) =====
+shot top: done
+shot bow: done
+shot spawn: done
+shot map: done
+localStorage очищен

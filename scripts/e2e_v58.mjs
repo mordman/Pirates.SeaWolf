@@ -15,7 +15,7 @@
 //  (Z) ЗОНЫ ОСТРОВОВ: режим «зоны» + свои песок/трава — uniforms
 //      включены (uSandOn=1, uGrassOn=1), грязь/скалы без ссылки —
 //      выключены; очистка — все 0; каталог __sea.tex — 9 слотов
-//  (S) СХЕМА v14: islands.treesMul/deckWalk/texUrls.sand живут перезагрузку
+//  (S) СХЕМА v15 (Task 42): islands.treesMul/deckWalk/texUrls.sand живут перезагрузку
 //  (F) 0 ошибок JS + скриншоты
 import { execSync } from 'node:child_process';
 
@@ -465,8 +465,8 @@ const afterReload = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(afterReload));
-check('S1: схема v14, деревья и клавиша V сохранены',
-  afterReload && afterReload.v === 14 && afterReload.veg === 1 && afterReload.deckWalk === 'KeyV',
+check('S1: схема v15, деревья и клавиша V сохранены',
+  afterReload && afterReload.v === 15 && afterReload.veg === 1 && afterReload.deckWalk === 'KeyV',
   JSON.stringify(afterReload));
 check('S2: слот песка в настройках жив (пустая строка = процедурный)',
   afterReload && afterReload.sand === '', `sand="${afterReload?.sand}"`);

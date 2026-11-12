@@ -565,6 +565,53 @@ function boulderGeo(): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
+// ---------- Task 42: LOD-геометрии растительности ----------
+// ДАЛЬНИЕ острова (за порогом от берега) рисуют деревья УПРОЩЕННЫМИ
+// моделями: тот же силуэт в ~5-8 раз меньше треугольников. Камни
+// (rock/stump/boulder) и так дешёвые — LOD = полная модель.
+// Подмена по-островно: один InstancedMesh на вид — геометрия
+// меняется одной ссылкой (мгновенно, без пересборки инстансов).
+function palmLodGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    paint(tf(new THREE.CylinderGeometry(0.14, 0.24, 8.5, 3), 0, 4.25, 0), 0x7a5a38),
+    paint(tf(new THREE.SphereGeometry(1.6, 5, 3), 0, 8.6, 0).scale(1, 0.42, 1) as THREE.BufferGeometry, 0x3f7d33),
+  ];
+  return mergeGeometries(parts)!;
+}
+function ficusLodGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    paint(tf(new THREE.CylinderGeometry(0.44, 0.66, 4.2, 3), 0, 2.1, 0), 0x6b4e2f),
+    paint(tf(new THREE.SphereGeometry(2.6, 5, 3), 0, 5.6, 0).scale(1, 0.72, 1) as THREE.BufferGeometry, 0x2f5e2b),
+  ];
+  return mergeGeometries(parts)!;
+}
+function jungleLodGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    paint(tf(new THREE.CylinderGeometry(0.2, 0.38, 5.4, 3), 0, 2.7, 0), 0x6e5230),
+    paint(tf(new THREE.SphereGeometry(1.9, 5, 3), 0, 6.0, 0).scale(1, 1.25, 1) as THREE.BufferGeometry, 0x477a34),
+  ];
+  return mergeGeometries(parts)!;
+}
+function bushLodGeo(): THREE.BufferGeometry {
+  return paint(tf(new THREE.SphereGeometry(0.8, 4, 3), 0, 0.55, 0), 0x4a7032);
+}
+function bambooLodGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    paint(tf(new THREE.CylinderGeometry(0.05, 0.07, 5.2, 3), 0, 2.6, 0), 0x8a9a3a),
+    paint(tf(new THREE.CylinderGeometry(0.05, 0.07, 4.4, 3), 0.4, 2.2, 0.15), 0x7e9038),
+  ];
+  return mergeGeometries(parts)!;
+}
+/** Каталог LOD-моделей по виду (null → полная и так дешёвая) */
+const VEG_LOD: Record<string, (() => THREE.BufferGeometry) | null> = {
+  palm: palmLodGeo, ficus: ficusLodGeo, jungle: jungleLodGeo,
+  bush: bushLodGeo, bamboo: bambooLodGeo,
+  rock: null, stump: null, boulder: null,
+};
+/** кэш LOD-геометрий (одна на вид на всю сессию — при ×1000
+ *  деревьев и перестройках не пересоздавать) */
+const VEG_LOD_CACHE: Record<string, THREE.BufferGeometry> = {};
+
 // ---------- животные ----------
 interface AnimalInst { mesh: THREE.InstancedMesh; count: number; }
 interface Wanderer {
@@ -643,7 +690,18 @@ export class World {
     breakable: boolean;
     kind: string;         // вид: palm/ficus/jungle/bamboo/bush/stump/boulder — рецепт разлома
     procGeo: THREE.BufferGeometry; // исходная процедурная геометрия (фолбэк GLB)
+    // Task 42: LOD ДАЛЬНИХ ОСТРОВОВ — упрощённая геометрия + остров
+    islIdx: number;               // остров слота (LOD по-островно)
+    lodGeo: THREE.BufferGeometry; // упрощённая модель (дальние острова)
+    glbGeo: THREE.BufferGeometry | null; // GLB-замена (если включена)
+    lod: boolean;                 // сейчас на LOD-геометрии
   }[] = [];
+  /** Task 42: флаги LOD по островам (гистерезис в update) */
+  private islLod: boolean[] = [];
+  /** Task 42: порог LOD от БЕРЕГА острова (м) — свой остров у
+   *  берега остаётся детальным, дальние рисуются упрощённо */
+  static readonly TREE_LOD_DIST = 700;
+  static readonly TREE_LOD_NEAR = 600;   // гистерезис возврата
   /** счётчик поваленных деревьев (телеметрия) */
   treesBroken = 0;
 
@@ -845,12 +903,18 @@ export class World {
         inst.frustumCulled = true;
         inst.computeBoundingSphere();
         vegGroup.add(inst);
+        // Task 42: LOD-геометрия вида (null → камни: полная дешёвая);
+        // кэш один на вид — считается при первом создании
         this.vegSlots.push({
           inst,
           broken: new Array(c).fill(false),
           breakable: kind !== 'rock' && kind !== 'boulder',
           kind,
           procGeo: geo,
+          islIdx,
+          lodGeo: VEG_LOD_CACHE[kind] ??= VEG_LOD[kind]?.() ?? geo,
+          glbGeo: null,
+          lod: false,
         });
       }
     }
@@ -884,6 +948,7 @@ export class World {
     }
     this.vegGroups = [];
     this.vegSlots = [];
+    this.islLod = new Array(this.islands.length).fill(false);
     this.vegGrid.clear();
     this.treesBroken = 0;
     this.buildVegetation();
@@ -1060,12 +1125,15 @@ export class World {
 
   /** GLB-замена модели: подменить геометрию ВСЕХ инстансов вида
    *  (например пальмы на загруженную .glb). null → вернуть процедурную.
-   *  Возвращает число затронутых инстансов. */
+   *  Возвращает число затронутых инстансов.
+   *  Task 42: GLB применяется только к БЛИЗКИМ островам — дальние
+   *  остаются на упрощённой LOD-модели (экономия и с GLB) */
   swapVegetationModel(kind: string, geo: THREE.BufferGeometry | null): number {
     let n = 0;
     for (const slot of this.vegSlots) {
       if (slot.kind !== kind) continue;
-      const next = geo ?? slot.procGeo;
+      slot.glbGeo = geo;
+      const next = slot.lod ? slot.lodGeo : (geo ?? slot.procGeo);
       if (!next || next === slot.inst.geometry) continue;
       slot.inst.geometry = next;
       slot.inst.geometry.computeBoundingSphere();
@@ -1075,15 +1143,57 @@ export class World {
     return n;
   }
 
+  /** Task 42: ДЕРЕВЬЯ ДАЛЬНИХ ОСТРОВОВ — УПРОЩЁННЫЕ (LOD).
+   *  Порог — от БЕРЕГА острова (свой остров у берега остаётся
+   *  детальным); гистерезис против дёрганья на границе */
+  private applyIslandLod(islIdx: number, far: boolean) {
+    for (const slot of this.vegSlots) {
+      if (slot.islIdx !== islIdx) continue;
+      slot.lod = far;
+      const next = far ? slot.lodGeo : (slot.glbGeo ?? slot.procGeo);
+      if (next && next !== slot.inst.geometry) {
+        slot.inst.geometry = next;
+      }
+    }
+  }
+
+  /** Телеметрия LOD растительности (E2E): сколько островов на
+   *  упрощённых моделях + экономия треугольников на инстанс */
+  treeLodInfo(): {
+    farIslands: number; nearIslands: number; lodSlots: number; fullSlots: number;
+    trisFull: number; trisLod: number; kinds: Record<string, { full: number; lod: number; far: boolean }>;
+  } {
+    const kinds: Record<string, { full: number; lod: number; far: boolean }> = {};
+    const tris = (g: THREE.BufferGeometry) =>
+      Math.round((g.index ? g.index.count : g.getAttribute('position')?.count ?? 0) / 3);
+    for (const slot of this.vegSlots) {
+      const e = kinds[slot.kind] ?? { full: tris(slot.procGeo), lod: tris(slot.lodGeo), far: slot.lod };
+      e.far = slot.lod;
+      kinds[slot.kind] = e;
+    }
+    let lodSlots = 0, fullSlots = 0, trisFull = 0, trisLod = 0;
+    for (const slot of this.vegSlots) {
+      if (slot.lod) { lodSlots++; trisLod += tris(slot.lodGeo) * slot.inst.count; trisFull += tris(slot.procGeo) * slot.inst.count; }
+      else fullSlots++;
+    }
+    return {
+      farIslands: this.islLod.filter(Boolean).length,
+      nearIslands: this.islLod.length - this.islLod.filter(Boolean).length,
+      lodSlots, fullSlots, trisFull, trisLod, kinds,
+    };
+  }
+
   /** Телеметрия растительности: вид → {инстансов, вершин, источник} */
-  vegStats(): Record<string, { n: number; verts: number; src: 'proc' | 'glb' }> {
-    const out: Record<string, { n: number; verts: number; src: 'proc' | 'glb' }> = {};
+  vegStats(): Record<string, { n: number; verts: number; src: 'proc' | 'glb' | 'lod' }> {
+    const out: Record<string, { n: number; verts: number; src: 'proc' | 'glb' | 'lod' }> = {};
     for (const slot of this.vegSlots) {
       const v = slot.inst.geometry.getAttribute('position')?.count ?? 0;
-      const e = out[slot.kind] ?? { n: 0, verts: v, src: slot.inst.geometry === slot.procGeo ? 'proc' : 'glb' };
+      const src = slot.inst.geometry === slot.procGeo ? 'proc'
+        : slot.inst.geometry === slot.lodGeo ? 'lod' : 'glb';
+      const e = out[slot.kind] ?? { n: 0, verts: v, src };
       e.n += slot.inst.count;
       e.verts = v;
-      e.src = slot.inst.geometry === slot.procGeo ? 'proc' : 'glb';
+      e.src = src;
       out[slot.kind] = e;
     }
     return out;
@@ -1723,13 +1833,23 @@ export class World {
     this.terrain.update(playerPos, dt);
 
     // видимость ОСТРОВОВ: группа острова (растительность+порт+
-    // деревни) рисуется только в пределах дальности прорисовки
+    // деревни) рисуется только в пределах дальности прорисовки;
+    // Task 42: LOD ДЕРЕВЬЕВ — видимому, но ДАЛЬНЕМУ острову (за
+    // порогом от БЕРЕГА) растительность рисуется УПРОЩЁННО
     for (let i = 0; i < this.islands.length; i++) {
       const isl = this.islands[i];
       const d = Math.hypot(playerPos.x - isl.cx, playerPos.z - isl.cz);
       const vis = d < this.visDistance + isl.r * 1.35;
       const g = this.islGroups[i];
       if (g && g.visible !== vis) g.visible = vis;
+      if (vis && this.islLod.length === this.islands.length) {
+        const off = d - isl.r;   // дистанция до БЕРЕГА
+        const far = this.islLod[i] ? off > World.TREE_LOD_NEAR : off > World.TREE_LOD_DIST;
+        if (far !== this.islLod[i]) {
+          this.islLod[i] = far;
+          this.applyIslandLod(i, far);
+        }
+      }
     }
 
     // рыбацкие деревни: лодки качаются на волнах / тонут, поплавки,

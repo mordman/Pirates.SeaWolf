@@ -1,5 +1,6 @@
 import type { PlayerAppearance } from '../core/settings';
-import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS } from '../core/settings';
+import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS,
+  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS } from '../core/settings';
 import type { Traits } from '../ship/crew';
 
 // ============================================================
@@ -8,11 +9,12 @@ import type { Traits } from '../ship/crew';
 // превращается вTraits фигурки (crew.buildFigure) — тот же
 // процедурный «человечек», что и вся команда, но с ВЫБРАННЫМИ
 // одеждой/головным убором/бородой/повязкой/попугаем/протезами.
+// Task 42: гардероб — торс (8 видов), крой штанов (3 вида),
+// головной убор (7 видов).
 // ============================================================
 
 /** Настройки внешности → признаки процедурной фигурки.
- *  Крюк и деревянная нога — правые (side +1); тельняшку капитан
- *  не носит (кафтан будет у ролей-офицеров, игрок — ходок). */
+ *  Крюк и деревянная нога — правые (side +1). */
 export function appearanceToTraits(a: PlayerAppearance): Traits {
   return {
     skin: a.skin,
@@ -23,7 +25,8 @@ export function appearanceToTraits(a: PlayerAppearance): Traits {
     pegLeg: a.pegLeg ? 1 : 0,
     eyePatch: a.eyePatch,
     headwear: a.headwear,
-    striped: false,
+    torso: a.torso,
+    pantsKind: a.pantsKind,
     height: 1,
     parrot: a.parrot,
   };
@@ -36,7 +39,9 @@ export function randomAppearance(rnd: () => number): PlayerAppearance {
     skin: pick(APPEARANCE_SKIN),
     shirt: pick(APPEARANCE_SHIRT),
     pants: pick(APPEARANCE_PANTS),
-    headwear: rnd() < 0.5 ? 'bandana' : rnd() < 0.5 ? 'hat' : 'none',
+    headwear: pick(HEADWEAR_KINDS),
+    torso: pick(TORSO_KINDS),
+    pantsKind: pick(PANTS_KINDS),
     beard: rnd() < 0.6 ? (rnd() < 0.5 ? 2 : 1) : 0,
     eyePatch: rnd() < 0.3,
     parrot: rnd() < 0.5,

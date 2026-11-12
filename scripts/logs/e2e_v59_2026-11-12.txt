@@ -1,0 +1,54 @@
+GAME LOADED: true
+
+===== I: вкладка «Острова» =====
+UI open: "clicked" | "tab"
+{"tab":true,"globals":true,"trees":true,"villages":true,"folk":true,"boats":true,"perIsland":true,"islandSelect":true,"selectCounts":"13,6,6,6,31","x1000":true}
+OK   I1: вкладка «ОСТРОВА» открывается, глобальные множители на месте | {"tab":true,"globals":true,"trees":true,"villages":true,"folk":true,"boats":true,"perIsland":true,"islandSelect":true,"selectCounts":"13,6,6,6,31","x1000":true}
+OK   I2: ×1000 в списке деревьев + селектор острова для переопределений | selects: 13,6,6,6,31
+{"name":"2. Зелёный атолл (r 2350 м)","sel":true} {"treesHere":true,"villagesHere":true,"folkHere":true,"boatsHere":true,"asGlobalOpt":true,"resetBtn":false}
+OK   I3: переопределения выбранного острова (4 поля + «как глобально») | {"treesHere":true,"villagesHere":true,"folkHere":true,"boatsHere":true,"asGlobalOpt":true,"resetBtn":false}
+
+===== R: базовое состояние (×1) =====
+{"trees":29232,"budgetHit":false,"villages":61,"folk":806,"boats":261,"vegPerIsland0":2565,"vegPerIsland1":1301}
+{"villagesTotal":237,"villagesActive":61,"folk":806,"boats":261,"trees":29232}
+OK   R1: при ×1 мир штатный: деревни активны, есть жители и лодки | деревень 61/237, жителей 806, лодок 261
+
+===== T: деревья ×1000 (бюджет) =====
+✗ Failed to read: Resource temporarily unavailable (os error 11) (the command reached the daemon but no response came back; it may or may not have run, so it was not retried)
+✗ Failed to read: Resource temporarily unavailable (os error 11) (the command reached the daemon but no response came back; it may or may not have run, so it was not retried)
+×1000: {"trees":1499985,"budgetHit":true,"villages":61,"folk":806,"boats":261,"vegPerIsland0":131601,"vegPerIsland1":66737} (128375 мс)
+OK   T1: ×1000 — лес упёрся в БЮДЖЕТ ~1,5 млн (instances ≥ 1 млн) | 29,232 → 1,499,985 (×51.3)
+OK   T2: возврат ×1 — штатное число деревьев | 29,232
+{"trees":108775,"budgetHit":false,"villages":61,"folk":806,"boats":261,"vegPerIsland0":82108,"vegPerIsland1":1301}
+OK   T3: ОСТРОВ 0 ×32 (override) — на нём деревьев кратно больше | остров0: 82,108, остров1: 1301
+OK   T4: сброс переопределения — остров 0 вернулся к штатному | остров0: 2,565 (база 2565)
+
+===== V: деревни =====
+{"trees":29232,"budgetHit":false,"villages":0,"folk":0,"boats":261,"vegPerIsland0":2565,"vegPerIsland1":1301}
+OK   V1: деревни ×0 — НИ ОДНОЙ активной, жителей 0 | деревень 0, жителей 0
+{"trees":29232,"budgetHit":false,"villages":122,"folk":1423,"boats":261,"vegPerIsland0":2565,"vegPerIsland1":1301}
+OK   V2: деревни ×2 — активных БОЛЬШЕ базового (расширенный пул) | 61 → 122
+OK   V3: возврат ×1 — базовое число деревень | 61 (база 61)
+
+===== F: жители =====
+{"trees":29232,"budgetHit":false,"villages":61,"folk":0,"boats":261,"vegPerIsland0":2565,"vegPerIsland1":1301}
+OK   F1: жители ×0 — деревни СТОЯТ, жителей 0 | деревень 61, жителей 0
+OK   F2: жители ×2 — примерно вдвое больше | 806 → 1612
+
+===== B: рыбацкие лодки =====
+{"trees":29232,"budgetHit":false,"villages":61,"folk":806,"boats":0,"vegPerIsland0":2565,"vegPerIsland1":1301}
+OK   B1: лодки ×0 — лодок НЕТ (чистая вода) | лодок 0
+OK   B2: лодки ×2 — примерно вдвое больше | 261 → 521
+
+===== S: схема v15 =====
+RELOADED: true
+{"v":15,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
+OK   S1: схема v15 — настройки островов сохранены и ПРИМЕНИЛИСЬ | {"v":15,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
+OK   S2: после перезагрузки мир собрался по настройкам (лес ×2, деревни ×2) | деревьев 54,631 (база 29232), деревень 122 (база 61)
+OK   S3: переопределение острова 0 применилось (лес ×0.5, лодок 0) | остров0 деревьев 1282, лодок 0
+
+===== E: ошибки =====
+JS errors: []
+OK   E1: 0 ошибок JS
+
+===== ИТОГ e2e_v59: ALL OK =====

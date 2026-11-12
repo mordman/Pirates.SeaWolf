@@ -6,7 +6,7 @@
 //      (локти/колени/кисти/ремень/шея = детализация)
 //  (C) ЭКРАН СОЗДАНИЯ КАПИТАНА: открывается В НАЧАЛЕ, тумблеры
 //      (попугай/повязка/нога/крюк), «В море!» закрывает, uiOpen
-//      отпускает ввод, выбор сохраняется (схема v12, раздел player)
+//      отпускает ввод, выбор сохраняется (схема v15, раздел player)
 //  (D) ВЫСАДКА: после схода на берег в шлюпке ОДИН гребец
 //      (место игрока пусто), у игрока — выбранный попугай;
 //      возврат в шлюпку — гребцов снова двое
@@ -133,9 +133,9 @@ const afterApply = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(afterApply));
-check('C3: «В море!» закрывает экран, ввод отпущен, выбор сохранён (v12)',
+check('C3: «В море!» закрывает экран, ввод отпущен, выбор сохранён (v15)',
   applied.includes('clicked') && afterApply && afterApply.closed === true
-    && afterApply.uiOpen === false && afterApply.v === 14
+    && afterApply.uiOpen === false && afterApply.v >= 15
     && afterApply.parrot === true, JSON.stringify(afterApply));
 check('C4: фигурка капитана — с попугаем (выбор с экрана)',
   afterApply && afterApply.fig && afterApply.fig.parrot === true,

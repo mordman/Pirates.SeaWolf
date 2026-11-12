@@ -2727,9 +2727,19 @@ export class Game {
    *  среднее число вершин тела (локти/колени/детали). */
   debugFigureProbe(n: number) {
     let parrots = 0, pegs = 0, hooks = 0, verts = 0, maxVerts = 0, legVerts = 0, legN = 0;
+    // Task 42: распределение гардероба (торс/крой штанов/головной убор)
+    const torsoKinds: Record<string, number> = {};
+    const pantsKinds: Record<string, number> = {};
+    const hatKinds: Record<string, number> = {};
+    let wristMounts = 0;
     const count = Math.max(1, Math.min(400, Math.round(n)));
     for (let i = 0; i < count; i++) {
-      const fig = buildFigure('walker', rollTraits(Math.random, 'walker'), 1000 + i * 17);
+      const traits = rollTraits(Math.random, 'walker');
+      torsoKinds[traits.torso] = (torsoKinds[traits.torso] ?? 0) + 1;
+      pantsKinds[traits.pantsKind] = (pantsKinds[traits.pantsKind] ?? 0) + 1;
+      hatKinds[traits.headwear] = (hatKinds[traits.headwear] ?? 0) + 1;
+      const fig = buildFigure('walker', traits, 1000 + i * 17);
+      if (fig.wristMount) wristMounts++;
       if (fig.hasParrot) parrots++;
       if (fig.hasPeg) pegs++;
       if (fig.hasHook) hooks++;
@@ -2753,6 +2763,8 @@ export class Game {
       n: count, parrots, parrotPct: +(parrots / count * 100).toFixed(1),
       pegs, hooks, avgVerts: Math.round(verts / count), maxVerts,
       avgLegVerts: legN ? Math.round(legVerts / legN) : 0,
+      // Task 42: гардероб — какие виды встретились + маунт у кисти
+      torsoKinds, pantsKinds, hatKinds, wristMounts,
     };
   }
 

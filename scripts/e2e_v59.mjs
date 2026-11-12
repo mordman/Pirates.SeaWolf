@@ -10,7 +10,7 @@
 //      базового; возврат ×1
 //  (F) ЖИТЕЛИ: ×0 при деревнях ×1 — деревни есть, жителей 0
 //  (B) ЛОДКИ: ×0 — 0 лодок; ×2 — примерно вдвое больше; возврат ×1
-//  (S) СХЕМА v14: islands (mul + perIsland) живёт перезагрузку
+//  (S) СХЕМА v15 (Task 42): islands (mul + perIsland) живёт перезагрузку
 //  (R) Регрессия мира: ×1 везде = прежнее число деревень/жителей
 //      (детерминизм: первые деревни пула не изменились)
 //  (E) 0 ошибок JS + скриншоты
@@ -275,8 +275,8 @@ check('B2: лодки ×2 — примерно вдвое больше',
 applyIsl({ boatsMul: 1 });
 await sleep(800);
 
-// ============ S: СХЕМА v14 ПОСЛЕ ПЕРЕЗАГРУЗКИ ============
-log('\n===== S: схема v14 =====');
+// ============ S: СХЕМА v15 ПОСЛЕ ПЕРЕЗАГРУЗКИ ============
+log('\n===== S: схема v15 =====');
 // финальное состояние: деревья ×2 + переопределение острова 0 (лес ×0.5, лодки 0)
 applyIsl({ treesMul: 2, villagesMul: 2, perIsland: { '0': { treesMul: 0.5, boatsMul: 0 } } });
 await sleep(1200);
@@ -311,8 +311,8 @@ const afterReload = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(afterReload));
-check('S1: схема v14 — настройки островов сохранены и ПРИМЕНИЛИСЬ',
-  afterReload && afterReload.v === 14 && afterReload.trees === 2 && afterReload.villages === 2
+check('S1: схема v15 — настройки островов сохранены и ПРИМЕНИЛИСЬ',
+  afterReload && afterReload.v === 15 && afterReload.trees === 2 && afterReload.villages === 2
     && afterReload.ov0 && afterReload.ov0.treesMul === 0.5 && afterReload.ov0.boatsMul === 0,
   JSON.stringify(afterReload));
 check('S2: после перезагрузки мир собрался по настройкам (лес ×2, деревни ×2)',

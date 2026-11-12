@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import type { PlayerAppearance, HeadwearKind } from '@/game/core/settings';
+import type { PlayerAppearance, HeadwearKind, TorsoKind, PantsKind } from '@/game/core/settings';
 import {
   APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS,
-  HEADWEAR_LABELS, BEARD_LABELS,
+  HEADWEAR_LABELS, BEARD_LABELS, TORSO_LABELS, PANTS_LABELS,
+  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS,
 } from '@/game/core/settings';
 import { buildFigure } from '@/game/ship/crew';
 import { appearanceToTraits, randomAppearance } from '@/game/player/appearance';
@@ -13,8 +14,10 @@ import { appearanceToTraits, randomAppearance } from '@/game/player/appearance';
 // ============================================================
 // ЭКРАН СОЗДАНИЯ КАПИТАНА (Task 39): показывается в самом начале
 // игры — выбор внешности фигурки игрока (высадка на остров):
-// тон кожи, рубаха, штаны, головной убор, борода, повязка на
-// глаз, ПОПУГАЙ на плече, деревянная нога, крюк.
+// тон кожи, рубаха, штаны, ОДЕЖДА ТОРСА (8 видов — Task 42),
+// КРОЙ ШТАНОВ (длинные/шорты/рваные — Task 42), головной убор
+// (7 ВИДОВ — Task 42), борода, повязка на глаз, ПОПУГАЙ на
+// плече, деревянная нога, крюк.
 // Слева — живое 3D-превью (та же процедурная фигурка, что и в
 // игре, медленно вращается), справа — кнопки-палитры. Выбор
 // применяется сразу и сохраняется в настройках (раздел player).
@@ -171,11 +174,28 @@ export default function CharacterCreate({ initial, onApply, onClose }: {
               <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Штаны</div>
               <Swatches title="Штаны" colors={APPEARANCE_PANTS} value={a.pants} onPick={c => set('pants', c)} />
             </div>
+            {/* Task 42: ГАРДЕРОБ — одежда торса (8 видов) и крой штанов */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Одежда</div>
+                <PillGroup<TorsoKind>
+                  options={TORSO_KINDS}
+                  labels={TORSO_LABELS as Record<string, string>}
+                  value={a.torso} onPick={v => set('torso', v)} />
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Штаны</div>
+                <PillGroup<PantsKind>
+                  options={PANTS_KINDS}
+                  labels={PANTS_LABELS as Record<string, string>}
+                  value={a.pantsKind} onPick={v => set('pantsKind', v)} />
+              </div>
+            </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Головной убор</div>
                 <PillGroup<HeadwearKind>
-                  options={['none', 'bandana', 'hat'] as HeadwearKind[]}
+                  options={HEADWEAR_KINDS}
                   labels={HEADWEAR_LABELS as Record<string, string>}
                   value={a.headwear} onPick={v => set('headwear', v)} />
               </div>

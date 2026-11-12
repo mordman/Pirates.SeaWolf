@@ -3,7 +3,8 @@ import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
 import { buildCatCrewFigure } from './cats';
-import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS, APPEARANCE_BANDANA } from '../core/settings';
+import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS, APPEARANCE_BANDANA,
+  type HeadwearKind, type TorsoKind, type PantsKind } from '../core/settings';
 
 // ============================================================
 // Экипаж на палубе: процедурные типажи «наугад» — бороды,
@@ -63,6 +64,10 @@ export interface CrewFigure {
    *  ходьбе, поднятая рука капитана «раздавать указания» */
   armL?: THREE.Mesh;
   armR?: THREE.Mesh;
+  /** Task 42: МАУНТ У КИСТИ (рука БЕЗ крюка — правая или левая):
+   *  сюда lander вешает саблю/пистолет — оружие следует за рукой
+   *  во ВСЕХ анимациях (нет «третьей руки») */
+  wristMount?: THREE.Object3D | null;
   /** Task 40: >0 — фигура МАШЕТ рукой (сек до конца анимации) */
   waveT?: number;
   seed: number;
@@ -147,6 +152,12 @@ const COAT = [0x2e2a3a, 0x3a2620, 0x1f3038, 0x40222a];
 const BEARD = [0x2c2118, 0x4a3524, 0x6b5136, 0x8a8a86, 0x1d1712];
 const WOOD = 0x8a6a42;
 const METAL = 0x3a3f46;
+// Task 42: ГАРДЕРОБ — палитры новых видов одежды
+const VEST = [0x3a2c22, 0x26303a, 0x402a34, 0x2c3a2e];      // жилеты (поверх рубахи)
+const STRAW = 0xd9c06a;                                     // соломенная шляпа
+const CAPS = [0x8a2f2a, 0x2e4a6b, 0x3a5c38, 0x6b5a2e, 0x4a3a5c]; // вязаные шапки
+const BUTTON = 0xd8c27a;                                    // пуговицы жилета/камзола
+export type { HeadwearKind, TorsoKind, PantsKind };
 
 export interface Traits {
   skin: number; shirt: number; pants: number;
@@ -154,8 +165,9 @@ export interface Traits {
   hook: -1 | 0 | 1;        // нет / правая / левая рука
   pegLeg: -1 | 0 | 1;      // нет / правая / левая нога
   eyePatch: boolean;
-  headwear: 'none' | 'bandana' | 'hat';
-  striped: boolean;
+  headwear: HeadwearKind;   // 7 видов (Task 42)
+  torso: TorsoKind;         // 8 видов одежды торса (Task 42; было striped)
+  pantsKind: PantsKind;     // длинные / шорты / рваные шорты (Task 42)
   height: number;          // 0.92..1.08
   parrot: boolean;         // Task 39: попугай на плече (~10% фигур)
 }
@@ -163,8 +175,36 @@ export interface Traits {
 /** Вероятность попугая на плече у процедурной фигуры (ТЗ: 10%) */
 export const PARROT_CHANCE = 0.10;
 
+/** ТЕЛО ТОРСА (Task 42): вероятности видов для процедурной
+ *  фигуры — рубаха / тельняшка / вертикальные полосы / футболка /
+ *  свитер / жилет / камзол / ГОЛЫЙ ТОРС. Взвешенный выбор. */
+function rollTorso(rnd: () => number, role: CrewRole): TorsoKind {
+  if (role === 'captain') return rnd() < 0.7 ? 'coat' : 'vest';
+  const w: [TorsoKind, number][] = [
+    ['shirt', 28], ['striped', 17], ['stripedV', 6], ['tshirt', 14],
+    ['sweater', 8], ['vest', 10], ['coat', 5], ['bare', 12],
+  ];
+  let sum = 0; for (const [, p] of w) sum += p;
+  let r = rnd() * sum;
+  for (const [k, p] of w) { r -= p; if (r <= 0) return k; }
+  return 'shirt';
+}
+
 export function rollTraits(rnd: () => number, role: CrewRole): Traits {
   const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rnd() * arr.length)];
+  // головной убор: 7 видов (капитану — офицерские)
+  let headwear: HeadwearKind;
+  if (role === 'captain') headwear = rnd() < 0.7 ? 'hat' : 'top';
+  else {
+    const r = rnd();
+    headwear = r < 0.18 ? 'none'
+      : r < 0.48 ? 'bandana'
+      : r < 0.62 ? 'hat'
+      : r < 0.72 ? 'wide'
+      : r < 0.82 ? 'straw'
+      : r < 0.92 ? 'cap'
+      : 'top';
+  }
   return {
     skin: pick(SKIN),
     shirt: pick(SHIRT),
@@ -173,8 +213,9 @@ export function rollTraits(rnd: () => number, role: CrewRole): Traits {
     hook: rnd() < 0.22 ? (rnd() < 0.5 ? 1 : -1) : 0,
     pegLeg: rnd() < 0.18 ? (rnd() < 0.5 ? 1 : -1) : 0,
     eyePatch: rnd() < 0.25,
-    headwear: role === 'captain' ? 'hat' : rnd() < 0.45 ? 'bandana' : rnd() < 0.35 ? 'hat' : 'none',
-    striped: role !== 'captain' && rnd() < 0.4,
+    headwear,
+    torso: rollTorso(rnd, role),
+    pantsKind: rnd() < 0.58 ? 'long' : rnd() < 0.65 ? 'shorts' : 'torn',
     height: 0.92 + rnd() * 0.16,
     parrot: rnd() < PARROT_CHANCE,
   };
@@ -244,16 +285,61 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   const headR = 0.13;
   const headY = hipY + torsoH + headR + 0.02;
 
-  // --- торс (тельняшка — полосами) ---
-  if (traits.striped) {
+  // --- ТОРС (Task 42: ГАРДЕРОБ — 8 видов) ---
+  const bare = traits.torso === 'bare';
+  const torsoCol = bare ? traits.skin : traits.shirt;
+  if (traits.torso === 'striped') {
+    // тельняшка — горизонтальные полосы
     const stripeC = [0xe8e2d4, traits.shirt];
     const n = 5;
     for (let i = 0; i < n; i++) {
       bake(t, new THREE.BoxGeometry(torsoW, torsoH / n + 0.005, 0.22),
         stripeC[i % 2], 0, hipY + torsoH * (i + 0.5) / n, 0);
     }
+  } else if (traits.torso === 'stripedV') {
+    // вертикальные полосы (узор «матросский»)
+    const stripeC = [0xe8e2d4, traits.shirt];
+    const n = 4;
+    for (let i = 0; i < n; i++) {
+      bake(t, new THREE.BoxGeometry(torsoW / n + 0.004, torsoH, 0.22),
+        stripeC[i % 2], -torsoW / 2 + torsoW * (i + 0.5) / n, torsoY, 0);
+    }
   } else {
-    bake(t, new THREE.BoxGeometry(torsoW, torsoH, 0.22), traits.shirt, 0, torsoY, 0);
+    bake(t, new THREE.BoxGeometry(torsoW, torsoH, 0.22), torsoCol, 0, torsoY, 0);
+  }
+  // СВИТЕР: плотнее + ворот-стойка
+  if (traits.torso === 'sweater') {
+    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH + 0.005, 0.245), traits.shirt, 0, torsoY, 0);
+    bake(t, new THREE.CylinderGeometry(0.1, 0.118, 0.07, 8), traits.shirt, 0, hipY + torsoH - 0.015, 0);
+    // узор «ромб» на груди
+    bake(t, new THREE.BoxGeometry(0.07, 0.07, 0.012), 0xd8c27a, 0, torsoY + 0.04, 0.115,
+      new THREE.Euler(0, 0, Math.PI / 4));
+  }
+  // ЖИЛЕТ поверх рубахи: две пола спереди + спинка + пуговицы
+  if (traits.torso === 'vest') {
+    const vc = VEST[Math.floor(rnd() * VEST.length)];
+    bake(t, new THREE.BoxGeometry(torsoW * 0.42, torsoH * 0.94, 0.03), vc, -torsoW * 0.22, torsoY - 0.01, 0.115);
+    bake(t, new THREE.BoxGeometry(torsoW * 0.42, torsoH * 0.94, 0.03), vc, torsoW * 0.22, torsoY - 0.01, 0.115);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH * 0.94, 0.235), vc, 0, torsoY - 0.01, -0.004);
+    for (let i = 0; i < 3; i++) {
+      bake(t, new THREE.CylinderGeometry(0.011, 0.011, 0.012, 6), BUTTON, 0, torsoY + 0.1 - i * 0.11, 0.132,
+        new THREE.Euler(Math.PI / 2, 0, 0));
+    }
+  }
+  // КАМЗОЛ: длинный, до бёдер, с золотыми пуговицами
+  if (traits.torso === 'coat') {
+    bake(t, new THREE.BoxGeometry(torsoW + 0.05, 0.4, 0.25), COAT[Math.floor(rnd() * COAT.length)], 0, hipY + 0.05, 0);
+    for (let i = 0; i < 3; i++) {
+      bake(t, new THREE.CylinderGeometry(0.012, 0.012, 0.012, 6), BUTTON, 0, torsoY + 0.08 - i * 0.12, 0.13,
+        new THREE.Euler(Math.PI / 2, 0, 0));
+    }
+  }
+  // ГОЛЫЙ ТОРС: у половины — перевязь через плечо (кожух сабли)
+  if (bare && rnd() < 0.5) {
+    bake(t, new THREE.BoxGeometry(0.055, torsoH * 1.12, 0.018), 0x3a2c1e, -torsoW * 0.28, torsoY, 0.115,
+      new THREE.Euler(0, 0, 0.45));
+    bake(t, new THREE.BoxGeometry(0.055, torsoH * 1.12, 0.018), 0x3a2c1e, torsoW * 0.28, torsoY, -0.115,
+      new THREE.Euler(0, 0, 0.45));
   }
   // капитан: длинный кафтан + золотой кант
   if (role === 'captain') {
@@ -276,23 +362,29 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   const shoulderY = hipY + torsoH - 0.05;
   let armL: THREE.Mesh | undefined;
   let armR: THREE.Mesh | undefined;
+  // Task 42: маунт у кисти (заполняется в mkArmMesh — рука без крюка)
+  let wristMount: THREE.Object3D | null = null;
   // запечь руку в ОБЩИЙ меш тела (абсолютные координаты) — рулевой/
   // гребцы/статика; в точности прежняя геометрия
+  // Task 42: рукава по одежде торса — ГОЛЫЙ ТОРС: рука вся в коже,
+  // ФУТБОЛКА: плечо в рубахе, предплечье голое, прочие — длинный рукав
   const bakeArmInto = (target: { pos: number[]; col: number[] }, side: -1 | 1) => {
     const isHook = traits.hook === side;
     const sx = side * (torsoW / 2 + 0.05);
     const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
+    const upperSleeve = traits.torso === 'bare' ? traits.skin : sleeve;
+    const foreSleeve = traits.torso === 'bare' || traits.torso === 'tshirt' ? traits.skin : sleeve;
     if (role === 'helmsman') {
       // рулевой: руки вытянуты ВПЕРЁД к штуруалу (+Z — нос),
       // два сегмента с локтем + кисти на ободе
       const S = new THREE.Vector3(sx * 0.8, shoulderY - 0.03, 0.08);
       const E = new THREE.Vector3(sx * 0.92, shoulderY - 0.13, 0.24);
       const W = new THREE.Vector3(sx * 1.0, shoulderY - 0.07, 0.44);
-      segBox(target, 0.1, S, E, sleeve, 0.115);
+      segBox(target, 0.1, S, E, upperSleeve, 0.115);
       if (isHook) {
         segBox(target, 0.08, E, E.clone().lerp(W, 0.4), WOOD, 0.09);
       } else {
-        segBox(target, 0.088, E, W, sleeve, 0.098);
+        segBox(target, 0.088, E, W, foreSleeve, 0.098);
         const dH = W.clone().sub(E).normalize();
         const H = W.clone().addScaledVector(dH, 0.05);
         segBox(target, 0.082, W, H, traits.skin, 0.09);
@@ -303,8 +395,8 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const S = new THREE.Vector3(sx, shoulderY, 0.01);
     const E = new THREE.Vector3(sx * 1.16, shoulderY - upA, 0.05);
     const W = new THREE.Vector3(sx * 1.26, shoulderY - upA - foA * 0.68, 0.05 + foA * 0.64);
-    segBox(target, 0.1, S, E, sleeve, 0.115);                     // плечо
-    bake(target, new THREE.BoxGeometry(0.105, 0.065, 0.112), sleeve, E.x, E.y, E.z); // локоть
+    segBox(target, 0.1, S, E, upperSleeve, 0.115);                     // плечо
+    bake(target, new THREE.BoxGeometry(0.105, 0.065, 0.112), upperSleeve, E.x, E.y, E.z); // локоть
     if (isHook) {
       // деревянная культа + крюк (предплечье короткое)
       const d = W.clone().sub(E).normalize();
@@ -312,9 +404,9 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       segBox(target, 0.08, E, st, WOOD, 0.09);
       bake(target, new THREE.TorusGeometry(0.06, 0.018, 5, 10, Math.PI * 1.2), METAL,
         E.x + d.x * foA * 0.62, E.y + d.y * foA * 0.62, E.z + d.z * foA * 0.62,
-        new THREE.Euler(0, 0, side * 1.57));
+        new THREE.Euler(0, 0, side * 1.57));;
     } else {
-      segBox(target, 0.088, E, W, sleeve, 0.098);                 // предплечье
+      segBox(target, 0.088, E, W, foreSleeve, 0.098);                 // предплечье
       const dH = W.clone().sub(E).normalize();
       const H = W.clone().addScaledVector(dH, 0.055);
       segBox(target, 0.082, W, H, traits.skin, 0.09);             // КИСТЬ
@@ -322,15 +414,20 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   };
   // отдельный меш руки: геометрия относительно ПЛЕЧА (пивот),
   // при rotation.x=0 висит вдоль тела — как запечённая
+  // Task 42: рукава по одежде (голый торс/футболка) + МАУНТ У КИСТИ
+  // для оружия (рука без крюка) — оружие следует за рукой
   const mkArmMesh = (side: -1 | 1): THREE.Mesh => {
     const at: { pos: number[]; col: number[] } = { pos: [], col: [] };
     const isHook = traits.hook === side;
     const sx = side * (torsoW / 2 + 0.05);
     const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
+    const upperSleeve = traits.torso === 'bare' ? traits.skin : sleeve;
+    const foreSleeve = traits.torso === 'bare' || traits.torso === 'tshirt' ? traits.skin : sleeve;
     const E = new THREE.Vector3(sx * 0.16, -upA, 0.04);
     const W = new THREE.Vector3(sx * 0.26, -upA - foA * 0.68, 0.04 + foA * 0.64);
-    segBox(at, 0.1, new THREE.Vector3(0, 0, 0), E, sleeve, 0.115);  // плечо
-    bake(at, new THREE.BoxGeometry(0.105, 0.065, 0.112), sleeve, E.x, E.y, E.z); // локоть
+    segBox(at, 0.1, new THREE.Vector3(0, 0, 0), E, upperSleeve, 0.115);  // плечо
+    bake(at, new THREE.BoxGeometry(0.105, 0.065, 0.112), upperSleeve, E.x, E.y, E.z); // локоть
+    let mount: THREE.Object3D | null = null;
     if (isHook) {
       const d = W.clone().sub(E).normalize();
       const st = E.clone().addScaledVector(d, foA * 0.45);
@@ -339,13 +436,18 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
         E.x + d.x * foA * 0.62, E.y + d.y * foA * 0.62, E.z + d.z * foA * 0.62,
         new THREE.Euler(0, 0, side * 1.57));
     } else {
-      segBox(at, 0.088, E, W, sleeve, 0.098);                     // предплечье
+      segBox(at, 0.088, E, W, foreSleeve, 0.098);                     // предплечье
       const dH = W.clone().sub(E).normalize();
       const H = W.clone().addScaledVector(dH, 0.055);
       segBox(at, 0.082, W, H, traits.skin, 0.09);                 // КИСТЬ
+      // Task 42: маунт у кисти (рука БЕЗ крюка) — правая или левая
+      mount = new THREE.Object3D();
+      mount.position.copy(H);
+      mount.userData.wristMount = true;
     }
     const m = new THREE.Mesh(bakeGeom(at), CREW_MAT);
     m.position.set(sx, shoulderY, 0.01);
+    if (mount) { m.add(mount); if (traits.hook !== side) wristMount = mount; }
     return m;
   };
   for (const side of [-1, 1] as const) {
@@ -392,6 +494,27 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     bake(t, new THREE.BoxGeometry(brim * 0.62, 0.12, brim * 0.5), HAT, 0, headY + headR * 0.95, 0,
       new THREE.Euler(0, 0.35, 0));
     if (role === 'captain') bake(t, new THREE.BoxGeometry(0.06, 0.02, 0.1), 0xb8912f, 0, headY + headR * 0.86, brim * 0.28);
+  } else if (traits.headwear === 'wide') {
+    // Task 42: ШИРОКОПОЛАЯ — круглые поля + низкая тулья + лента
+    bake(t, new THREE.CylinderGeometry(0.3, 0.33, 0.022, 10), HAT, 0, headY + headR * 0.82, 0);
+    bake(t, new THREE.CylinderGeometry(0.125, 0.16, 0.13, 8), HAT, 0, headY + headR * 0.95, 0);
+    bake(t, new THREE.CylinderGeometry(0.162, 0.162, 0.032, 8), 0x6b4a2a, 0, headY + headR * 0.91, 0);
+  } else if (traits.headwear === 'straw') {
+    // Task 42: СОЛОМЕННАЯ — жёлтые поля + конус + тёмная лента
+    bake(t, new THREE.CylinderGeometry(0.32, 0.36, 0.024, 10), STRAW, 0, headY + headR * 0.8, 0);
+    bake(t, new THREE.ConeGeometry(0.155, 0.17, 8), STRAW, 0, headY + headR * 0.96, 0);
+    bake(t, new THREE.CylinderGeometry(0.16, 0.16, 0.035, 8), 0x7a4a3a, 0, headY + headR * 0.9, 0);
+  } else if (traits.headwear === 'cap') {
+    // Task 42: ВЯЗАНАЯ ШАПКА — колпак + отворот (+помпон у трети)
+    const cc = CAPS[Math.floor(rnd() * CAPS.length)];
+    bake(t, new THREE.SphereGeometry(headR * 1.09, 10, 5, 0, Math.PI * 2, 0, Math.PI * 0.62), cc, 0, headY + 0.015, 0);
+    bake(t, new THREE.CylinderGeometry(headR * 1.1, headR * 1.12, 0.05, 10), cc, 0, headY + 0.028, 0);
+    if (rnd() < 0.34) bake(t, new THREE.SphereGeometry(0.048, 6, 5), 0xe8e2d4, 0, headY + headR * 1.16, 0);
+  } else if (traits.headwear === 'top') {
+    // Task 42: ЦИЛИНДР — узкие поля + высокая тулья + лента
+    bake(t, new THREE.CylinderGeometry(0.185, 0.205, 0.022, 10), HAT, 0, headY + headR * 0.82, 0);
+    bake(t, new THREE.CylinderGeometry(0.108, 0.128, 0.24, 8), HAT, 0, headY + headR * 0.82 + 0.12, 0);
+    bake(t, new THREE.CylinderGeometry(0.13, 0.13, 0.032, 8), 0x5c2e2e, 0, headY + headR * 0.82 + 0.035, 0);
   }
 
   // --- ПОПУГАЙ НА ПЛЕЧЕ (Task 39, ~10% фигур) ---
@@ -434,7 +557,9 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   const body = new THREE.Mesh(bakeGeom(t), CREW_MAT);
   group.add(body);
 
-  // --- ноги: БЕДРО → КОЛЕНО → ЛОДЫЖКА (Task 39) ---
+  // --- ноги: БЕДРО → КОЛЕНО → ЛОДЫЖКА (Task 39; Task 42: КРОЙ
+  //     ШТАНОВ — длинные / ШОРТЫ до колена / РВАНЫЕ ШОРТЫ с
+  //     лоскутами) ---
   // у ходоков отдельные (шаг), у остальных в общий меш
   const mkLegParts = (side: number, wood: boolean, ox: number): { pos: number[]; col: number[] } => {
     const lt: { pos: number[]; col: number[] } = { pos: [], col: [] };
@@ -448,11 +573,27 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       bake(lt, new THREE.BoxGeometry(0.1, 0.07, 0.11), WOOD, K.x, K.y, K.z);
       bake(lt, new THREE.CylinderGeometry(0.045, 0.062, legH - upH + 0.07, 6), WOOD,
         ox, (legH - upH + 0.07) / 2 - 0.005, 0.025);
-    } else {
+    } else if (traits.pantsKind === 'long') {
       segBox(lt, 0.115, H, K, traits.pants, 0.135);           // бедро
       bake(lt, new THREE.BoxGeometry(0.125, 0.075, 0.155), traits.pants, K.x, K.y + 0.005, K.z + 0.005); // колено
       segBox(lt, 0.104, K, A, traits.pants, 0.12);            // голень
       bake(lt, new THREE.BoxGeometry(0.115, 0.07, 0.2), 0x1f1a14, ox, 0.035, 0.03); // ботинок
+    } else {
+      // ШОРТЫ (и РВАНЫЕ): штанина до колена, ниже — голая голень
+      segBox(lt, 0.12, H, K, traits.pants, 0.14);             // бедро в штанине
+      bake(lt, new THREE.BoxGeometry(0.13, 0.08, 0.16), traits.pants, K.x, K.y + 0.005, K.z + 0.005); // колено
+      segBox(lt, 0.09, K, A, traits.skin, 0.1);               // ГОЛАЯ голень
+      bake(lt, new THREE.BoxGeometry(0.115, 0.07, 0.2), 0x1f1a14, ox, 0.035, 0.03); // ботинок
+      if (traits.pantsKind === 'torn') {
+        // РВАНЫЙ край: 3 свисающих лоскута у колена (разной длины)
+        const rng2 = mulberry32((seed + side * 77) | 0);
+        for (let k = -1; k <= 1; k++) {
+          const fl = 0.07 + rng2() * 0.09;                     // длина лоскута
+          bake(lt, new THREE.BoxGeometry(0.045, fl, 0.018), traits.pants,
+            ox + k * 0.055, K.y - 0.01 - fl * 0.4, 0.045 - k * 0.02,
+            new THREE.Euler(k * 0.16, 0, k * 0.22));
+        }
+      }
     }
     return lt;
   };
@@ -474,7 +615,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       leg.position.y = off;
     }
     return {
-      group, role, legL, legR, armL, armR, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, baseScaleY: 1,
+      group, role, legL, legR, armL, armR, wristMount, seed, walkT: rnd(), walkDir: rnd() < 0.5 ? 1 : -1, baseScaleY: 1,
       walkSpeed: 0.55 + rnd() * 0.5, phase: rnd() * 6.28,
       dead: false, deadT: 0, deathMode: 'fall', corpseLife: 0, fallDir: 1, fallRoll: 0,
       skin: traits.skin, shirt: traits.shirt, pants: traits.pants,

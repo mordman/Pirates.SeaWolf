@@ -1,0 +1,54 @@
+GAME LOADED: true
+
+===== A: ФИКС ЧЁРНЫХ ОСТРОВОВ (RGBA вместо битого RGBFormat) =====
+{"ctor":"MeshStandardMaterial","mode":"grain","shader":"standard","hasMap":true,"mapFormat":1023,"mapData":262144,"hasNormal":false,"hasRoughMap":false,"normalScale":1,"repeat":1,"roughness":0.96,"metalness":0}
+OK   A1: дефолт — режим ЗЕРНО, шейдер Standard, map на месте
+OK   A2: текстура RGBA (format=1023) и ровно 256×256×4 байт данных — не чёрная | format 1023, данных 262144
+OK   A3: масштаб по умолчанию: повтор = 7/7 = 1.0 | repeat 1
+
+===== B: ТРИ РЕЖИМА ТЕКСТУР (off / grain / pbr) =====
+off: {"ctor":"MeshStandardMaterial","mode":"off","shader":"standard","hasMap":false,"mapFormat":null,"mapData":0,"hasNormal":false,"hasRoughMap":false,"normalScale":1,"repeat":null,"roughness":0.96,"metalness":0}
+OK   B1: ВЫКЛ — map отсутствует, texturesOn()=false
+pbr: {"ctor":"MeshStandardMaterial","mode":"pbr","shader":"standard","hasMap":true,"mapFormat":1023,"mapData":262144,"hasNormal":true,"hasRoughMap":true,"normalScale":1,"repeat":1,"roughness":0.96,"metalness":0}
+OK   B2: PBR — альбедо + карта НОРМАЛЕЙ + карта ШЕРОХОВАТОСТИ
+OK   B3: сила нормалей = 1.0 по умолчанию | normalScale 1
+OK   B4: обратно ЗЕРНО — нормалей нет (режим не PBR)
+
+===== C: ВЫБОР ШЕЙДЕРА (Standard/Physical/Lambert/Phong) =====
+{"physical":"MeshPhysicalMaterial","lambert":"MeshLambertMaterial","phong":"MeshPhongMaterial","standard":"MeshStandardMaterial"}
+OK   C1: Physical → MeshPhysicalMaterial
+OK   C2: Lambert → MeshLambertMaterial (без PBR-карт, map зерно остаётся)
+OK   C3: Phong → MeshPhongMaterial
+OK   C4: Standard → MeshStandardMaterial (возврат)
+
+===== D: МАСШТАБ ТЕКСТУРЫ И PBR-ПАРАМЕТРЫ =====
+{"ctor":"MeshStandardMaterial","mode":"pbr","shader":"standard","hasMap":true,"mapFormat":1023,"mapData":262144,"hasNormal":true,"hasRoughMap":true,"normalScale":1.5,"repeat":0.5,"roughness":0.55,"metalness":0.25}
+OK   D1: масштаб 14 м → повтор 7/14 = 0.5 | repeat 0.5
+OK   D2: шероховатость 0.55 применена к материалу | roughness 0.55
+OK   D3: металличность 0.25 применена | metalness 0.25
+OK   D4: сила нормалей 1.5 применена | normalScale 1.5
+
+===== E: ВКЛАДКА «РЕСУРСЫ» В ПАНЕЛИ НАСТРОЕК =====
+{"hasTab":true,"texSection":true,"shaderRow":true,"modePbr":true,"scaleRow":true,"glbSection":true,"glbToggle":true,"palmSize":true,"cannonSize":true,"pirateSize":true,"barrelSize":true,"details":26}
+OK   E1: вкладка «Ресурсы» есть и открывается
+OK   E2: секция текстур рельефа (режимы/шейдер/масштаб)
+OK   E3: секция 3D-моделей с габаритами: пальма 3.4×8.9×3.4, пушка 1.2×0.45×0.6, пират 0.5×1.72×0.35, бочка 0.68×0.8×0.68
+OK   E4: каталог моделей ≥ 23 записей (details) | details 26
+
+===== F: КАТАЛОГ ПРОЦЕДУРНЫХ ОБЪЕКТОВ (реестр) =====
+{"n":26,"palmStatus":"glb","files":1,"applied":5350}
+OK   F1: реестр ≥ 23 объектов | объектов 26
+OK   F2: пальма — .glb загружена (демо-конвейер подмены) | status glb
+OK   F3: подмена применена к инстансам (palm applied > 0) | applied 5350
+
+===== G: МИГРАЦИЯ СОХРАНЕНИЯ v9 (boolean) → v10 (режим) =====
+after reload: true {"v":15,"mode":"off","applied":false,"texScale":7}
+OK   G1: v9 с islandTextures=false читается как режим off, схема v15
+JS errors: []
+OK   I1: 0 ошибок JS
+
+===== ИТОГ e2e_v55: ALL OK =====
+
+===== H: СКРИНШОТЫ ОСТРОВА (текстуры вкл — для VLM) =====
+shot grain: done
+shot pbr: done

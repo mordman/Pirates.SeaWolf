@@ -1,0 +1,9 @@
+GAME LOADED: true
+
+===== G-финал: миграция настроек v8 → v10 =====
+loaded after reload: true {"v":15,"tex":"grain","applied":true}
+OK   G6: сохранение v8 читается, islandTextures='grain' по умолчанию, схема v15
+JS errors: []
+OK   I2: 0 ошибок JS (после перезагрузки)
+
+===== ИТОГ e2e_v54 (часть 3): ALL OK =====

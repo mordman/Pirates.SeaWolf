@@ -53,8 +53,13 @@ export interface AssetsSettings {
 // источник для фигурки игрока (lander) и процедурных
 // «человечков» (crew.ts): массивы цветов лежат здесь, в
 // настройках (чистые данные, без three.js).
+// Task 42: ГАРДЕРОБ расширения — головные уборы (7 видов), торс
+// (8 видов: рубаха/тельняшка/вертикальные полосы/футболка/свитер/
+// жилет/камзол/голый торс) и штаны (длинные/шорты/рваные шорты).
 // ============================================================
-export type HeadwearKind = 'none' | 'bandana' | 'hat';
+export type HeadwearKind = 'none' | 'bandana' | 'hat' | 'wide' | 'straw' | 'cap' | 'top';
+export type TorsoKind = 'shirt' | 'striped' | 'stripedV' | 'tshirt' | 'sweater' | 'vest' | 'coat' | 'bare';
+export type PantsKind = 'long' | 'shorts' | 'torn';
 
 export const APPEARANCE_SKIN = [0xd9a184, 0xc98d68, 0xb3765a, 0xa06a4f, 0x8a5a42, 0xe0b294] as const;
 export const APPEARANCE_SHIRT = [0xcbb8a0, 0x8f3b34, 0x35526b, 0x5b6e46, 0x7a5f8a, 0xa8763e, 0x3d4a5c] as const;
@@ -63,6 +68,14 @@ export const APPEARANCE_BANDANA = [0xa3362c, 0x2f5e8a, 0x3c6b3f, 0x8a6a2a, 0x553
 
 export const HEADWEAR_LABELS: Record<HeadwearKind, string> = {
   none: 'Без убора', bandana: 'Бандана', hat: 'Треуголка',
+  wide: 'Широкополая', straw: 'Соломенная', cap: 'Вязаная шапка', top: 'Цилиндр',
+};
+export const TORSO_LABELS: Record<TorsoKind, string> = {
+  shirt: 'Рубаха', striped: 'Тельняшка', stripedV: 'Полосы (вертик.)',
+  tshirt: 'Футболка', sweater: 'Свитер', vest: 'Жилет', coat: 'Камзол', bare: 'Голый торс',
+};
+export const PANTS_LABELS: Record<PantsKind, string> = {
+  long: 'Длинные', shorts: 'Шорты', torn: 'Рваные шорты',
 };
 export const BEARD_LABELS: Record<0 | 1 | 2, string> = {
   0: 'Чисто выбрит', 1: 'Короткая борода', 2: 'Длинная борода',
@@ -72,7 +85,9 @@ export interface PlayerAppearance {
   skin: number;             // тон кожи (APPEARANCE_SKIN)
   shirt: number;            // рубаха (APPEARANCE_SHIRT)
   pants: number;            // штаны (APPEARANCE_PANTS)
-  headwear: HeadwearKind;   // головной убор
+  headwear: HeadwearKind;   // головной убор (7 видов)
+  torso: TorsoKind;         // одежда торса (8 видов, Task 42)
+  pantsKind: PantsKind;     // крой штанов (3 вида, Task 42)
   beard: 0 | 1 | 2;         // борода: нет/короткая/длинная
   eyePatch: boolean;        // повязка на глаз
   parrot: boolean;          // попугай на плече
@@ -82,9 +97,13 @@ export interface PlayerAppearance {
 
 export const DEFAULT_APPEARANCE: PlayerAppearance = {
   skin: 0xc98d68, shirt: 0x8f3b34, pants: 0x33404a,
-  headwear: 'bandana', beard: 1, eyePatch: false,
+  headwear: 'bandana', torso: 'shirt', pantsKind: 'long', beard: 1, eyePatch: false,
   parrot: true, pegLeg: false, hook: false,
 };
+
+export const HEADWEAR_KINDS: readonly HeadwearKind[] = ['none', 'bandana', 'hat', 'wide', 'straw', 'cap', 'top'];
+export const TORSO_KINDS: readonly TorsoKind[] = ['shirt', 'striped', 'stripedV', 'tshirt', 'sweater', 'vest', 'coat', 'bare'];
+export const PANTS_KINDS: readonly PantsKind[] = ['long', 'shorts', 'torn'];
 
 // ============================================================
 // Погода: режим явлений + ветер. ОТ ВЕТРА ЗАВИСЯТ ВОЛНЫ —
@@ -378,7 +397,12 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     деревни, жители, рыбацкие лодки: глобальные множители +
 //     переопределения ПО КАЖДОМУ острову (вкладка «Острова»).
 //     gameplay.vegDensity (v13) мигрирует в islands.treesMul.
-const SCHEMA_VER = 14;
+// v15 (Task 42): гардероб капитана — headwear расширен до 7
+//     видов (+широкополая/соломенная/вязаная/цилиндр), новые
+//     player.torso (8 видов одежды торса) и player.pantsKind
+//     (длинные/шорты/рваные шорты); старые записи читаются с
+//     дефолтами torso='shirt', pantsKind='long'.
+const SCHEMA_VER = 15;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -553,8 +577,14 @@ export function loadSettings(): GameSettings {
       if (isColor(p.skin, APPEARANCE_SKIN)) s.player.skin = p.skin as number;
       if (isColor(p.shirt, APPEARANCE_SHIRT)) s.player.shirt = p.shirt as number;
       if (isColor(p.pants, APPEARANCE_PANTS)) s.player.pants = p.pants as number;
-      if (p.headwear === 'none' || p.headwear === 'bandana' || p.headwear === 'hat') {
-        s.player.headwear = p.headwear;
+      if (typeof p.headwear === 'string' && HEADWEAR_KINDS.includes(p.headwear as HeadwearKind)) {
+        s.player.headwear = p.headwear as HeadwearKind;
+      }
+      if (typeof p.torso === 'string' && TORSO_KINDS.includes(p.torso as TorsoKind)) {
+        s.player.torso = p.torso as TorsoKind;
+      }
+      if (typeof p.pantsKind === 'string' && PANTS_KINDS.includes(p.pantsKind as PantsKind)) {
+        s.player.pantsKind = p.pantsKind as PantsKind;
       }
       if (p.beard === 0 || p.beard === 1 || p.beard === 2) s.player.beard = p.beard;
       if (typeof p.eyePatch === 'boolean') s.player.eyePatch = p.eyePatch;

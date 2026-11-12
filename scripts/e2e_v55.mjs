@@ -242,8 +242,8 @@ const mig = jparse(ev(`(() => {
   });
 })()`));
 log('after reload:', reloaded, JSON.stringify(mig));
-check('G1: v9 с islandTextures=false читается как режим off, схема v12',
-  reloaded && mig.v === 14 && mig.mode === 'off' && mig.applied === false);
+check('G1: v9 с islandTextures=false читается как режим off, схема v15',
+  reloaded && mig.v === 15 && mig.mode === 'off' && mig.applied === false);
 // вернуть дефолт grain для скриншота
 ev(`(() => { const g = window.__game; const s = structuredClone(g.settings); s.assets.islandTextures = 'grain'; g.applySettings(s); return 'grain'; })()`);
 

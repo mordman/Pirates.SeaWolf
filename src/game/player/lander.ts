@@ -170,11 +170,14 @@ export class Lander {
     const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.2, 6), gripM);
     grip.position.y = -0.02;
     saber.add(grip);
-    saber.position.set(0.3, 0.92, 0.16);
-    saber.rotation.set(0.2, 0, -0.35);
+    // Task 42: САБЛЯ — В РУКЕ: родитель — маунт у КИСТИ (не корень
+    // фигурки): оружие следует за рукой во всех анимациях, рука с
+    // оружией больше не «третья рука». База: клинок вверх, чуть
+    // вперёд и наружу от бедра
+    saber.position.set(0.01, 0.02, 0.02);
+    saber.rotation.set(0.25, 0, -0.3);
     saber.visible = false;
     this.saberG = saber;
-    this.group.add(saber);
     // --- ПИСТОЛЕТ ---
     const pistol = new THREE.Group();
     const wood = new THREE.MeshStandardMaterial({ color: 0x5a3c22, roughness: 0.8 });
@@ -190,16 +193,39 @@ export class Lander {
     const lock = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.08), iron);
     lock.position.set(0.05, 0.02, 0.02);
     pistol.add(lock);
-    pistol.position.set(0.28, 0.98, 0.18);
+    // Task 42: пистолет — В РУКЕ, дуло ВДОЛЬ РУКИ (при висящей
+    // руке — вниз у бедра, при прицеле — вперёд)
+    pistol.position.set(0.01, -0.03, 0.03);
+    pistol.rotation.set(Math.PI / 2, 0, 0);
     pistol.visible = false;
     this.pistolG = pistol;
-    this.group.add(pistol);
+    // ОРУЖИЕ → маунт у кисти (рука без крюка)
+    this.attachWeaponToHand();
+  }
+
+  /** Task 42: прикрепить саблю/пистолет к МАУНТУ У КИСТИ фигурки
+   *  (рука без крюка) — оружие следует за рукой во всех анимациях;
+   *  вызывается после сборки и каждой пересборки фигурки */
+  private attachWeaponToHand() {
+    const mount = this.fig?.wristMount ?? null;
+    if (this.saberG) {
+      this.saberG.parent?.remove(this.saberG);
+      (mount ?? this.group).add(this.saberG);
+    }
+    if (this.pistolG) {
+      this.pistolG.parent?.remove(this.pistolG);
+      (mount ?? this.group).add(this.pistolG);
+    }
   }
 
   /** Сменить внешность капитана (экран создания/настройки) —
    *  фигурка пересобирается на месте, оружие сохраняется */
   setAppearance(a: PlayerAppearance) {
     this.appearance = { ...a };
+    // Task 42: СНЯТЬ оружие со старой фигурки ДО dispose —
+    // иначе traverse уничтожит геометрию сабли/пистолета
+    if (this.saberG) this.saberG.parent?.remove(this.saberG);
+    if (this.pistolG) this.pistolG.parent?.remove(this.pistolG);
     if (this.fig) {
       const old = this.fig.group;
       this.group.remove(old);
@@ -211,6 +237,7 @@ export class Lander {
     const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
     this.fig = fig;
     this.group.add(fig.group);
+    this.attachWeaponToHand();
     this.deps.msg('Внешность капитана обновлена');
   }
 
@@ -220,6 +247,8 @@ export class Lander {
       parrot: this.fig?.hasParrot ?? false,
       eyePatch: this.appearance.eyePatch,
       headwear: this.appearance.headwear,
+      torso: this.appearance.torso,       // Task 42: вид одежды торса
+      pantsKind: this.appearance.pantsKind, // Task 42: крой штанов
       hook: this.appearance.hook,
       pegLeg: this.appearance.pegLeg,
       verts: this.fig?.verts ?? 0,
@@ -241,6 +270,21 @@ export class Lander {
 
   /** E2E: сколько пуль сейчас в полёте */
   bulletsInFlight(): number { return this.bullets.length; }
+
+  /** E2E/телеметрия (Task 42): оружие В РУКЕ — родитель сабли/
+   *  пистолета = маунт у кисти; рука с оружием не машет */
+  weaponInfo() {
+    const mount = this.fig?.wristMount ?? null;
+    return {
+      weapon: this.weapon,
+      saberMounted: !!this.saberG && !!mount && this.saberG.parent === mount,
+      pistolMounted: !!this.pistolG && !!mount && this.pistolG.parent === mount,
+      wristPose: (this.fig && (this.fig.hasHook ? this.fig.armL : this.fig.armR))
+        ? +(this.fig.hasHook ? this.fig.armL!.rotation.x : this.fig.armR!.rotation.x).toFixed(3)
+        : null,
+      holding: this.weapon !== 'none',
+    };
+  }
 
   /** Высадиться в точке (мир); faceX/faceZ — направление взгляда
    *  (с моря к суше): камера за спиной, видно остров */
@@ -527,22 +571,40 @@ export class Lander {
       this.fig.group.position.y = this.moving ? Math.abs(s) * 0.05 : 0;
       this.fig.group.rotation.z = this.moving ? 0 : Math.sin(time * 1.4) * 0.02;
       const armL = this.fig.armL, armR = this.fig.armR;
-      if (armL && armR) {
+      // Task 42: рука с оружием — КИСТЬ С МАУНТОМ (у игрока крюк
+      // правый, оружие — в ЛЕВОЙ; обычно — правая). При оружии эта
+      // рука ДЕРЖИТ его и НЕ МАШЕТ (фикс «третьей руки»), свободная
+      // рука машет при ходьбе / покачивается в покое
+      const hookSide = !!this.fig.hasHook;
+      const wrist = hookSide ? armL : armR;
+      const freeArm = hookSide ? armR : armL;
+      if (wrist && freeArm) {
+        const wz = hookSide ? 0.16 : -0.16;   // отвод от бедра
         if (this.aiming && this.weapon === 'pistol') {
-          // прицел: правая рука с пистолетом вытянута вперёд
-          armR.rotation.set(-(Math.PI / 2 - this.camPitch * 0.6), 0, -0.06);
-          armL.rotation.set(0.25, 0, 0.18);
+          // прицел: рука с пистолетом вытянута вперёд, дуло вперёд
+          wrist.rotation.set(-(Math.PI / 2 - this.camPitch * 0.6), 0, wz * 0.4);
+          freeArm.rotation.set(0.25, 0, hookSide ? -0.18 : 0.18);
         } else if (this.weapon === 'saber' && this.swingT >= 0) {
-          // рубящий замах правой рукой
+          // рубящий замах рукой с саблей
           const t = this.swingT;
           const sw = t < 0.35 ? -t / 0.35 * 1.5
             : t < 0.65 ? -1.5 + (t - 0.35) / 0.3 * 2.6
             : 1.1 - (t - 0.65) / 0.35 * 1.1;
-          armR.rotation.set(-1.15 - sw * 0.35, 0, -0.1);
-          armL.rotation.set(0.3 + sw * 0.2, 0, 0.3);
+          wrist.rotation.set(-1.15 - sw * 0.35, 0, wz);
+          freeArm.rotation.set(0.3 + sw * 0.2, 0, hookSide ? -0.3 : 0.3);
+        } else if (this.weapon !== 'none') {
+          // ОРУЖИЕ В РУКЕ: рука держит его у бедра — НЕ машет;
+          // свободная рука живёт обычной жизнью
+          wrist.rotation.set(-0.42, 0, wz);
+          if (this.moving) {
+            freeArm.rotation.set(-s * 0.5, 0, hookSide ? -0.05 : 0.05);
+          } else {
+            freeArm.rotation.set(Math.sin(time * 1.4) * 0.04, 0, hookSide ? -0.06 : 0.06);
+          }
         } else if (this.moving) {
-          armL.rotation.set(-s * 0.5, 0, 0.05);
-          armR.rotation.set(s * 0.5, 0, -0.05);
+          // без оружия: обе руки машут в противофазе
+          wrist.rotation.set(s * 0.5, 0, wz);
+          freeArm.rotation.set(-s * 0.5, 0, -wz);
         } else {
           // покой: лёгкое покачивание + периодически ПОДНЯТАЯ РУКА
           this.idleWaveCd -= dt;
@@ -552,11 +614,13 @@ export class Lander {
           }
           if (this.waveT > 0) {
             this.waveT -= dt;
-            armR.rotation.set(0, 0, 2.55 + Math.sin(time * 9) * 0.3);
-            armL.rotation.set(0, 0, 0.06);
+            // поднята СВОБОДНАЯ рука (правая поднимается +Z, левая −Z)
+            const lift = (wz < 0 ? 1 : -1) * (2.55 + Math.sin(time * 9) * 0.3);
+            freeArm.rotation.set(0, 0, lift);
+            wrist.rotation.set(0, 0, wz);
           } else {
-            armL.rotation.set(Math.sin(time * 1.4) * 0.04, 0, 0.06);
-            armR.rotation.set(Math.sin(time * 1.4 + 1) * 0.04, 0, -0.06);
+            wrist.rotation.set(Math.sin(time * 1.4) * 0.04, 0, wz);
+            freeArm.rotation.set(Math.sin(time * 1.4 + 1) * 0.04, 0, -wz);
           }
         }
       }
@@ -570,8 +634,9 @@ export class Lander {
         const swing = t < 0.35 ? -t / 0.35 * 1.5
           : t < 0.65 ? -1.5 + (t - 0.35) / 0.3 * 2.6
           : 1.1 - (t - 0.65) / 0.35 * 1.1;
-        this.saberG.rotation.z = -0.35 + swing * 0.9;
-        this.saberG.rotation.x = 0.2 - swing * 0.5;
+        // Task 42: базовая поза сабли — В РУКЕ (маунт у кисти)
+        this.saberG.rotation.z = -0.3 + swing * 0.9;
+        this.saberG.rotation.x = 0.25 - swing * 0.5;
       }
       if (t >= 0.45 && t - dt / 0.55 < 0.45) {
         const ax = p.x + Math.sin(this.yaw) * 1.1;
@@ -588,9 +653,10 @@ export class Lander {
     }
     this.recoil = Math.max(0, this.recoil - dt * 5);
     if (this.pistolG) {
-      this.pistolG.position.z = 0.18 - this.recoil * 0.07;
-      this.pistolG.rotation.x = this.aiming ? 0 : 0.25 * this.recoil;
-      this.pistolG.position.x = this.aiming ? 0.22 : 0.28;
+      // Task 42: отдача — ВДОЛЬ РУКИ (пистолет в кисти): рывок
+      // назад + подброс дула; при прицеле рука вытянута — дуло вперёд
+      this.pistolG.position.set(0.01, -0.03 + this.recoil * 0.05, 0.03);
+      this.pistolG.rotation.set(Math.PI / 2 - this.recoil * 0.3, 0, 0);
     }
     if (this.saberG) this.saberG.visible = this.weapon === 'saber';
     if (this.pistolG) this.pistolG.visible = this.weapon === 'pistol';
