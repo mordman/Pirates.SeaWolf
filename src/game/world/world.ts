@@ -639,50 +639,64 @@ function boulderGeo(): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
-// ---------- Task 42: LOD-геометрии растительности ----------
-// ДАЛЬНИЕ острова (за порогом от берега) рисуют деревья УПРОЩЕННЫМИ
-// моделями: тот же силуэт в ~5-8 раз меньше треугольников. Камни
-// (rock/stump/boulder) и так дешёвые — LOD = полная модель.
-// Подмена по-островно: один InstancedMesh на вид — геометрия
-// меняется одной ссылкой (мгновенно, без пересборки инстансов).
-function palmLodGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [
-    paint(tf(new THREE.CylinderGeometry(0.14, 0.24, 8.5, 3), 0, 4.25, 0), 0x7a5a38),
-    paint(tf(new THREE.SphereGeometry(1.6, 5, 3), 0, 8.6, 0).scale(1, 0.42, 1) as THREE.BufferGeometry, 0x3f7d33),
+// ---------- Task 42→45: LOD-геометрии растительности ----------
+// ДАЛЬНИЕ острова (за порогом от берега) рисуют деревья ПРОСТОЙ
+// ПЛОСКОЙ МОДЕЛЬЮ (замечание игрока Task 45): пара скрещенных
+// вертикальных квадов на элемент — тот же силуэт в 4-12
+// треугольников (против 100-400 у полной модели). Вид «крест»
+// читается с любого ракурса как дерево; материал растительности
+// — DoubleSide. Камни (rock/stump/boulder) и так дешёвые —
+// LOD = полная модель. Подмена по-островно: один InstancedMesh
+// на вид — геометрия меняется одной ссылкой (мгновенно, без
+// пересборки инстансов).
+/** Пара скрещенных вертикальных квадов (0° и 90°) — элемент
+ *  плоского дерева: ствол или крона; DoubleSide у материала */
+function flatPair(w: number, h: number, y: number, hex: number): THREE.BufferGeometry[] {
+  return [
+    paint(tf(new THREE.PlaneGeometry(w, h), 0, y, 0, 0, 0), hex, 0.09),
+    paint(tf(new THREE.PlaneGeometry(w, h), 0, y, 0, 0, Math.PI / 2), hex, 0.09),
   ];
-  return mergeGeometries(parts)!;
 }
-function ficusLodGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [
-    paint(tf(new THREE.CylinderGeometry(0.44, 0.66, 4.2, 3), 0, 2.1, 0), 0x6b4e2f),
-    paint(tf(new THREE.SphereGeometry(2.6, 5, 3), 0, 5.6, 0).scale(1, 0.72, 1) as THREE.BufferGeometry, 0x2f5e2b),
-  ];
-  return mergeGeometries(parts)!;
+// ---------- Task 45: ПЛОСКИЕ деревья для ДАЛЬНИХ островов ----------
+// ствол-палка + веер кроны двумя ярусами; силуэт пальмы
+function palmFlatGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    ...flatPair(0.18, 8.5, 4.25, 0x7a5a38),
+    ...flatPair(3.4, 1.5, 8.2, 0x3f7d33),
+    ...flatPair(2.2, 1.1, 8.9, 0x356d2c),
+  ])!;
 }
-function jungleLodGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [
-    paint(tf(new THREE.CylinderGeometry(0.2, 0.38, 5.4, 3), 0, 2.7, 0), 0x6e5230),
-    paint(tf(new THREE.SphereGeometry(1.9, 5, 3), 0, 6.0, 0).scale(1, 1.25, 1) as THREE.BufferGeometry, 0x477a34),
-  ];
-  return mergeGeometries(parts)!;
+function ficusFlatGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    ...flatPair(0.9, 4.2, 2.1, 0x6b4e2f),
+    ...flatPair(5.2, 3.8, 5.4, 0x2f5e2b),
+  ])!;
 }
-function bushLodGeo(): THREE.BufferGeometry {
-  return paint(tf(new THREE.SphereGeometry(0.8, 4, 3), 0, 0.55, 0), 0x4a7032);
+function jungleFlatGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    ...flatPair(0.5, 5.4, 2.7, 0x6e5230),
+    ...flatPair(4.0, 5.4, 6.0, 0x477a34),
+  ])!;
 }
-function bambooLodGeo(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [
-    paint(tf(new THREE.CylinderGeometry(0.05, 0.07, 5.2, 3), 0, 2.6, 0), 0x8a9a3a),
-    paint(tf(new THREE.CylinderGeometry(0.05, 0.07, 4.4, 3), 0.4, 2.2, 0.15), 0x7e9038),
-  ];
-  return mergeGeometries(parts)!;
+function bambooFlatGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    ...flatPair(1.5, 5.2, 2.6, 0x8a9a3a),
+    ...flatPair(0.9, 3.8, 1.9, 0x7e9038),
+  ])!;
 }
-/** Каталог LOD-моделей по виду (null → полная и так дешёвая) */
+function bushFlatGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    ...flatPair(1.8, 1.3, 0.65, 0x4a7032),
+  ])!;
+}
+/** Каталог LOD-моделей по виду (Task 45: ПЛОСКИЕ силуэты; null →
+ *  камни: полная и так дешёвая) */
 const VEG_LOD: Record<string, (() => THREE.BufferGeometry) | null> = {
-  palm: palmLodGeo, ficus: ficusLodGeo, jungle: jungleLodGeo,
-  bush: bushLodGeo, bamboo: bambooLodGeo,
+  palm: palmFlatGeo, ficus: ficusFlatGeo, jungle: jungleFlatGeo,
+  bush: bushFlatGeo, bamboo: bambooFlatGeo,
   rock: null, stump: null, boulder: null,
 };
-/** кэш LOD-геометрий (одна на вид на всю сессию — при ×1000
+/** кэш плоских геометрий (одна на вид на всю сессию — при ×1000
  *  деревьев и перестройках не пересоздавать) */
 const VEG_LOD_CACHE: Record<string, THREE.BufferGeometry> = {};
 
@@ -961,7 +975,9 @@ export class World {
         if (!c) continue;
         const kind = kindNames[ki];
         const geo = types[kind].geo();
-        const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
+        // Task 45: DoubleSide — плоские деревья дальних островов
+        // (крест из квадов) видны с обеих сторон
+        const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide });
         if (types[kind].sway > 0) applySway(mat, types[kind].sway);
         const inst = new THREE.InstancedMesh(geo, mat, c);
         inst.userData.wire = 'veg';

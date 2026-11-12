@@ -153,8 +153,9 @@ export function makeHullTextures(P: ShipPreset, decoId: string, ports: PortRef[]
           else rowCol.copy(cHull);
         }
       }
-      // лёгкая полосатость обшивки (как было в вершинных цветах)
-      const k = 1 - 0.06 * (Math.sin(y * 9.0) * 0.5 + 0.5);
+      // лёгкая полосатость обшивки (как было в вершинных цветах;
+      // Task 45: контраст повышен — пояса читаются чётче)
+      const k = 1 - 0.08 * (Math.sin(y * 9.0) * 0.5 + 0.5);
       m.fillStyle = `rgb(${Math.round(rowCol.r * 255 * k)},${Math.round(rowCol.g * 255 * k)},${Math.round(rowCol.b * 255 * k)})`;
       m.fillRect(0, py, W, 1);
     }
@@ -179,27 +180,61 @@ export function makeHullTextures(P: ShipPreset, decoId: string, ports: PortRef[]
       r.globalAlpha = 1;
     }
 
-    // швы обшивки: горизонтальные линии (доски лежат вдоль корпуса)
+    // ===== Task 45: НАСТОЯЩАЯ ОБШИВКА ИЗ ДОСОК =====
+    // Пояса досок по 0.34 м вдоль корпуса; каждая доска — свой тон
+    // дерева (случайная вариация), тёмный конопаченый шов между
+    // поясами, ВЕРТИКАЛЬНЫЕ СТЫКИ в разбежку (кирпичная перевязка)
+    // + гвозди у стыков. С борта корпус читается как ДОСКИ,
+    // а не «гладкое крашеное дерево» — и эти же доски ломаются
+    // от попаданий (зонный урон Ship.hitHull)
     const B_ = P.beam;
     const yMinW = vMin * B_, yMaxW = vMax * B_;
-    m.strokeStyle = 'rgba(46,30,14,0.20)';
-    m.lineWidth = 1;
-    r.strokeStyle = 'rgba(120,120,120,0.35)';
-    for (let y = Math.ceil(yMinW / 0.34) * 0.34; y < yMaxW; y += 0.34) {
-      const py = geo.py(y) + 0.5;
-      m.beginPath(); m.moveTo(0, py); m.lineTo(W, py); m.stroke();
-      r.beginPath(); r.moveTo(0, py); r.lineTo(W, py); r.stroke();
-    }
-    // стыки досок в разбежку + пригвоздь
-    m.fillStyle = 'rgba(40,26,12,0.16)';
-    for (let y = Math.ceil(yMinW / 0.34) * 0.34; y < yMaxW; y += 0.34) {
-      let z = -P.length / 2 + rnd() * 2.2;
-      while (z < P.length / 2) {
-        const px = geo.px(z);
-        m.fillRect(px, geo.py(y) - 1, 1.6, 2.6);
-        m.fillRect(px - 4, geo.py(y), 1.5, 1.5);   // гвоздь слева
-        m.fillRect(px + 3, geo.py(y), 1.5, 1.5);   // гвоздь справа
-        z += 3.4 + rnd() * 2.4;
+    const rowH = 0.34;                                  // высота пояса, м
+    const rowPx = Math.abs(geo.py(0) - geo.py(rowH));   // пояс в пикселях
+    const z0 = -P.length / 2 - 1, z1 = P.length / 2 + 1;
+    const seamPx = Math.max(1.8, rowPx * 0.15);         // шов конопати, px
+    for (let y = Math.ceil(yMinW / rowH) * rowH; y < yMaxW; y += rowH) {
+      const py = geo.py(y);
+      const pyNext = geo.py(y + rowH);
+      const rowTop = Math.min(py, pyNext);              // верх пояса
+      const rowBot = Math.max(py, pyNext);
+      // (1) ТОН КАЖДОЙ ДОСКИ: сегменты между стыками вдоль корпуса
+      let z = z0 + rnd() * 2.2;
+      const joints: number[] = [];
+      while (z < z1) { joints.push(z); z += 3.2 + rnd() * 2.6; }
+      for (let j = 0; j < joints.length; j++) {
+        const za = joints[j];
+        const zb = j + 1 < joints.length ? joints[j + 1] : z1 + 4;
+        const xa = Math.max(0, geo.px(za)), xb = Math.min(W, geo.px(zb));
+        if (xb - xa < 3) continue;
+        // случайный тон: то темнее, то светлее — живая доска
+        const dark = rnd() < 0.5;
+        const a = dark ? 0.08 + rnd() * 0.07 : 0.05 + rnd() * 0.04;
+        m.fillStyle = dark
+          ? `rgba(10,6,3,${a.toFixed(3)})`
+          : `rgba(240,230,210,${a.toFixed(3)})`;
+        m.fillRect(xa, rowTop + seamPx, xb - xa, Math.max(1, rowBot - rowTop - seamPx * 2));
+      }
+      // (2) шов пояса: почти ЧЁНАЯ линия конопати + светлая фаска под ней
+      // (шов заметно темнее любой доски — пояс читается с борта)
+      m.fillStyle = 'rgba(10,6,3,0.80)';
+      m.fillRect(0, rowTop - seamPx * 0.5, W, seamPx);
+      m.fillStyle = 'rgba(240,230,210,0.20)';            // блик кромки (фаска)
+      m.fillRect(0, rowTop + seamPx * 0.6, W, Math.max(1, seamPx * 0.8));
+      r.fillStyle = 'rgba(120,120,120,0.45)';
+      r.fillRect(0, rowTop - seamPx * 0.5, W, seamPx);
+      // (3) ВЕРТИКАЛЬНЫЕ СТЫКИ (в разбежку) + гвозди у стыка
+      for (const jz of joints) {
+        const px = geo.px(jz);
+        if (px < 0 || px > W) continue;
+        const hSeg = Math.max(2, rowBot - rowTop - seamPx * 2);
+        m.fillStyle = 'rgba(12,7,4,0.60)';
+        m.fillRect(px - 1, rowTop + seamPx, 2, hSeg);
+        m.fillStyle = 'rgba(15,9,5,0.65)';              // гвозди у стыка
+        m.fillRect(px - 5, rowTop + seamPx + 2, 1.8, 1.8);
+        m.fillRect(px + 3.4, rowBot - seamPx - 4, 1.8, 1.8);
+        r.fillStyle = 'rgba(140,140,140,0.5)';
+        r.fillRect(px - 1, rowTop + seamPx, 2, hSeg);
       }
     }
     // потёки/выцветание: вертикальные полупрозрачные полосы

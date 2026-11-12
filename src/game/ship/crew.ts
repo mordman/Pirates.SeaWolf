@@ -104,6 +104,17 @@ export interface CrewFigure {
   crouchT?: number;
   /** Task 43: рука-стрелок (к ней прикреплено оружие) */
   gunArm?: THREE.Mesh | null;
+  // --- Task 45: БОЕВЫЕ ПОСТА ВДОЛЬ БОРТА + ПОДМЕНА ПОГИБШИХ ---
+  /** пост стрелка: z вдоль борта (назначается при атаке) */
+  stZ?: number;
+  /** борт поста: +1 порт / −1 штирборт (сторона УГРОЗЫ) */
+  stSide?: number;
+  /** >0 — держит пост после боя / замена идёт на пост, сек */
+  postT?: number;
+  /** заявка на подмену уже стоит в очереди */
+  replQueued?: boolean;
+  /** Task 45: фигура поднята из трюма (замена погибшего) */
+  fromSpare?: boolean;
   /** Task 43: эвакуация — фигура плывёт (нестандартное поведение) */
   swim?: { phase: 'run' | 'jump' | 'swim' | 'drown'; t: number;
     vx: number; vz: number; drownAt: number; jumpY: number; };
@@ -774,16 +785,22 @@ export interface CrewVisual {
     shipQuat: THREE.Quaternion): number;
   /** Оживить всех (полигон/сброс повреждений) */
   reset(): void;
-  /** Task 43: пуля стрелка противника снимает фигуру с палубы
-   *  (случайную живую) — труп падает на месте */
+  /** Task 43: пуля стрелка противника снимает фигуру с палубы.
+   *  Task 45: fromDirWorld — направление полёта (мир): приоритет —
+   *  фигуры у борта СО СТОРОНЫ СТРЕЛКА (линия у фальшборта). */
   smallArmsKill(maxCount: number,
-    shipPos: THREE.Vector3, shipQuat: THREE.Quaternion): number;
+    shipPos: THREE.Vector3, shipQuat: THREE.Quaternion,
+    fromDirWorld?: THREE.Vector3 | null): number;
   /** Task 43: живых пловцов в воде (после прыжков с тонущего) */
   swimmersAlive(): number;
   /** Task 43: число стрелков (ружья/пистолеты) на палубе */
   armedInfo(): { musket: number; pistol: number };
   /** Task 43: фигуры в позе «на колене у борта» (обстрел) */
   crouchedCount(): number;
+  /** Task 45: резерв экипажа: below — живых в трюме (можно поднять
+   *  на палубу), spares — запасных фигур «ниже палубы», pending —
+   *  заявок на подмену в очереди */
+  reservesInfo(): { below: number; spares: number; pending: number };
 }
 
 // temporaries для стрельбы (не аллоцировать в кадре)
@@ -832,6 +849,37 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
   const mastZ = P.masts === 2 ? [L * 0.16, -L * 0.10] : [L * 0.18, -L * 0.05, -L * 0.28];
   const deckGuns = gunLayout(P).filter(sl => sl.tier === 0).map(sl => sl.z);
   const wheelZ = wheelZFor(P);
+
+  // ============================================================
+  // Task 45: ПОДМЕНА ПОГИБШИХ ЖИВЫМИ ИЗ ЭКИПАЖА. На палубе — боевой
+  // расчёт (baseDeck = nDeck); остальной экипаж «ниже палубы»
+  // (spares — скрытые фигуры, не в figures). Когда стрелок на посту
+  // гибнет, из люка у мачты поднимается замена и встаёт на его
+  // место. Очередь replQueue копит заявки (после гибели 2-4.5 с);
+  // активация — в update(), пока в трюме есть живые.
+  // ============================================================
+  const baseDeck = nDeck;                    // полный состав палубы
+  const spares: CrewFigure[] = [];          // живые «ниже палубы» (не в figures)
+  const replQueue: number[] = [];           // заявки на подмену: время готовности
+  let lastSide = 1;                         // борт последней угрози (гистерезис у ДП)
+  let lastTime = 0;                         // время симуляции для очереди
+  let lastCrew = 0;                         // экипаж с последнего update (reservesInfo)
+  const hatchZ = mastZ[0] - 1.7;            // люк у грот-мачты — вход подмены
+  const nSpares = Math.min(12, Math.max(0, Math.round(P.maxCrew * 0.8) - nDeck));
+  for (let i = 0; i < nSpares; i++) {
+    const f = allCats
+      ? buildCatCrewFigure('watch', nextSeed(), true)
+      : buildFigure('watch', rollTraits(rot, 'watch'), nextSeed(), true);
+    if (!allCats && f.wristMount) {
+      f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
+      f.gunCd = 1 + rot() * 2;
+      f.crouchT = 0;
+      f.gunArm = (f.wristMount.parent as THREE.Mesh) ?? f.armR ?? f.armL ?? null;
+    }
+    f.group.visible = false;        // ниже палубы: не виден и не считается
+    group.add(f.group);
+    spares.push(f);
+  }
 
   // план ролей по приоритету: капитан → рулевой → боцман →
   // ГРЕБЦЫ (гребные суда, на банках у вёсел) → канониры у орудий
@@ -1279,24 +1327,48 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         f.group.rotation.x = 0;
         f.group.rotation.z = 0;
         f.group.scale.set(1, f.baseScaleY, 1);
-        // Task 43: сброс боя/эвакуации
+        // Task 43/45: сброс боя/эвакуации/постов
         f.crouchT = 0;
+        f.postT = 0;
+        f.replQueued = false;
         if (f.swim) {
           // пловец ещё в мире — убрать (возврата на палубу нет)
           removeSwimmer(f);
         }
       }
+      // Task 45: поднятых из трюма — обратно «ниже палубы» (сброс)
+      for (let i = figures.length - 1; i >= 0; i--) {
+        const f = figures[i];
+        if (!f.fromSpare) continue;
+        f.group.visible = false;
+        f.postT = 0;
+        figures.splice(i, 1);
+        spares.push(f);
+      }
+      replQueue.length = 0;
       abandonStarted = false;
       vis.dead = 0;
       vis.shown = figures.length;
     },
-    smallArmsKill(maxCount, shipPos, shipQuat) {
-      // Task 43: пуля противника — случайная живая фигура падает
+    smallArmsKill(maxCount, shipPos, shipQuat, fromDirWorld) {
+      // Task 43/45: пуля противника — фигура падает. Предпочтение —
+      // стрелки на СТОРОНЕ СТРЕЛКА (они стоят в линии у борта и
+      // видны из-за фальшборта); без направления — случайная.
       const alive = figures.filter(f => !f.dead && !f.swim && f.group.visible);
       if (!alive.length) return 0;
-      for (let i = alive.length - 1; i > 0; i--) {
-        const j = (Math.random() * (i + 1)) | 0;
-        [alive[i], alive[j]] = [alive[j], alive[i]];
+      if (fromDirWorld) {
+        // мировое направление полёта → локальные координаты корабля
+        _tmpA.copy(fromDirWorld);
+        _shipInvQ.copy(shipQuat).invert();
+        _tmpA.applyQuaternion(_shipInvQ);
+        const side = _tmpA.x >= 0 ? 1 : -1;
+        // ближе к борту со стороны стрелка — выше в списке
+        alive.sort((a, b) => (b.group.position.x * side) - (a.group.position.x * side));
+      } else {
+        for (let i = alive.length - 1; i > 0; i--) {
+          const j = (Math.random() * (i + 1)) | 0;
+          [alive[i], alive[j]] = [alive[j], alive[i]];
+        }
       }
       const n = Math.min(maxCount, alive.length);
       for (let i = 0; i < n; i++) {
@@ -1325,6 +1397,15 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       return figures.filter(f => !f.dead && !f.swim
         && f.group.visible && (f.crouchT ?? 0) > 0.5).length;
     },
+    reservesInfo() {
+      const onDeck = figures.reduce((a, f) =>
+        a + ((f.dead || f.swim || !f.group.visible) ? 0 : 1), 0);
+      return {
+        below: Math.max(0, lastCrew - onDeck),
+        spares: spares.length,
+        pending: replQueue.length,
+      };
+    },
     update(dt, time, ship) {
       // ==========================================================
       // Task 43: ПЛОВЦЫ живут в МИРОВЫХ координатах — обновляются
@@ -1339,11 +1420,78 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       // палуба уходит под воду, sinkT>3.5); плавают, потом ТОНУТ
       // ==========================================================
       if (ship.sinking) {
+        replQueue.length = 0;   // Task 45: тонем — подмена отменяется
         startAbandon(dt, time, ship);
         return;
       }
       group.visible = true;
       abandonStarted = false;
+
+      // ==========================================================
+      // Task 45: БОЕВЫЕ ПОСТА ВДОЛЬ БОРТА + ПОДМЕНА ПОГИБШИХ.
+      // Сторона угрози — с гистерезисом у ДП (строй не перебегает
+      // туда-сюда); посты — равномерно вдоль борта УГРОЗЫ. Когда
+      // стрелок на посту гибнет, через 2-4.5 с из люка у мачты
+      // поднимается замена из трюма (пока там есть живые).
+      // ==========================================================
+      lastTime = time;
+      lastCrew = ship.crew;
+      {
+        // заявки: каждый погибший вооружённый — заменить
+        for (const f of figures) {
+          if (f.dead && f.weapon && !f.replQueued) {
+            f.replQueued = true;
+            replQueue.push(time + 2 + Math.random() * 2.5);
+          }
+        }
+        // активация: пока есть запасные фигуры и живые в трюме
+        // (экипаж > уже стоящих на палубе) — поднять из люка
+        let onDeck = figures.reduce((a, f) =>
+          a + ((f.dead || f.swim || !f.group.visible) ? 0 : 1), 0);
+        for (let qi = 0; qi < replQueue.length; ) {
+          if (replQueue[qi] > time) { qi++; continue; }
+          if (!(spares.length > 0 && ship.crew > onDeck)) {
+            replQueue.splice(qi, 1); continue;   // некем — заявку снять
+          }
+          const f = spares.shift()!;
+          figures.push(f);
+          f.fromSpare = true;
+          f.group.visible = true;
+          f.group.position.set(
+            0.35 + (Math.random() - 0.5) * 0.35,
+            deckYAt(hatchZ),
+            hatchZ + (Math.random() - 0.5) * 0.5);
+          f.group.rotation.set(0, Math.PI, 0);   // из люка — лицом к корме
+          f.postT = 9 + Math.random() * 4;       // идёт на пост и остаётся
+          f.gunCd = 1 + Math.random() * 2;
+          onDeck++;
+          replQueue.splice(qi, 1);
+        }
+      }
+      // сторона угрози (локальные координаты)
+      let engageSide = lastSide;
+      if (ship.threatPos) {
+        _tmpA.copy(ship.threatPos).sub(ship.position);
+        _shipInvQ.copy(ship.quaternion).invert();
+        _tmpA.applyQuaternion(_shipInvQ);
+        if (Math.abs(_tmpA.x) > 1.2) engageSide = _tmpA.x >= 0 ? 1 : -1;
+      }
+      lastSide = engageSide;
+      const underFire = (ship.sinceHit ?? 999) < 8;
+      const threatPos = ship.threatPos ?? null;
+      const tDistShip = ship.threatDist ?? Infinity;
+      // посты: живые стрелки (по текущему z) — равномерно вдоль борта
+      {
+        const gunners = figures
+          .filter(g => g.weapon && !g.dead && !g.swim && g.group.visible)
+          .sort((a, b) => a.group.position.z - b.group.position.z);
+        const zA = -L * 0.30, zB = L * 0.28;
+        const n = gunners.length;
+        gunners.forEach((g, i) => {
+          g.stZ = n === 1 ? (zA + zB) * 0.5 : zA + (zB - zA) * (i + 0.5) / n;
+          g.stSide = engageSide;
+        });
+      }
 
       // --- трупы: падение и истлевание ---
       for (const f of figures) {
@@ -1361,11 +1509,12 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         }
       }
 
-      // --- потери команды: живых фигур РОВНО столько, сколько
-      // людей на палубе — deckCrewFor(crew): 1 фигура = 1 человек.
-      // crew = 0 → палуба ПУСТАЕТ (все фигуры погибают).
-      // Избыток умирает по одной за кадр — трупы падают естественно
-      const target = Math.min(figures.length, deckCrewFor(Math.max(ship.crew, 0)));
+      // --- потери команды: Task 45 — палуба держит полный строй
+      // (baseDeck), пока в трюме есть живые; погибших подменяют.
+      // Когда экипаж (ship.crew) падает ниже состава палубы — строй
+      // редеет: избыток умирает по одной за кадр, трупы падают
+      // естественно (crew = 0 → палуба ПУСТАЕТ)
+      const target = Math.min(baseDeck, Math.max(0, Math.round(ship.crew)));
       const nAlive = figures.reduce((a, f) => a + (f.dead ? 0 : 1), 0);
       const order: CrewRole[] = ['walker', 'rower', 'watch', 'gunner', 'boatswain', 'helmsman', 'captain'];
       let shownAlive = 0;
@@ -1390,6 +1539,113 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       const stroke = ship.stroke;
       for (const f of figures) {
         if (!f.group.visible || f.dead) continue;
+        // ========================================================
+        // Task 45: СТРЕЛОК НА БОЕВОМ ПОСТУ — до основной анимации:
+        // под атакой фигура БЕЖИТ на пост вдоль борта угрози и
+        // стреляет ОТТУДА (на колене за фальшбортом), а не ходит
+        // по палубе. Замена из трюма (postT) идёт к посту даже
+        // после боя и остаётся вахтой у планширя.
+        // ========================================================
+        if (f.weapon && !f.swim) {
+          let handled = false;
+          const range = f.weapon === 'musket' ? 50 : 20;
+          // «наша» атака: противник в пределах дальности оружия (+10 м):
+          // и когда НАС атакуют (underFire), и когда МЫ атакуем (threat
+          // рядом) — в обоих случаях стрелки занимают посты у борта
+          const near = !!threatPos && tDistShip < range + 10;
+          const engaged = underFire || (f.postT ?? 0) > 0 || near;
+          // ленивое создание меша оружия
+          if ((engaged || near) && !f.weaponMesh) {
+            f.weaponMesh = makeWeaponMesh(f.weapon);
+            if (f.wristMount) f.wristMount.add(f.weaponMesh);
+            else f.group.add(f.weaponMesh);
+          }
+          if (f.weaponMesh) f.weaponMesh.visible = engaged || near;
+          f.gunCd = (f.gunCd ?? 1) - dt;
+          if (engaged) {
+            handled = true;
+            // после боя стрелок ещё немного держит пост
+            f.postT = 3 + Math.random() * 2.5;
+            const side = f.stSide ?? 1;
+            const stZ = f.stZ ?? f.group.position.z;
+            const stX = side * Math.max(0.55, halfW(stZ) * 0.80);
+            const dx = stX - f.group.position.x;
+            const dz = stZ - f.group.position.z;
+            const dist = Math.hypot(dx, dz);
+            if (dist > 0.42) {
+              // БЕГ К ПОСТУ (оружие в руках, во весь рост)
+              f.crouchT = Math.max(0, (f.crouchT ?? 0) - dt * 2.2);
+              const step = Math.min(dist, 2.4 * dt);
+              f.group.position.x += (dx / dist) * step;
+              f.group.position.z += (dz / dist) * step;
+              f.group.position.y = deckYAt(f.group.position.z);
+              f.group.rotation.y = Math.atan2(dx, dz);   // лицом по ходу
+              f.group.rotation.x = 0;
+              f.group.rotation.z = Math.sin(time * 1.7 + f.phase) * 0.03;
+              const st = time * 12.5;
+              if (f.legL && f.legR) {
+                f.legL.rotation.x = Math.sin(st) * 0.78;
+                f.legR.rotation.x = -Math.sin(st) * 0.78;
+              }
+              swingArms(f, st);
+              f.group.position.y += Math.abs(Math.sin(st)) * 0.04;
+            } else {
+              // НА ПОСТУ: на колено за фальшбортом, лицом в море
+              const ct = f.crouchT = Math.min(1, (f.crouchT ?? 0) + dt * 3.2);
+              f.group.position.set(stX, deckYAt(stZ) - 0.26 * ct, stZ);
+              f.group.rotation.y = side * Math.PI / 2;
+              f.group.rotation.x = 0.38 * ct;
+              f.group.rotation.z = Math.sin(time * 1.9 + f.phase) * 0.05 * ct;
+              if (f.legL && f.legR) {
+                f.legL.rotation.x = -0.55 * ct;   // передняя вперёд
+                f.legR.rotation.x = 1.18 * ct;    // задняя коленом в палубу
+              }
+              if (f.gunArm) { f.gunArm.rotation.x = -1.15 * ct; f.gunArm.rotation.z = 0; }
+              // ОГОНЬ С ПОСТА (только с колена — «стреляют оттуда»)
+              if (threatPos && tDistShip < range && (f.gunCd ?? 1) <= 0 && ct > 0.5) {
+                const chest = _tmpA.copy(f.group.position);
+                chest.y += (f.midY ?? 0.75) + 0.15;
+                chest.applyQuaternion(ship.quaternion).add(ship.position);
+                _tmpB.copy(threatPos).sub(chest);
+                const dLen = _tmpB.length() || 1;
+                _tmpB.divideScalar(dLen);
+                const muzzle = _tmpC.copy(chest).addScaledVector(_tmpB, 0.55);
+                ship.shoot?.(f.weapon, chest, muzzle);
+                if (f.gunArm) f.gunArm.rotation.x += 0.22;   // отдача
+                // доворот к цели (yaw — в локальных координатах)
+                const lt = _tmpD.copy(threatPos).sub(ship.position)
+                  .applyQuaternion(_shipInvQ.copy(ship.quaternion).invert());
+                f.group.rotation.y = Math.atan2(lt.x, lt.z) * (1 - ct * 0.35);
+                f.gunCd = f.weapon === 'musket'
+                  ? 4.5 + Math.random() * 3
+                  : 2.2 + Math.random() * 1.6;
+              }
+            }
+          } else if ((f.postT ?? 0) > 0) {
+            // после боя: держит пост у планширя, сторожит море
+            handled = true;
+            f.postT = (f.postT ?? 0) - dt;
+            f.crouchT = Math.max(0, (f.crouchT ?? 0) - dt * 1.4);
+            const side = f.stSide ?? (f.group.position.x >= 0 ? 1 : -1);
+            f.group.rotation.y = side * Math.PI / 2;
+            f.group.rotation.x = 0;
+            f.group.rotation.z = Math.sin(time * 1.2 + f.phase) * 0.04;
+            if (f.legL && f.legR) { f.legL.rotation.x *= 0.85; f.legR.rotation.x *= 0.85; }
+            swingArmsIdle(f);
+          } else if ((f.crouchT ?? 0) > 0.01) {
+            // встаёт с колена — поза плавно гаснет
+            handled = true;
+            f.crouchT = Math.max(0, (f.crouchT ?? 0) - dt * 1.6);
+            const ct = f.crouchT ?? 0;
+            f.group.rotation.x = 0.38 * ct;
+            f.group.rotation.y = (f.stSide ?? 1) * Math.PI / 2;
+            if (f.legL && f.legR) {
+              f.legL.rotation.x = -0.55 * ct;
+              f.legR.rotation.x = 1.18 * ct;
+            }
+          }
+          if (handled) continue;   // пост перекрывает работу/пешие маршруты
+        }
         if (f.role === 'rower' && stroke && stroke.active) {
           // гребец отклоняется в такт: замах на переносе, наклон
           // корпуса на рабочем ходу (лёгкая асимметрия от фазы)
@@ -1509,81 +1765,6 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
           } else {
             // кот-капитан: воодушевлённо прыгает на месте
             f.group.position.y += Math.abs(Math.sin(time * 9)) * 0.08;
-          }
-        }
-
-        // ========================================================
-        // Task 43: СТРЕЛКИ — прижимаются к борту НА ОДНО КОЛЕНО
-        // (когда по нам стреляют) и отстреливаются из ружей (до
-        // 50 м) / пистолетов (до 20 м) по противнику
-        // ========================================================
-        if (f.weapon && !f.dead && !f.swim) {
-          const underFire = (ship.sinceHit ?? 999) < 8;
-          const threatPos = ship.threatPos ?? null;
-          const tDist = ship.threatDist ?? Infinity;
-          const range = f.weapon === 'musket' ? 50 : 20;
-          const combat = !!threatPos && tDist < range + 10;
-          // плавный вход/выход позы
-          const wantCrouch = underFire ? 1 : 0;
-          const crouchSpeed = wantCrouch > (f.crouchT ?? 0) ? 3.2 : 1.4;
-          f.crouchT = (f.crouchT ?? 0) + (wantCrouch - (f.crouchT ?? 0)) * Math.min(1, dt * crouchSpeed);
-          const ct = f.crouchT ?? 0;
-
-          // показать/скрыть оружие (ленивое создание меша)
-          if ((underFire || combat) && !f.weaponMesh) {
-            f.weaponMesh = makeWeaponMesh(f.weapon);
-            if (f.wristMount) f.wristMount.add(f.weaponMesh);
-            else f.group.add(f.weaponMesh);
-          }
-          if (f.weaponMesh) f.weaponMesh.visible = underFire || combat;
-
-          if (ct > 0.01) {
-            // --- ПОЗА «НА КОЛЕНЕ У БОРТА» ---
-            const side = f.group.position.x >= 0 ? 1 : -1;
-            const w = halfW(f.group.position.z);
-            // прижаться к борту (по своей половине палубы)
-            const cx = side * Math.max(0.55, w * 0.76);
-            f.group.position.x += (cx - f.group.position.x) * Math.min(1, dt * 4) * ct;
-            // лицом в море (спиной к мачте — укрывается за фальшбортом)
-            f.group.rotation.y = side * Math.PI / 2;
-            // опуститься на колено + пригнуться
-            f.group.position.y = deckYAt(f.group.position.z) - 0.26 * ct;
-            f.group.rotation.x = 0.38 * ct;
-            f.group.rotation.z = Math.sin(time * 1.9 + f.phase) * 0.05 * ct;
-            if (f.legL && f.legR) {
-              // передняя нога согнута вперёд, задняя — коленом в палубу
-              f.legL.rotation.x = -0.55 * ct;
-              f.legR.rotation.x = 1.18 * ct;
-            }
-            // рука с оружием — приклад у плеча (стреляет поверх планширя)
-            if (f.gunArm) {
-              f.gunArm.rotation.x = -1.15 * ct;
-              f.gunArm.rotation.z = 0;
-            }
-          }
-
-          // --- СТРЕЛЬБА (и на колене, и стоя) ---
-          f.gunCd = (f.gunCd ?? 1) - dt;
-          if (threatPos && tDist < range && (f.gunCd ?? 1) <= 0) {
-            // мировая позиция груди стрелка
-            const chest = _tmpA.copy(f.group.position);
-            chest.y += (f.midY ?? 0.75) + 0.15;
-            chest.applyQuaternion(ship.quaternion).add(ship.position);
-            // дуло: от груди в сторону цели
-            _tmpB.copy(threatPos).sub(chest);
-            const dLen = _tmpB.length() || 1;
-            _tmpB.divideScalar(dLen);
-            const muzzle = _tmpC.copy(chest).addScaledVector(_tmpB, 0.55);
-            ship.shoot?.(f.weapon, chest, muzzle);
-            // отдача: руку отбросило
-            if (f.gunArm) f.gunArm.rotation.x += 0.22;
-            // доворот к цели (yaw — в локальных координатах корабля)
-            const lt = _tmpD.copy(threatPos).sub(ship.position).applyQuaternion(_shipInvQ.copy(ship.quaternion).invert());
-            f.group.rotation.y = Math.atan2(lt.x, lt.z) * (1 - ct * 0.35);
-            // перезарядка: ружьё — долго, пистолет — быстро
-            f.gunCd = f.weapon === 'musket'
-              ? 4.5 + Math.random() * 3
-              : 2.2 + Math.random() * 1.6;
           }
         }
       }

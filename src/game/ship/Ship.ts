@@ -189,8 +189,9 @@ export class Ship {
   mastMaxHP = 32;
   /** оборванных снастей обвязки (ванты/штаги сломанных мачт) */
   private rigSnapped = 0;
-  // Task 43: стадийная пробоина — {side, belowWL, mesh} + позиция/урон/стадия
-  hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean }[] = [];
+  // Task 43: стадийная пробоина — {side, belowWL, mesh} + позиция/урон/стадия;
+  // Task 45: wide2 — панель обшивки вырвана повторными попаданиями (≥60)
+  hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean; wide2?: boolean }[] = [];
   leakBias = 0;            // суммарный кренящий момент пробоин (−1..1 порт/штирборт) — пересчитывается из отсеков
   noSurrender = false;     // мишень полигона не сдаётся
   crew3d: CrewVisual;      // фигуры на палубе
@@ -1072,14 +1073,8 @@ export class Ship {
     switch (d.kind) {
       case 'ball': {
         this.hullHP -= d.amount;
-        // течь — в отсек по месту попадания
-        if (d.hitPoint) {
-          const lp = this.tmpV.copy(d.hitPoint).sub(this.position).applyQuaternion(this.tmpQ.copy(this.quaternion).invert());
-          if (d.hitPoint.y < 0.45 + this.position.y) this.addLeakAt(0.06 + rng() * 0.05, lp);
-        }
-        // ЭКИПАЖ гибнет ТОЛЬКО от прямого прострела палубы (CombatSystem
-        // → crew3d.killNearPath). Залп в борт ниже палубы людей не косит:
-        // доска и переборки принимают удар на себя
+        // Task 45: течь — ТОЛЬКО через ПРОБОИНЫ (hitHull, стадия 3):
+        // попадание в борт без пробоины воду в трюм не пускает
         // случайный «рикошет в рангоут» — редкий, основную работу делают
         // прицельные попадания из CombatSystem (mast hits)
         if (rng() < 0.10) this.breakMast();
@@ -1175,14 +1170,18 @@ export class Ship {
   }
 
   /** ============================================================
-   *  Task 43: СТАДИЙНЫЕ ПОВРЕЖДЕНИЯ БОРТА (идея galleon.html):
-   *  1 — ВМЯТИНА: ядро вдавливает обшивку (тёмная вмятина, пыль);
-   *  2 — ГЛУБОКАЯ ВМЯТИНА: трещины, обшивка вздувается;
-   *  3 — ПРОБОИНА: борт пробит — рваная дыра, видны ВНУТРЕННОСТИ
-   *      (шпангоуты, бимсы, груз), летят щепы, ниже ватерлинии —
-   *      течь в отсек + крен/дифферент по месту попадания.
+   *  Task 43/45: СТАДИЙНЫЕ ПОВРЕЖДЕНИЯ БОРТА — РАЗРУШЕНИЕ ОТ
+   *  НЕСКОЛЬКИХ ПОПАДАНИЙ (как настоящая обшивка из досок):
+   *  урон копится в ЗОНЕ попадания (радиус 1.15 м):
+   *    1 попадание (≥8)  — ВМЯТИНА (ядро вдавило доски);
+   *    2 попадания (≥22) — ГЛУБОКАЯ ВМЯТИНА, доски вздулись/трещины;
+   *    3 попадания (≥42) — ПРОБОИНА: рваная дыра, ВИДНЫ ВНУТРЕННОСТИ
+   *        (бимсы/шпангоут/груз), летят щепы; ниже ватерлинии —
+   *        течь в отсек + крен/дифферент по месту попадания;
+   *    ≥60 — ПАНЕЛЬ ОБШИВКИ ВЫРВАНО (дыра расширяется скачком).
    *  Повторные попадания В пробоину расширяют её; 3 пробоины
    *  одного борта в полосе 4.5 м — ВЫЛОМ СЕКЦИИ обшивки.
+   *  Стрелковое оружие (ружья/пистолеты) корпус НЕ разрушает.
    *  Базовая геометрия корпуса НЕ пересоздаётся — только декали.
    *  ============================================================ */
   hitHull(localPos: THREE.Vector3, damage: number, belowWL: boolean, shotDir?: THREE.Vector3) {
@@ -1190,10 +1189,13 @@ export class Ship {
     const w = Math.max(0.3, this.halfWidthAt(localPos.z) * 0.985);
     const hitY = clamp(localPos.y, -this.preset.draft * 0.7, this.preset.freeboard * 1.1);
 
-    // существующий спот в радиусе 1.15 м — усиливаем, иначе новый
+    // существующий спот в радиусе 1.15 м — усиливаем, иначе новый;
+    // Task 45: после 60 зон — скатываемся к ближайшей (декалей не
+    // может быть бесконечно много при длинном обстреле)
+    const zoneR = this.hullHoles.length > 60 ? 2.8 : 1.15;
     const spot = this.hullHoles.find(h =>
-      h.side === side && Math.hypot(h.z - localPos.z, h.y - hitY) < 1.15);
-    let rec: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean };
+      h.side === side && Math.hypot(h.z - localPos.z, h.y - hitY) < zoneR);
+    let rec: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean; wide2?: boolean };
     if (spot) {
       spot.dmg += damage;
       spot.belowWL = spot.belowWL || belowWL;
@@ -1207,7 +1209,8 @@ export class Ship {
     const wp = this.tmpV.set(side * w, hitY, localPos.z)
       .applyQuaternion(this.quaternion).add(this.position);
 
-    const newStage = rec.dmg >= 26 ? 3 : rec.dmg >= 12 ? 2 : 1;
+    // Task 45: порог стадии — НАКОПЛЕННЫЙ урон зоны (не один удар)
+    const newStage = rec.dmg >= 42 ? 3 : rec.dmg >= 22 ? 2 : rec.dmg >= 8 ? 1 : 0;
 
     // --- переход стадии: перестраиваем декаль ---
     if (newStage > rec.stage) {
@@ -1220,7 +1223,7 @@ export class Ship {
       if (newStage < 3) {
         // ВМЯТИНА (1 — лёгкая, 2 — глубокая с трещинами)
         const k = newStage === 1 ? 0.45 : 0.8;
-        const R = 0.32 + (rec.dmg / 26) * 0.5;
+        const R = 0.32 + (rec.dmg / 42) * 0.5;
         const dent = new THREE.Mesh(
           new THREE.SphereGeometry(R, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.5),
           new THREE.MeshStandardMaterial({ color: 0x2e2015, roughness: 1 }));
@@ -1239,6 +1242,9 @@ export class Ship {
             cr.rotation.set(Math.PI / 2, side * Math.PI / 2, a, 'YXZ');
             g.add(cr);
           }
+          // Task 45: глубокая вмятина — доски вздулись, сыплется щепа
+          spawnSplinterBurst(wp.x, wp.y, wp.z,
+            shotDir ?? new THREE.Vector3(side, 0.2, 0), 5 + ((Math.random() * 3) | 0), 1);
         }
         g.position.set(side * w * 0.985, hitY, localPos.z);
         g.scale.setScalar(k);
@@ -1246,7 +1252,7 @@ export class Ship {
         this.visual.group.add(g);
       } else {
         // ПРОБОИНА: рваная дыра + ВИДНЫ ВНУТРЕННОСТИ КОРАБЛЯ
-        const R = 0.42 + Math.random() * 0.2 + Math.min(0.35, rec.dmg / 90);
+        const R = 0.42 + Math.random() * 0.2 + Math.min(0.35, rec.dmg / 140);
         // (1) тёмный провал в глубину борта
         const depth = new THREE.Mesh(
           new THREE.CircleGeometry(R * 1.25, 10),
@@ -1301,8 +1307,11 @@ export class Ship {
         if (belowWL) {
           this.particles.splash(wp.x, waterHeightAt(wp.x, wp.z, this.simT) + 0.2, wp.z, 1.1);
         }
-        // течение в отсек по месту пробоины
-        this.addLeakAt(0.16 + Math.random() * 0.1, localPos);
+        // Task 45: ТЕЧЬ — только из ПРОБОИНЫ. Ниже ватерлинии —
+        // полный напор; выше — лишь подтекает при крене (слабо):
+        // «корабль заполняется потихоньку водой с креном на пробитую
+        // дыру» — вода приходит в отсек по месту пробоины
+        this.addLeakAt(belowWL ? 0.16 + Math.random() * 0.10 : 0.045, localPos);
 
         // РАЗЛОМ СЕКЦИИ: 3 пробоины одного борта в полосе 4.5 м —
         // выламывается кусок обшивки (динамичный разлом корпуса)
@@ -1329,12 +1338,22 @@ export class Ship {
       spawnSplinterBurst(wp.x, wp.y, wp.z,
         shotDir ?? new THREE.Vector3(side, 0.2, 0), 4 + ((Math.random() * 3) | 0), 1);
       rec.dmg += damage * 0.4;
+      // Task 45: накопленный урон зоны ≥60 — ПАНЕЛЬ ОБШИВКИ
+      // ВЫРВАНО: дыра расширяется скачком, доски летят пачкой
+      if (rec.dmg >= 60 && !rec.wide2) {
+        rec.wide2 = true;
+        rec.mesh.scale.multiplyScalar(1.25);
+        spawnSplinterBurst(wp.x, wp.y + 0.2, wp.z,
+          shotDir ?? new THREE.Vector3(side, 0.2, 0), 10 + ((Math.random() * 4) | 0), 2);
+        if (rec.belowWL) this.addLeakAt(0.10, localPos);
+      }
     }
   }
 
-  /** Легаси-обёртка (совместимость): сразу пробоина */
+  /** Легаси-обёртка (совместимость): сразу пробоина (урон зоны 45 —
+   *  как три попадания ядром, Task 45) */
   addHole(localPos: THREE.Vector3, belowWL: boolean) {
-    this.hitHull(localPos, 26, belowWL);
+    this.hitHull(localPos, 45, belowWL);
   }
 
   /** Сорвать ломаемую деталь палубы (штурвал/шпиль/фонарь/фигура/руль)
@@ -2246,9 +2265,11 @@ export class Ship {
     }
   }
 
-  /** Task 43: ВЫСТРЕЛ МАТРОСА (ружьё/пистолет) — вспышка, трассер,
-   *  лёгкий урон корпусу и экипажу цели (шанс убить фигуру на палубе).
-   *  Вызывается crew.update по таймерам перезарядки */
+  /** Task 43/45: ВЫСТРЕЛ МАТРОСА (ружьё/пистолет) — вспышка, трассер.
+   *  ПУЛЯ НЕ РАЗРУШАЕТ КОРАБЛЬ (Task 45): от стрелкового огня
+   *  гибнут только матросы; корпусу — ни урона, ни пробоин
+   *  (в худшем случае — впустую выпущенный заряд). Вызывается
+   *  crew.update по таймерам перезарядки */
   smallArmsFire(target: Ship | null, weapon: 'musket' | 'pistol',
     fromWorld: THREE.Vector3, muzzleWorld: THREE.Vector3) {
     if (!target || target.sunk || target.sinking) return;
@@ -2266,19 +2287,22 @@ export class Ship {
         to.x * (70 + Math.random() * 12), to.y * (70 + Math.random() * 12) + 1.2, to.z * (70 + Math.random() * 12),
         dist / 74, 0.09, 0, 0.02, 0);
     }
-    // урон: шанс снять фигуру с палубы цели + царапина корпусу
+    // урон: ТОЛЬКО шанс снять фигуру с палубы цели (матросы гибнут);
+    // урона корпусу/парусам НЕТ — корабль не разрушается от пуль
     const hitChance = weapon === 'musket' ? 0.20 : 0.11;
     if (Math.random() < hitChance) {
-      target.smallArmsHit();
+      // направление полёта — приоритет фигур у борта со стороны стрелка
+      target.smallArmsHit(to.clone());
     }
-    target.applyDamage({ kind: 'ball', amount: 0.35 });
   }
 
-  /** Task 43: пуля стрелка противника сняла фигуру с нашей палубы */
-  smallArmsHit() {
-    if (this.sinking || this.sunk) return;
-    const killed = this.crew3d.smallArmsKill(1, this.position, this.quaternion);
+  /** Task 43/45: пуля стрелка противника сняла фигуру с нашей палубы
+   *  (только экипаж; корпус не страдает). Возвращает число убитых */
+  smallArmsHit(fromDir?: THREE.Vector3): number {
+    if (this.sinking || this.sunk) return 0;
+    const killed = this.crew3d.smallArmsKill(1, this.position, this.quaternion, fromDir ?? null);
     if (killed > 0) this.crew = Math.max(0, Math.round(this.crew - killed));
+    return killed;
   }
 
   /** Task 43: телеметрия разрушения для HUD/E2E */
@@ -2290,9 +2314,12 @@ export class Ship {
       leakBias: +this.leakBias.toFixed(3), trimBias: +this.trimBias.toFixed(3),
       // 8 отсеков: [корма-порт, корма-штирборт, .. , нос-порт, нос-штирборт]
       compartments: this.compartments.map(c => +c.water.toFixed(2)),
-      holes: this.hullHoles.map(h => ({
-        side: h.side, stage: h.stage, breached: h.breached,
+      crew: this.crew, maxCrew: this.preset.maxCrew,
+      // Task 45: только ВИДИМЫЕ зоны (стадия ≥1; «к накоплению» — 0)
+      holes: this.hullHoles.filter(h => h.stage > 0).map(h => ({
+        side: h.side, stage: h.stage, breached: h.breached, wide: !!h.wide2,
         belowWL: h.belowWL, y: +h.y.toFixed(2), z: +h.z.toFixed(2),
+        dmg: +h.dmg.toFixed(1),
       })),
       sinceHit: +this.sinceHit().toFixed(1),
       sinking: this.sinking, sinkT: +this.sinkT.toFixed(1), sunk: this.sunk,

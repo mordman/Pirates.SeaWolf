@@ -2304,6 +2304,8 @@ export class Game {
       crewArmed: p.crew3d.armedInfo(),
       crewCrouched: p.crew3d.crouchedCount(),
       crewSwimmers: p.crew3d.swimmersAlive(),
+      // Task 45: подмена погибших — резерв экипажа (живые в трюме)
+      crewReserves: p.crew3d.reservesInfo(),
       tgtDamage: tgt ? tgt.damageInfo() : null,
       tgtArmed: tgt ? tgt.crew3d.armedInfo() : null,
       tgtCrouched: tgt ? tgt.crew3d.crouchedCount() : -1,
