@@ -67,7 +67,12 @@ export class AIShip {
   update(dt: number, time: number, player: Ship, combat: CombatSystem,
     onMessage: (text: string) => void) {
     const s = this.ship;
-    if (s.sunk || s.sinking) return;
+    if (s.sunk || s.sinking) { s.crewEngage = false; return; }
+    // Task 44: матросы стреляют ТОЛЬКО когда корабль НАПАДАЕТ:
+    // военный ИИ в бою / мишень полигона с ответным огнём.
+    // Мирные (route/flee/patrol) и сдавшиеся — ружья молчат
+    s.crewEngage = this.state === 'combat'
+      || (this.state === 'anchored' && this.returnFire);
 
     // команда тушит пожар ведёрными цепями (медленнее, чем игрок с R:
     // у ИИ нет полного внимания — руление/орудия важнее)

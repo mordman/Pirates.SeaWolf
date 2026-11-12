@@ -200,14 +200,22 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-[560px] max-h-[86vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
+      <div className="w-[620px] max-h-[88vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
-          <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
-          <div className="flex gap-1">
+        <div className="border-b border-amber-900/60 px-4 pt-2.5 pb-1.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <h2 className="font-serif text-xl font-bold text-amber-300">⚙ Настройки</h2>
+            <button onClick={onClose}
+              className="rounded border border-stone-600 px-2 py-0.5 text-xs text-stone-400 transition hover:border-amber-500 hover:text-amber-200">
+              ✕ Закрыть
+            </button>
+          </div>
+          {/* Task 44: 8 вкладок — ПЕРЕНОС на 2 строки (в одну строку
+              «Управление»/«Звук» не влезали и обрезались) */}
+          <div className="flex flex-wrap gap-1">
             {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['islands', '🏝 Острова'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
-                className={`rounded px-3 py-1 text-xs font-semibold transition ${
+                className={`rounded px-2.5 py-1 text-[11px] font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
                 {label}
               </button>

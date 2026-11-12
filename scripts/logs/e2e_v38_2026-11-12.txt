@@ -61,8 +61,8 @@ H-агрессия: {"before":false,"state":"combat","n":8}
 H: {"state":"combat","after":true,"animByRaf":0.7,"anim":1,"lids":true}
 OK   H: агрессия → ИИ в бою, порты ОТКРЫТЫ, крышки подняты | {"state":"combat","after":true,"animByRaf":0.7,"anim":1,"lids":true}
 === I: FPS (ДО скриншотов — captureScreenshot душит RAF headless) ===
-OK   I: FPS живой в стандартной сцене (> 4, SwiftShader) | fpsMax=7.1
-OK   I: рендер-цикл рисует сцену (вызовы > 50, треугольники > 100k) | calls=263 tris=490060
+OK   I: FPS живой в стандартной сцене (> 4, SwiftShader) | fpsMax=7
+OK   I: рендер-цикл рисует сцену (вызовы > 50, треугольники > 100k) | calls=263 tris=490556
 === I: скриншоты ===
 I4: "knots=2.3"
 OK   I: страница без ошибок

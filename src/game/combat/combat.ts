@@ -244,6 +244,13 @@ export class CombatSystem {
     return guns.some(g => ((g.userData.tier as number) ?? 0) > 0);
   }
 
+  /** Task 44: момент последнего ВЫСТРЕЛА ИГРОКА — матросы игрока
+   *  открывают огонь, только когда игрок нападает (или по нему
+   *  попали — самооборона); мирные корабли и мишень в режиме
+   *  «не стрелять» из ружей НЕ стреляют */
+  private playerShotSignal = false;
+  private lastPlayerShotT = -1e9;
+
   /** Перестроить таймеры перезарядки под другое число орудий
    *  (смена корабля игроком: у нового корпуса своё число пушек) */
   resizeReloads(n: number) {
@@ -322,6 +329,7 @@ export class CombatSystem {
       return;
     }
     if (!this.infiniteAmmo) ship.ammo[this.ammo]--; // расход боезапаса
+    this.playerShotSignal = true;   // Task 44: игрок НАПАДАЕТ — окно огня матросов
     this.reloads[idx] = this.reloadDuration();
     if (delay > 0) {
       // отложенный выстрел для залпа
@@ -495,6 +503,35 @@ export class CombatSystem {
     // перезарядка
     for (let i = 0; i < this.reloads.length; i++) {
       if (this.reloads[i] > 0) this.reloads[i] -= dt;
+    }
+
+    // Task 43/44: ПРОТИВНИКИ ДЛЯ СТРЕЛКОВ-МАТРОСОВ (ближний бой,
+    // дистанция абордажной перестрелки 60 м). Стрелки стреляют
+    // ТОЛЬКО когда их корабль НАПАДАЕТ (Task 44):
+    //  - игрок: стрелял сам (< 14 с) или получил попадание (< 14 с);
+    //  - ИИ: crewEngage — состояние боя (combat) или ответный огонь
+    //    мишени полигона; мирные route/flee/surrender и мишень в
+    //    режиме «не стрелять» — НЕ стреляют (поза «на колено» при
+    //    обстреле остаётся — это укрытие, не агрессия)
+    {
+      if (this.playerShotSignal) { this.lastPlayerShotT = time; this.playerShotSignal = false; }
+      const pl = this.player;
+      const plEngaged = (time - this.lastPlayerShotT) < 14 || pl.sinceHit() < 14;
+      pl.threatTarget = null;
+      if (plEngaged && !pl.sunk && !pl.sinking) {
+        let bestD = 60;
+        for (const t of this.others) {
+          if (t.sunk || t.sinking || t.surrendered) continue;
+          const d = pl.position.distanceTo(t.position);
+          if (d < bestD) { bestD = d; pl.threatTarget = t; }
+        }
+      }
+      const playerEngages = !pl.sunk && !pl.sinking;
+      for (const t of this.others) {
+        t.threatTarget = (playerEngages && t.crewEngage && !t.surrendered
+          && !pl.surrendered && t.position.distanceTo(pl.position) < 60)
+          ? pl : null;
+      }
     }
 
     // снаряды
@@ -814,7 +851,9 @@ export class CombatSystem {
     this.invQ.copy(t.quaternion).invert();
     this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
     const lp = this.lcur.clone();
-    t.addHole(lp, lp.y < 0.6);
+    // Task 43: выходная пробоина — стадийная (щепы по ходу ядра
+    // изнутри наружу)
+    t.hitHull(lp, info.dmgHull * 0.35, lp.y < 0.6, pr.vel.clone());
     t.applyDamage({ kind: 'ball', amount: info.dmgHull * 0.35, hitPoint: pr.pos.clone() });
     const P = this.particles;
     for (let i = 0; i < 7; i++) {
@@ -908,8 +947,13 @@ export class CombatSystem {
         }
       }
       if (pr.type === 'chain') t.applyDamage({ kind: 'chain', amount: info.dmgSail * amount });
-      // декаль пробоины (ядро и зажигательное)
-      if (pr.type === 'ball' || pr.type === 'fire') t.addHole(hit.lp, belowWL);
+      // Task 43: СТАДИЙНОЕ повреждение борта — вмятина → трещины →
+      // пробоина с внутренностями; урон определяет стадию, щепы
+      // летят по мировому направлению полёта снаряда
+      if (pr.type === 'ball' || pr.type === 'fire') {
+        t.hitHull(hit.lp, info.dmgHull * amount, belowWL,
+          this._vN.copy(hit.dir).applyQuaternion(t.quaternion));
+      }
       // тяжёлые попадания срывают палубные детали (штурвал/шпиль/фонарь)
       // и выламывают доски обшивки — обломок всплывает рядом с бортом
       if (pr.type === 'ball' || pr.type === 'fire') {

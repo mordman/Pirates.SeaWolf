@@ -201,11 +201,73 @@ export function coastKindAt(islandIdx: number, th: number): CoastKind {
  *  амплитуды в открытом море) — углублять нельзя, шторм удвоится */
 export const SEA_FLOOR = -14;
 
+// ============================================================
+// Task 44: ВЫРОВНЕННЫЕ ПЛОЩАДКИ под постройки портов (пол форта
+// больше не «висит в воздухе»): ядро r0 — плоско на высоте y,
+// кольцо r0..r1 — плавный склон к рельефу. Споты добавляются при
+// генерации гавани; чанки земли стримятся ПОЗЖЕ (лениво вокруг
+// игрока) — плато попадают в меши ландшафта.
+// ============================================================
+interface FlattenSpot { x: number; z: number; r0: number; r1: number; y: number; }
+const FLATTEN: FlattenSpot[] = [];
+/** Поставить площадку (мировые координаты): r0 — радиус плоского
+ *  ядра, r1 — внешний радиус склона, y — высота плато.
+ *  НОВАЯ площадка НЕ накрывает ЯДРА уже поставленных (крупные —
+ *  сначала!): склон обрезается у чужого ядра, иначе дома на
+ *  большом плато перекрывали форт */
+export function addFlattenSpot(x: number, z: number, r0: number, r1: number, y: number) {
+  for (const f of FLATTEN) {
+    const d = Math.hypot(x - f.x, z - f.z);
+    const gap = d - f.r0;             // запас от чужого ядра до нас
+    if (gap <= 2) {
+      // наш центр в чужом ядре — крошечная личная площадка
+      // (постройка на чужом плато: ставится по его высоте)
+      r1 = Math.min(r1, 4);
+      r0 = Math.min(r0, 3);
+    } else if (r1 > gap) {
+      // склон не заходит в чужое ядро; ядро при необходимости ужимаем,
+      // но СВОЙ склон оставляем (r1 > r0 — не обрыв)
+      r1 = gap;
+      if (r1 < r0 + 1.2) {
+        r0 = Math.max(3, r1 - 1.2);
+        r1 = r0 + 1.2;
+      }
+    }
+  }
+  FLATTEN.push({ x, z, r0, r1, y });
+}
+/** Есть ли УЖЕ КРУПНАЯ площадка (r0 ≥ minR0) в радиусе r от точки:
+ *  города двух гаваней одного острова не строятся друг на друге
+ *  (мелкие споты рынка/хижин — не помеха) */
+export function hasFlattenNear(x: number, z: number, r: number, minR0 = 20): boolean {
+  for (const f of FLATTEN) {
+    if (f.r0 >= minR0 && Math.hypot(x - f.x, z - f.z) < r) return true;
+  }
+  return false;
+}
+/** Телеметрия E2E: число площадок и отклонение рельефа в ядрах */
+export function flattenInfo(): { count: number; maxCoreDelta: number } {
+  let maxDelta = 0;
+  for (const f of FLATTEN) {
+    maxDelta = Math.max(maxDelta, Math.abs(heightAtRaw(f.x, f.z) - f.y));
+  }
+  return { count: FLATTEN.length, maxCoreDelta: +maxDelta.toFixed(2) };
+}
+/** «Сырая» высота — без площадок (выбор уровня плато) */
+function heightAtRaw(x: number, z: number): number {
+  return heightAtImpl(x, z, false);
+}
+
+
 /** Высота суши в мировой точке. Открытое море = SEA_FLOOR, суша > 0.
  *  Task 36: берега ТРЁХ типов по направлениям (пляж — пологий,
  *  камень — крутой, обрыв — стена из глубины) + настоящие ГОРНЫЕ
  *  ХРЕБТЫ (ridged-шум, острые гребни у высоких островов). */
 export function heightAt(x: number, z: number): number {
+  return heightAtImpl(x, z, true);
+}
+
+function heightAtImpl(x: number, z: number, useFlatten: boolean): number {
   let h = SEA_FLOOR; // дно открытого моря
   for (let i = 0; i < ISLANDS.length; i++) {
     const isl = ISLANDS[i];
@@ -240,6 +302,18 @@ export function heightAt(x: number, z: number): number {
     const shelf = cb.beach * sB + cb.rock * sR + cb.cliff * sC;
     hi = THREE.MathUtils.lerp(hi, SEA_FLOOR, shelf);
     if (hi > h) h = hi;
+  }
+  // Task 44: площадка под постройкой — плоское ядро + склон
+  if (useFlatten) {
+    for (let i = 0; i < FLATTEN.length; i++) {
+      const f = FLATTEN[i];
+      const dx = x - f.x; if (dx > f.r1 || dx < -f.r1) continue;
+      const dz = z - f.z; if (dz > f.r1 || dz < -f.r1) continue;
+      const d = Math.hypot(dx, dz);
+      if (d >= f.r1) continue;
+      const k = smoothstep(f.r1, f.r0, d); // 1 в ядре … 0 на краю
+      if (k > 0) h += (f.y - h) * k;
+    }
   }
   return h;
 }
@@ -1380,6 +1454,15 @@ export class World {
       g.add(lamp);
     }
     // --- хижины ---
+    // Task 44: под КАЖДОЙ постройкой — выровненная площадка (ядро
+    // плоско, склон наружу): пол больше не висит над склоном
+    const flattenUnder = (px: number, pz: number, coreR: number, skirt: number,
+      pickY?: (raw: number) => number) => {
+      const raw = Math.max(heightAt(px, pz), 0.8);
+      const y = pickY ? pickY(raw) : raw;
+      addFlattenSpot(px, pz, coreR, coreR + skirt, y);
+      return y;
+    };
     const mkHut = (hp: THREE.Vector3, w: number, dpt: number, wallC: number, roofC: number) => {
       const hut = new THREE.Group();
       const walls = new THREE.Mesh(new THREE.BoxGeometry(w, 4.2, dpt),
@@ -1394,7 +1477,9 @@ export class World {
       const door = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.6, 0.18), dark);
       door.position.set(0, 1.3, dpt / 2 + 0.06);
       hut.add(door);
-      hut.position.set(hp.x, Math.max(heightAt(hp.x, hp.z), 0.8), hp.z);
+      const baseR = Math.max(w, dpt) * 0.72;
+      const hy = flattenUnder(hp.x, hp.z, baseR, 14);
+      hut.position.set(hp.x, hy, hp.z);
       hut.rotation.y = dirA + (rng.next() - 0.5) * 0.5;
       hut.castShadow = true;
       g.add(hut);
@@ -1433,7 +1518,8 @@ export class World {
           st.add(pole);
         }
         const mp = market.clone().addScaledVector(perp, i * 8 - 12);
-        st.position.set(mp.x, Math.max(heightAt(mp.x, mp.z), 0.8), mp.z);
+        const my = flattenUnder(mp.x, mp.z, 5, 12);
+        st.position.set(mp.x, my, mp.z);
         st.rotation.y = dirA + Math.PI / 2;
         g.add(st);
       }
@@ -1449,14 +1535,106 @@ export class World {
       whRoof.scale.set(1, 1, 0.42);
       whRoof.position.y = 7.4;
       warehouse.add(whRoof);
-      warehouse.position.set(wh.x, Math.max(heightAt(wh.x, wh.z), 0.8), wh.z);
+      const why = flattenUnder(wh.x, wh.z, 9.5, 16);
+      warehouse.position.set(wh.x, why, wh.z);
       warehouse.rotation.y = dirA;
       warehouse.castShadow = true;
       g.add(warehouse);
     }
-    // --- город-крепость: церковь + ФОРТ ---
-    if (tier >= 3) {
-      const ch = hutBase.clone().addScaledVector(dir, -80).addScaledVector(perp, 52);
+    // --- город-крепость: церковь + ТАВЕРНА + колодец + дома + ФОРТ ---
+    // Task 44: вокруг форта — ПОЛНОЦЕННЫЙ ГОРОД (церковь с крестом,
+    // таверна с вывеской и бочками, двухэтажные дома вдоль улицы,
+    // колодец на площади, фонари); под каждой постройкой и под
+    // фортом — выровненная площадка. Если рядом УЖЕ есть чужой город
+    // (две гавани одного острова) — второй не строим
+    if (tier >= 3 && !hasFlattenNear(hutBase.x, hutBase.z, 160)) {
+      // === ФОРТ — ПЛАТО ПЕРВЫМ (крупные споты до мелких: склоны
+      // домов режут склон форта, но не его ядро); сам меш — ниже,
+      // после стройки города. Форт отнесён в глубину (dir -150),
+      // чтобы улица с домами не попадала в его плато ===
+      const fb = hutBase.clone().addScaledVector(dir, -150);
+      const S = 34;
+      // уровень плато — СРЕДНЕЕ высот рельефа под пятном форта
+      // (центр + 4 угла): башни и стены опираются на землю ВЕЗДЕ
+      let fySum = 0, fyN = 0;
+      for (const [ox, oz] of [[0, 0], [S, S], [S, -S], [-S, S], [-S, -S]] as [number, number][]) {
+        fySum += Math.max(heightAt(fb.x + perp.x * ox + dir.x * oz, fb.z + perp.z * ox + dir.z * oz), 1.0);
+        fyN++;
+      }
+      // +14 — ядро покрывает и ЦЕНТРЫ угловых башен (d=48)
+      const fy = flattenUnder(fb.x, fb.z, S + 14, 26, () => Math.max(1.0, fySum / fyN));
+
+      // === ДВУХЭТАЖНЫЕ ДОМА вдоль улицы к форту ===
+      // Ряд домов — на ОДНОЙ общей площадке (индивидуальные плато
+      // близких домов перекрывали друг друга)
+      const mkTownHouse = (hp: THREE.Vector3, w: number, dpt: number, wallC: number, twoFloors: boolean) => {
+        const hd = new THREE.Group();
+        const hgt = twoFloors ? 7.2 : 5.2;
+        const walls = new THREE.Mesh(new THREE.BoxGeometry(w, hgt, dpt),
+          new THREE.MeshStandardMaterial({ color: wallC, roughness: 0.9 }));
+        walls.position.y = hgt / 2;
+        hd.add(walls);
+        const bandH = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, 0.4, dpt + 0.3),
+          new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.9 }));
+        bandH.position.y = hgt * 0.55;
+        hd.add(bandH);
+        const roof = new THREE.Mesh(new THREE.CylinderGeometry(dpt * 0.72, dpt * 0.72, w + 0.8, 3, 1),
+          new THREE.MeshStandardMaterial({ color: 0x8a5c38, roughness: 0.95 }));
+        roof.rotation.z = Math.PI / 2;
+        roof.scale.set(1, 1, 0.55);
+        roof.position.y = hgt + dpt * 0.30;
+        hd.add(roof);
+        const hdDoor = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.5, 0.18), dark);
+        hdDoor.position.set(0, 1.25, dpt / 2 + 0.08);
+        hd.add(hdDoor);
+        // тёплые окна 1-го этажа + тёмные 2-го
+        const winWarm = new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xff9a3a, emissiveIntensity: 1.2 });
+        const winDark = new THREE.MeshStandardMaterial({ color: 0x33404a, roughness: 0.3 });
+        const floors = twoFloors ? [2.6, 5.6] : [2.6];
+        for (let fi = 0; fi < floors.length; fi++) {
+          for (const wx of [-w * 0.28, w * 0.28]) {
+            const win = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.05, 0.15),
+              fi === 0 ? winWarm : winDark);
+            win.position.set(wx, floors[fi], dpt / 2 + 0.08);
+            hd.add(win);
+          }
+        }
+        const hy = heightAt(hp.x, hp.z);
+        hd.name = 'townhouse';
+        hd.position.set(hp.x, hy, hp.z);
+        hd.rotation.y = dirA + (rng.next() - 0.5) * 0.3;
+        hd.castShadow = true;
+        g.add(hd);
+      };
+      // общая площадка на КАЖДЫЙ ряд домов (dir -95..-111, perp
+      // ±62..84 — за пределами плато форта)
+      const houseWalls = [0xd8c9a8, 0xcbb694, 0xd0b9a0, 0xc4a98a];
+      let hIdx = 0;
+      for (const side of [-1, 1]) {
+        const row: THREE.Vector3[] = [];
+        for (let k = 0; k < 3; k++) {
+          row.push(hutBase.clone()
+            .addScaledVector(dir, -95 - k * 8)
+            .addScaledVector(perp, side * (62 + (k % 2) * 12 + rng.next() * 10)));
+        }
+        let hSum = 0;
+        for (const p of row) hSum += Math.max(heightAt(p.x, p.z), 0.8);
+        const hAvg = hSum / row.length;
+        const cx = row.reduce((a, p) => a + p.x, 0) / row.length;
+        const cz = row.reduce((a, p) => a + p.z, 0) / row.length;
+        let r0 = 0;
+        for (const p of row) r0 = Math.max(r0, Math.hypot(p.x - cx, p.z - cz));
+        // +10 — запас на полудиагональ дома: КРАЙНИЕ дома тоже в ядре
+        addFlattenSpot(cx, cz, r0 + 10, r0 + 10 + 15, hAvg);
+        for (const hp of row) {
+          mkTownHouse(hp, 8.2 + rng.next() * 2.4, 7 + rng.next() * 1.6,
+            houseWalls[hIdx % houseWalls.length], rng.next() < 0.7);
+          hIdx++;
+        }
+      }
+
+      // === ЦЕРКОВЬ (с КРЕСТОМ на шпиле) ===
+      const ch = hutBase.clone().addScaledVector(dir, -80).addScaledVector(perp, 38);
       const church = new THREE.Group();
       const nave = new THREE.Mesh(new THREE.BoxGeometry(7, 5.6, 12.6),
         new THREE.MeshStandardMaterial({ color: 0xd8cfbd, roughness: 0.9 }));
@@ -1477,13 +1655,139 @@ export class World {
       spire.position.set(0, 15.4, 6.4);
       spire.rotation.y = Math.PI / 4;
       church.add(spire);
-      church.position.set(ch.x, Math.max(heightAt(ch.x, ch.z), 0.8), ch.z);
+      // КРЕСТ на шпиле
+      const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.1, 0.28),
+        new THREE.MeshStandardMaterial({ color: 0xd8c27a, roughness: 0.4, metalness: 0.6 }));
+      crossV.position.set(0, 18.7, 6.4);
+      church.add(crossV);
+      const crossH = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.28, 0.28),
+        crossV.material as THREE.Material);
+      crossH.position.set(0, 19.15, 6.4);
+      church.add(crossH);
+      // окна-арки (тёмные)
+      for (const wz of [-3.5, 0, 3.5]) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.8, 0.9),
+          new THREE.MeshStandardMaterial({ color: 0x2a3038, roughness: 0.3 }));
+        win.position.set(3.55, 3.4, wz);
+        church.add(win);
+        const win2 = win.clone();
+        win2.position.x = -3.55;
+        church.add(win2);
+      }
+      const chy = flattenUnder(ch.x, ch.z, 9.5, 16);
+      church.name = 'church';
+      church.position.set(ch.x, chy, ch.z);
       church.rotation.y = dirA;
       church.castShadow = true;
       g.add(church);
-      const fb = hutBase.clone().addScaledVector(dir, -118);
-      const fy = Math.max(heightAt(fb.x, fb.z), 1.0);
-      const S = 34;
+
+      // === ТАВЕРНА: два этажа, вывеска, бочки ===
+      const tv = hutBase.clone().addScaledVector(dir, -80).addScaledVector(perp, -38);
+      const tavern = new THREE.Group();
+      const tvWalls = new THREE.Mesh(new THREE.BoxGeometry(11, 7.6, 8.4),
+        new THREE.MeshStandardMaterial({ color: 0xc9a06a, roughness: 0.9 }));
+      tvWalls.position.y = 3.8;
+      tavern.add(tvWalls);
+      // межэтажный пояс
+      const tvBand = new THREE.Mesh(new THREE.BoxGeometry(11.4, 0.5, 8.8),
+        new THREE.MeshStandardMaterial({ color: 0x7a5636, roughness: 0.9 }));
+      tvBand.position.y = 5.0;
+      tavern.add(tvBand);
+      // двускатная крыша
+      const tvRoof = new THREE.Mesh(new THREE.CylinderGeometry(5.2, 5.2, 11.8, 3, 1),
+        new THREE.MeshStandardMaterial({ color: 0x6e3a2a, roughness: 0.95 }));
+      tvRoof.rotation.z = Math.PI / 2;
+      tvRoof.scale.set(1, 1, 0.52);
+      tvRoof.position.y = 9.1;
+      tavern.add(tvRoof);
+      // дверь + окна двух этажей (первый — тёплый свет)
+      const tvDoor = new THREE.Mesh(new THREE.BoxGeometry(1.7, 2.8, 0.2), dark);
+      tvDoor.position.set(0, 1.4, 4.28);
+      tavern.add(tvDoor);
+      for (const wy of [2.4, 6.0]) for (const wx of [-3.2, 3.2]) {
+        const tw = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.15, 0.16),
+          wy > 4 ? new THREE.MeshStandardMaterial({ color: 0x3a4a56, roughness: 0.3 })
+            : new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xff9a3a, emissiveIntensity: 1.4 }));
+        tw.position.set(wx, wy, 4.28);
+        tavern.add(tw);
+      }
+      // ВЫВЕСКА: кронштейн + доска с кружкой
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.5), dark);
+      arm.position.set(2.6, 5.4, 4.8);
+      tavern.add(arm);
+      const sign = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.1, 0.1),
+        new THREE.MeshStandardMaterial({ color: 0x5a3a20, roughness: 0.85 }));
+      sign.position.set(2.6, 4.7, 5.4);
+      tavern.add(sign);
+      const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.2, 0.42, 8),
+        new THREE.MeshStandardMaterial({ color: 0xd8c27a, roughness: 0.4, metalness: 0.4 }));
+      mug.position.set(2.6, 4.75, 5.5);
+      tavern.add(mug);
+      // труба
+      const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.2, 0.9), stoneDark);
+      chimney.position.set(-3.2, 9.6, 0);
+      tavern.add(chimney);
+      // бочки у входа
+      for (const bx of [-4.8, -3.8]) {
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.55, 1.25, 9), wood);
+        barrel.position.set(bx, 0.62, 5.1);
+        barrel.rotation.z = 0.06;
+        tavern.add(barrel);
+      }
+      const tvy = flattenUnder(tv.x, tv.z, 8.5, 15);
+      tavern.name = 'tavern';
+      tavern.position.set(tv.x, tvy, tv.z);
+      tavern.rotation.y = dirA;
+      tavern.castShadow = true;
+      g.add(tavern);
+
+      // === КОЛОДЕЦ на площади (центр города) ===
+      const wl = hutBase.clone().addScaledVector(dir, -88);
+      const well = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.6, 1.1, 10, 1, true), stone);
+      ring.position.y = 0.55;
+      well.add(ring);
+      const wellFloor = new THREE.Mesh(new THREE.CircleGeometry(1.5, 10), stoneDark);
+      wellFloor.rotation.x = -Math.PI / 2;
+      wellFloor.position.y = 0.9;
+      well.add(wellFloor);
+      for (const wx of [-1.3, 1.3]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, 2.6, 0.22), dark);
+        post.position.set(wx, 1.95, 0);
+        well.add(post);
+      }
+      const roofW = new THREE.Mesh(new THREE.ConeGeometry(2.1, 1.3, 4),
+        new THREE.MeshStandardMaterial({ color: 0x74553a, roughness: 0.95 }));
+      roofW.position.y = 3.9;
+      roofW.rotation.y = Math.PI / 4;
+      well.add(roofW);
+      const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.4, 6), wood);
+      axle.rotation.z = Math.PI / 2;
+      axle.position.y = 3.0;
+      well.add(axle);
+      const bucket = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.4, 8), dark);
+      bucket.position.set(0, 1.9, 0);
+      well.add(bucket);
+      const wly = flattenUnder(wl.x, wl.z, 4.5, 11);
+      well.name = 'well';
+      well.position.set(wl.x, wly, wl.z);
+      g.add(well);
+
+      // === ФОНАРИ вдоль улицы (тёплый свет, как у пирса) ===
+      for (const side of [-1, 1]) {
+        for (let k = 0; k < 2; k++) {
+          const lp = hutBase.clone().addScaledVector(dir, -84 - k * 14).addScaledVector(perp, side * 15);
+          const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 5.2, 6), dark);
+          pole.position.set(lp.x, heightAt(lp.x, lp.z) + 2.6, lp.z);
+          g.add(pole);
+          const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.34, 8, 8),
+            new THREE.MeshStandardMaterial({ color: 0xffe2a8, emissive: 0xffb648, emissiveIntensity: 2.2 }));
+          lamp.position.set(lp.x, heightAt(lp.x, lp.z) + 5.4, lp.z);
+          g.add(lamp);
+        }
+      }
+
+      // === ФОРТ (меш): плато уже выровнено выше, ДО города ===
       const wallH = 9.5, wallT = 2.4;
       const fort = new THREE.Group();
       const wallsSpec: [number, number, number, number][] = [
@@ -1538,9 +1842,17 @@ export class World {
         else if (side === 2) mkCannon(S - wallT / 2, k, dirA + Math.PI / 2);
         else mkCannon(-S + wallT / 2, k, dirA - Math.PI / 2);
       }
+      fort.name = 'fort';
       fort.position.set(fb.x, fy, fb.z);
       fort.rotation.y = dirA;
       g.add(fort);
+      // каменный ДВОР форта — брусчатка чуть выше плато
+      const yard = new THREE.Mesh(new THREE.BoxGeometry(S * 2 - wallT * 2, 0.3, S * 2 - wallT * 2),
+        new THREE.MeshStandardMaterial({ color: 0x9a9288, roughness: 0.97 }));
+      yard.name = 'fort_yard';
+      yard.position.set(fb.x, fy + 0.14, fb.z);
+      yard.rotation.y = dirA;
+      g.add(yard);
     }
     // --- пиратское логово: чёрный флаг на пирсе ---
     if (isl.name === 'Логово пиратов') {

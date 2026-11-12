@@ -6,8 +6,13 @@ import { BUOYANCY_CONFIG, PHYSICS, CONTROLS } from '../water/buoyancy';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
 import type { GibPool } from '../fx/gibs';
-import { spawnDebrisAt, spawnShipDebris } from '../fx/debris';
+import { spawnDebrisAt, spawnShipDebris, spawnSplinterBurst, spawnHullPlate } from '../fx/debris';
 import { clamp, mod2pi, smoothstep } from '../core/rng';
+
+// Task 43: оси доворота от воды — МОДУЛЬНЫЕ константы (не поля
+// экземпляра: у Ship из разных чанков/HMR поля могли отсутствовать)
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
+const AXIS_X = new THREE.Vector3(1, 0, 0);
 
 // ============================================================
 // Корабль как сущность: 6DOF-физика (surge/sway/heave/roll/
@@ -101,6 +106,7 @@ export class Ship {
   private _oarDip = new THREE.Quaternion(); // погружение (вокруг ДП)
   private _yAxis = new THREE.Vector3(0, 1, 0);
   private _zAxis = new THREE.Vector3(0, 0, 1);
+  private _xAxis = new THREE.Vector3(1, 0, 0);
   private wq = new THREE.Quaternion();
   private dq = new THREE.Quaternion();
   private _e2 = new THREE.Euler();   // разбор кватерниона (качка/подъём шлюпки)
@@ -144,9 +150,28 @@ export class Ship {
   /** максимум парусов с учётом множителя прочности (clearDamage) */
   sailMax: number;
   crew: number;
-  water = 0;               // м³ в трюме
+  water = 0;               // м³ в трюме (СУММА по отсекам)
   holdCap: number;
-  leakRate = 0;            // м³/с суммарная течь
+  // ============================================================
+  // Task 43: ОТСЕКИ ТРЮМА — 4 ряда по длине (корма→нос) × 2 борта.
+  // Вода прибывает ТОЛЬКО в тот отсек, куда пробило борт, и
+  // перетекает к соседям — корабль кренится на затопленный борт
+  // и дифферентится на затопленный конец (нос/корма)
+  // ============================================================
+  compartments: { water: number; leak: number; cap: number }[] = [];
+  /** дифферентящий момент воды: −1 корма .. +1 нос (из отсеков) */
+  trimBias = 0;
+  /** время симуляции (для underFire и др.) */
+  simT = 0;
+  /** время последнего попадания — экипаж прижимается к бортам */
+  lastHitT = -999;
+  /** ближайший противник для стрелков-матросов (устанавливает CombatSystem) */
+  threatTarget: Ship | null = null;
+  /** Task 44: экипаж ВЕДЁТ ОГОНЬ — только когда корабль нападает
+   *  (ИИ в состоянии боя; мишень полигона — режим «отвечать огнём»).
+   *  У игрока флаг не используется — его окно задаёт CombatSystem */
+  crewEngage = false;
+  leakRate = 0;            // м³/с суммарная течь (по всем отсекам)
   onFire = false;
   fireT = 0;
   /** сила пожара 0..1: 0.3 — очаг, 1.0 — палуба в огне.
@@ -164,8 +189,9 @@ export class Ship {
   mastMaxHP = 32;
   /** оборванных снастей обвязки (ванты/штаги сломанных мачт) */
   private rigSnapped = 0;
-  hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh }[] = [];
-  leakBias = 0;            // суммарный кренящий момент пробоин (−1..1 порт/штирборт)
+  // Task 43: стадийная пробоина — {side, belowWL, mesh} + позиция/урон/стадия
+  hullHoles: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean }[] = [];
+  leakBias = 0;            // суммарный кренящий момент пробоин (−1..1 порт/штирборт) — пересчитывается из отсеков
   noSurrender = false;     // мишень полигона не сдаётся
   crew3d: CrewVisual;      // фигуры на палубе
   sinking = false;
@@ -230,6 +256,10 @@ export class Ship {
     if (opts?.ammo) this.ammo = { ...opts.ammo };
     this.crew = Math.round(this.preset.maxCrew * 0.8);
     this.holdCap = this.preset.cargo * 0.8;
+    // Task 43: 8 отсеков (4 по длине корма→нос × 2 борта), ёмкость поровну
+    for (let i = 0; i < 8; i++) {
+      this.compartments.push({ water: 0, leak: 0, cap: this.holdCap / 8 });
+    }
     this.mass = this.preset.mass;
 
     const { length: L, beam: B, draft: D, freeboard: F } = this.preset;
@@ -402,6 +432,7 @@ export class Ship {
   // ---------- фиксированный шаг физики ----------
   fixedStep(dt: number, time: number) {
     if (this.sunk) return;
+    this.simT += dt;
     // затопление — ОТДЕЛЬНАЯ кинематика (фазы крена/погружения/спирали):
     // пружины плавучести уже не нужны, корпус ведёт себя как тело,
     // теряющее остойчивость
@@ -577,8 +608,8 @@ export class Ship {
       this._lt.z -= Math.sign(roll) * excess * k * m;
     }
     if (Math.abs(pitch) > pitchLim) this._lt.x -= (pitch - Math.sign(pitch) * pitchLim) * m * 12.0;
-    // затопление кренит корабль в сторону пробоин (ось корпуса)
-    this.floodRoll(m);
+    // (крен/дифферент от затопления — кинематический доворот ниже,
+    // после интеграции: моменты тонули в жёсткости колонн корпуса)
     // локальные моменты (крен/дифферент) → в мир: оси вращения
     // вращаются вместе с кораблём
     this.torque.add(this._lt.applyQuaternion(this.quaternion));
@@ -616,6 +647,35 @@ export class Ship {
       this.quaternion.z + this.dq.z * qs,
       this.quaternion.w + this.dq.w * qs
     ).normalize();
+
+    // --- Task 43: СТАТИЧЕСКИЙ КРЕН/ДИФФЕРЕНТ ОТ ВОДЫ В ТРЮМЕ ---
+    // кинематический доворот вокруг СВЯЗНЫХ осей корпуса (Z — крен,
+    // X — дифферент): вода на борту +X валит корабль на +X (отриц.
+    // roll), вода в носу дифферентит носом вниз (+pitch). Плавно
+    // (k=0.4/с) — как настоящая потеря остойчивости
+    {
+      const frac = clamp(this.water / this.holdCap, 0, 1);
+      if (frac > 0.01 && !this.sinking) {
+        const rollLimW = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
+        // 0.9 рад·bias·frac: однобортное заполнение тянет до предела
+        // палубы (deckRollLim ~14-18°) — «корабль валится на борт»
+        const rollT = clamp(-this.leakBias * frac * 0.9, -rollLimW, rollLimW);
+        const pitchT = clamp(this.trimBias * frac * 0.16, -0.16, 0.16);
+        const k = Math.min(1, dt * 0.4);
+        const pR = this.floodRollCur, pP = this.floodPitchCur;
+        this.floodRollCur += (rollT - this.floodRollCur) * k;
+        this.floodPitchCur += (pitchT - this.floodPitchCur) * k;
+        const dr = this.floodRollCur - pR, dpx = this.floodPitchCur - pP;
+        if (Math.abs(dr) > 1e-7) {
+          this.dq.setFromAxisAngle(AXIS_Z, dr);
+          this.quaternion.multiply(this.dq);
+        }
+        if (Math.abs(dpx) > 1e-7) {
+          this.dq.setFromAxisAngle(AXIS_X, dpx);
+          this.quaternion.multiply(this.dq);
+        }
+      }
+    }
 
     // КИНЕМАТИЧЕСКАЯ ПОСАДКА НА ВОЛНУ (Task 25) ЗАМЕНЕНА НА
     // КИНЕМАТИКУ ВЕРТИКАЛИ (Task 34): ватерлиния ВСЕГДА на поверхности
@@ -673,9 +733,93 @@ export class Ship {
     // --- посадка на мель / столкновение с землёй ---
     this.checkGrounding(dt);
 
-    // --- течение воды в трюме ---
-    if (this.leakRate > 0) {
-      this.water = Math.min(this.holdCap, this.water + this.leakRate * dt);
+    // --- Task 43: ВОДА В ТРЮМЕ ПО ОТСЕКАМ ---
+    // каждый отсек набирает воду из СВОИХ пробоин; избыток (отсек
+    // полон) ПЕРЕЛИВАЕТСЯ соседям через верх переборок; крен/
+    // дифферент — из распределения воды по бортам и корма↔нос
+    {
+      const cps = this.compartments;
+      let totLeak = 0;
+      for (let i = 0; i < 8; i++) {
+        const c = cps[i];
+        if (c.leak <= 0) continue;
+        totLeak += c.leak;
+        const add = c.leak * dt;
+        const room = c.cap - c.water;
+        if (add <= room) {
+          c.water += add;
+        } else {
+          c.water = c.cap;
+          // излишек — соседям (BFS по переборкам, пока есть куда)
+          let over = add - room;
+          const queue = [i];
+          const seen = new Set([i]);
+          let qi = 0;
+          while (over > 1e-6 && qi < queue.length) {
+            const j = queue[qi++];
+            for (const nb of [j ^ 1, j - 2, j + 2]) {
+              if (nb < 0 || nb > 7 || seen.has(nb)) continue;
+              seen.add(nb);
+              const n = cps[nb];
+              const r = n.cap - n.water;
+              if (r > 1e-6) {
+                const take = Math.min(r, over);
+                n.water += take;
+                over -= take;
+              }
+              queue.push(nb);
+            }
+          }
+          // весь трюм полон — излишек игнорируем (корабль уже тонет)
+        }
+      }
+      // медленное ВЫРАВНИВАНИЕ уровней (щели в переборках): через
+      // ДП — медленнее (киль/шпангоуты мешают — крен держится дольше)
+      const heelMul = 1 + Math.abs(this.euler.z) * 2.2;
+      for (let row = 0; row < 4; row++) {
+        const a = cps[row * 2], b = cps[row * 2 + 1];
+        const fa = a.water / a.cap, fb = b.water / b.cap;
+        if (Math.abs(fa - fb) > 1e-4) {
+          const src = fa > fb ? a : b, dst = fa > fb ? b : a;
+          const q = Math.min(src.water, Math.abs(fa - fb) * a.cap * 0.5) * dt * 0.035 * heelMul;
+          src.water -= q;
+          dst.water = Math.min(dst.cap, dst.water + q);
+        }
+      }
+      for (let side = 0; side < 2; side++) {
+        for (let row = 0; row < 3; row++) {
+          const a = cps[row * 2 + side], b = cps[(row + 1) * 2 + side];
+          const fa = a.water / a.cap, fb = b.water / b.cap;
+          if (Math.abs(fa - fb) > 1e-4) {
+            const src = fa > fb ? a : b, dst = fa > fb ? b : a;
+            const q = Math.min(src.water, Math.abs(fa - fb) * a.cap * 0.5) * dt * 0.08;
+            src.water -= q;
+            dst.water = Math.min(dst.cap, dst.water + q);
+          }
+        }
+      }
+      // суммарные метрики (совместимость: water/leakRate/leakBias)
+      let w = 0, port = 0, star = 0, bow = 0, stern = 0;
+      for (let row = 0; row < 4; row++) for (let s = 0; s < 2; s++) {
+        const c = cps[row * 2 + s];
+        w += c.water;
+        if (s === 1) port += c.water; else star += c.water;   // +X порт
+        if (row >= 2) bow += c.water; else stern += c.water;   // ряды 0-1 корма, 2-3 нос
+      }
+      this.water = w;
+      this.leakRate = totLeak;
+      // кренящий момент: затопленный порт валит корабль НА ПОРТ (+bias)
+      this.leakBias = clamp((port - star) / this.holdCap * 1.6, -1, 1);
+      // дифферент: вода в носу дифферентит НОСОМ ВНИЗ (+)
+      this.trimBias = clamp((bow - stern) / this.holdCap * 1.6, -1, 1);
+      // ОСАДКА: полный трюм сажает корабль на 0.55 м глубже (реально!
+      // применяется и в реалистичной, и в простой физике)
+      const frac = clamp(w / this.holdCap, 0, 1);
+      const draftWater = frac * 0.55;
+      if (Math.abs(draftWater - this._lastDraftWater) > 0.02) {
+        this._lastDraftWater = draftWater;
+        this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset + draftWater);
+      }
     }
     if (this.onFire) {
       this.fireT += dt;
@@ -865,7 +1009,7 @@ export class Ship {
     const heelMax = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
     const heelTarget = clamp(
       -lateralPort * this.sailFrac * 0.006
-      + this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
+      - this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
       -heelMax, heelMax);
     this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
     this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
@@ -880,7 +1024,8 @@ export class Ship {
     // сдвиг посадки; лёгкое притопление от наклона и хода
     const sink = -(1 - u.y) * 0.6
       - Math.min(Math.abs(this.speed()) * 0.02, 0.2)
-      - BUOYANCY_CONFIG.draftOffset;
+      - BUOYANCY_CONFIG.draftOffset
+      - this.waterDraft();   // Task 43: вода в трюме сажает глубже
     const targetY = hMid * 0.45 + (hBow + hStern + hPort + hStar) * 0.1375 + sink;
     this.position.y += (targetY - this.position.y) * Math.min(1, dt * 7.0);
 
@@ -923,10 +1068,15 @@ export class Ship {
   applyDamage(d: DamageInput) {
     if (this.sunk || this.sinking) return;
     const rng = Math.random;
+    this.lastHitT = this.simT;   // Task 43: экипаж прижимается к бортам
     switch (d.kind) {
       case 'ball': {
         this.hullHP -= d.amount;
-        if (d.hitPoint && d.hitPoint.y < 0.45 + this.position.y) this.addLeak(0.06 + rng() * 0.05);
+        // течь — в отсек по месту попадания
+        if (d.hitPoint) {
+          const lp = this.tmpV.copy(d.hitPoint).sub(this.position).applyQuaternion(this.tmpQ.copy(this.quaternion).invert());
+          if (d.hitPoint.y < 0.45 + this.position.y) this.addLeakAt(0.06 + rng() * 0.05, lp);
+        }
         // ЭКИПАЖ гибнет ТОЛЬКО от прямого прострела палубы (CombatSystem
         // → crew3d.killNearPath). Залп в борт ниже палубы людей не косит:
         // доска и переборки принимают удар на себя
@@ -976,9 +1126,37 @@ export class Ship {
     return false;
   }
 
+  /** Время с последнего попадания по кораблю (сек; 999 — никогда) */
+  sinceHit(): number { return Math.max(0, this.simT - this.lastHitT); }
+
+  /** Дополнительная осадка от воды в трюме (м) — для простой физики */
+  waterDraft(): number { return clamp(this.water / this.holdCap, 0, 1) * 0.55; }
+  private _lastDraftWater = 0;
+
+  /** Task 43: течь В КОНКРЕТНЫЙ ОТСЕК по позиции пробоины (локальные
+   *  координаты). Без позиции — в наиболее заполненный отсек */
+  addLeakAt(rate: number, localPos?: THREE.Vector3) {
+    let idx = -1;
+    if (localPos) {
+      const L = this.preset.length;
+      const row = clamp(Math.floor((localPos.z + L / 2) / L * 4), 0, 3);
+      idx = row * 2 + (localPos.x >= 0 ? 1 : 0);
+    } else {
+      // в самый «мокрый» отсек (туда, куда уже льётся)
+      let best = -1, bestW = -1;
+      for (let i = 0; i < 8; i++) {
+        const w = this.compartments[i].water + this.compartments[i].leak * 50;
+        if (w > bestW) { bestW = w; best = i; }
+      }
+      idx = best;
+    }
+    if (idx < 0 || idx > 7) return;
+    this.compartments[idx].leak = Math.min(0.9, this.compartments[idx].leak + rate);
+  }
+
+  /** Легаси-течь без позиции: весь поток — в отсек наибольшего ущерба */
   addLeak(rate: number) {
-    this.leakRate = Math.min(1.8, this.leakRate + rate);
-    if (this.leakRate < 0) this.leakRate = 0;
+    this.addLeakAt(rate);
   }
 
   /** Зажечь палубу: strength — начальная сила очага 0..1.
@@ -996,38 +1174,167 @@ export class Ship {
     this.sailHP = Math.max(0, this.sailHP - n);
   }
 
-  /** Пробоина в борту: тёмная рваная дыра + торчащие щепки-доски
-   *  вокруг + течь (ниже ватерлинии) + кренящий момент */
-  addHole(localPos: THREE.Vector3, belowWL: boolean) {
+  /** ============================================================
+   *  Task 43: СТАДИЙНЫЕ ПОВРЕЖДЕНИЯ БОРТА (идея galleon.html):
+   *  1 — ВМЯТИНА: ядро вдавливает обшивку (тёмная вмятина, пыль);
+   *  2 — ГЛУБОКАЯ ВМЯТИНА: трещины, обшивка вздувается;
+   *  3 — ПРОБОИНА: борт пробит — рваная дыра, видны ВНУТРЕННОСТИ
+   *      (шпангоуты, бимсы, груз), летят щепы, ниже ватерлинии —
+   *      течь в отсек + крен/дифферент по месту попадания.
+   *  Повторные попадания В пробоину расширяют её; 3 пробоины
+   *  одного борта в полосе 4.5 м — ВЫЛОМ СЕКЦИИ обшивки.
+   *  Базовая геометрия корпуса НЕ пересоздаётся — только декали.
+   *  ============================================================ */
+  hitHull(localPos: THREE.Vector3, damage: number, belowWL: boolean, shotDir?: THREE.Vector3) {
     const side = localPos.x >= 0 ? 1 : -1;
     const w = Math.max(0.3, this.halfWidthAt(localPos.z) * 0.985);
-    // группа: дыра + щепки (одна запись в hullHoles)
-    const hole = new THREE.Group();
-    const R = 0.36 + Math.random() * 0.18;
-    const mat = new THREE.MeshStandardMaterial({ color: 0x120d08, roughness: 1 });
-    const mesh = new THREE.Mesh(new THREE.CircleGeometry(R, 9), mat);
-    mesh.rotation.y = side * Math.PI / 2;
-    mesh.rotation.x = (Math.random() - 0.5) * 0.5;
-    hole.add(mesh);
-    // рваные доски по краям — вывернуло обшивку
-    const nSp = 3 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < nSp; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = R * (0.75 + Math.random() * 0.5);
-      const sp = new THREE.Mesh(
-        new THREE.BoxGeometry(0.05, 0.07, 0.35 + Math.random() * 0.5),
-        new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.95 }));
-      sp.position.set(side * 0.06, Math.sin(a) * r, Math.cos(a) * r);
-      sp.rotation.set((Math.random() - 0.5) * 0.9, side * Math.PI / 2 + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.9);
-      hole.add(sp);
+    const hitY = clamp(localPos.y, -this.preset.draft * 0.7, this.preset.freeboard * 1.1);
+
+    // существующий спот в радиусе 1.15 м — усиливаем, иначе новый
+    const spot = this.hullHoles.find(h =>
+      h.side === side && Math.hypot(h.z - localPos.z, h.y - hitY) < 1.15);
+    let rec: { side: number; belowWL: boolean; mesh: THREE.Mesh; z: number; y: number; dmg: number; stage: number; breached: boolean };
+    if (spot) {
+      spot.dmg += damage;
+      spot.belowWL = spot.belowWL || belowWL;
+      rec = spot;
+    } else {
+      rec = { side, belowWL, mesh: null as unknown as THREE.Mesh, z: localPos.z, y: hitY, dmg: damage, stage: 0, breached: false };
+      this.hullHoles.push(rec);
     }
-    hole.position.set(side * w, localPos.y, localPos.z);
-    this.visual.group.add(hole);
-    this.hullHoles.push({ side, belowWL, mesh: hole as unknown as THREE.Mesh });
-    if (belowWL) {
-      this.addLeak(0.16 + Math.random() * 0.10);
-      this.leakBias = clamp(this.leakBias + side * 0.35, -1, 1);
+
+    // мировая точка удара (для щепы)
+    const wp = this.tmpV.set(side * w, hitY, localPos.z)
+      .applyQuaternion(this.quaternion).add(this.position);
+
+    const newStage = rec.dmg >= 26 ? 3 : rec.dmg >= 12 ? 2 : 1;
+
+    // --- переход стадии: перестраиваем декаль ---
+    if (newStage > rec.stage) {
+      const wasBreached = rec.breached;
+      if (rec.mesh) { this.visual.group.remove(rec.mesh); }
+      const g = new THREE.Group();
+      rec.stage = newStage;
+      rec.breached = newStage === 3;
+
+      if (newStage < 3) {
+        // ВМЯТИНА (1 — лёгкая, 2 — глубокая с трещинами)
+        const k = newStage === 1 ? 0.45 : 0.8;
+        const R = 0.32 + (rec.dmg / 26) * 0.5;
+        const dent = new THREE.Mesh(
+          new THREE.SphereGeometry(R, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.5),
+          new THREE.MeshStandardMaterial({ color: 0x2e2015, roughness: 1 }));
+        dent.scale.set(1, 0.45, 1);
+        dent.rotation.y = side * Math.PI / 2;
+        dent.rotation.x = newStage === 2 ? side * 0.25 : 0;
+        g.add(dent);
+        if (newStage === 2) {
+          // трещины — радиальные тёмные полосы
+          for (let i = 0; i < 5; i++) {
+            const a = (i / 5) * Math.PI * 2 + Math.random() * 0.6;
+            const cr = new THREE.Mesh(
+              new THREE.PlaneGeometry(R * (0.9 + Math.random() * 0.9), 0.05),
+              new THREE.MeshBasicMaterial({ color: 0x100a05 }));
+            cr.position.set(side * 0.02, Math.sin(a) * R * 0.75, Math.cos(a) * R * 0.75);
+            cr.rotation.set(Math.PI / 2, side * Math.PI / 2, a, 'YXZ');
+            g.add(cr);
+          }
+        }
+        g.position.set(side * w * 0.985, hitY, localPos.z);
+        g.scale.setScalar(k);
+        rec.mesh = g as unknown as THREE.Mesh;
+        this.visual.group.add(g);
+      } else {
+        // ПРОБОИНА: рваная дыра + ВИДНЫ ВНУТРЕННОСТИ КОРАБЛЯ
+        const R = 0.42 + Math.random() * 0.2 + Math.min(0.35, rec.dmg / 90);
+        // (1) тёмный провал в глубину борта
+        const depth = new THREE.Mesh(
+          new THREE.CircleGeometry(R * 1.25, 10),
+          new THREE.MeshStandardMaterial({ color: 0x0d0906, roughness: 1 }));
+        depth.rotation.y = side * Math.PI / 2;
+        depth.position.x = -side * 0.85;                     // 0.85 м вглубь трюма
+        g.add(depth);
+        // (2) внутренности: бимсы (поперечные балки) + шпангоут + груз
+        const innerMat = new THREE.MeshStandardMaterial({ color: 0x3d2c1a, roughness: 0.95 });
+        for (let i = 0; i < 2; i++) {
+          const beam = new THREE.Mesh(
+            new THREE.BoxGeometry(0.12, 0.16, Math.max(1.2, w * 1.5)), innerMat);
+          beam.position.set(-side * (0.5 + i * 0.35), hitY - 0.25 + i * 0.45, localPos.z);
+          g.add(beam);
+        }
+        const frame = new THREE.Mesh(                         // шпангоут у дыры
+          new THREE.BoxGeometry(0.14, R * 2.1, 0.14), innerMat);
+        frame.position.set(-side * 0.3, 0, localPos.z + R * 0.9);
+        g.add(frame);
+        const crate = new THREE.Mesh(                          // кипа груза
+          new THREE.BoxGeometry(0.5, 0.45, 0.55),
+          new THREE.MeshStandardMaterial({ color: 0x5a4326, roughness: 0.9 }));
+        crate.position.set(-side * 0.55, -R * 0.5, localPos.z - R * 0.5);
+        crate.rotation.z = side * 0.12;
+        g.add(crate);
+        // (3) рваная кромка: тёмное кольцо-«разрыв» вокруг дыры
+        const rim = new THREE.Mesh(
+          new THREE.RingGeometry(R * 0.72, R * 1.08, 11, 1),
+          new THREE.MeshStandardMaterial({ color: 0x1a120a, roughness: 1, side: THREE.DoubleSide }));
+        rim.rotation.y = side * Math.PI / 2;
+        g.add(rim);
+        // (4) торчащие наружу рваные доски (больше прежних 3-5: 6-9)
+        const nSp = 6 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < nSp; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const r = R * (0.7 + Math.random() * 0.55);
+          const sp = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, 0.07, 0.3 + Math.random() * 0.55),
+            new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.95 }));
+          sp.position.set(side * 0.1, Math.sin(a) * r, Math.cos(a) * r);
+          sp.rotation.set((Math.random() - 0.5) * 0.9, side * Math.PI / 2 + (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.9);
+          g.add(sp);
+        }
+        g.position.set(side * w, hitY, localPos.z);
+        rec.mesh = g as unknown as THREE.Mesh;
+        this.visual.group.add(g);
+
+        // ПРОБИТИЕ: большая щепа летит по ходу ядра + доски
+        spawnSplinterBurst(wp.x, wp.y, wp.z,
+          shotDir ?? new THREE.Vector3(side, 0.2, 0), 12 + ((Math.random() * 5) | 0), 2 + ((Math.random() * 2) | 0));
+        // у воды — фонтан брызг
+        if (belowWL) {
+          this.particles.splash(wp.x, waterHeightAt(wp.x, wp.z, this.simT) + 0.2, wp.z, 1.1);
+        }
+        // течение в отсек по месту пробоины
+        this.addLeakAt(0.16 + Math.random() * 0.1, localPos);
+
+        // РАЗЛОМ СЕКЦИИ: 3 пробоины одного борта в полосе 4.5 м —
+        // выламывается кусок обшивки (динамичный разлом корпуса)
+        if (!wasBreached) {
+          const near = this.hullHoles.filter(h => h.breached && h.side === side
+            && Math.abs(h.z - localPos.z) < 4.5 && Math.abs(h.y - hitY) < 2.2);
+          if (near.length >= 3) {
+            spawnHullPlate(wp.x, wp.y + 0.3, wp.z, new THREE.Vector3(side, 0.5, 0));
+            spawnSplinterBurst(wp.x, wp.y + 0.5, wp.z,
+              new THREE.Vector3(side, 0.4, (Math.random() - 0.5)), 14, 3);
+            // пробоины сливаются: расширенная дыра в центре группы
+            const zC = near.reduce((a, h) => a + h.z, 0) / near.length;
+            const mid = near.reduce((a, h) => (Math.abs(h.z - zC) < Math.abs(a.z - zC) ? h : a), near[0]);
+            mid.mesh.scale.set(1.8, 1.45, 1.8);
+            mid.dmg += 22;
+            // выломанная секция — двойная течь
+            this.addLeakAt(0.22 + Math.random() * 0.12, localPos);
+          }
+        }
+      }
+    } else if (rec.breached) {
+      // попадание В существующую пробоину: расширяем, щепы
+      rec.mesh.scale.multiplyScalar(1.0 + Math.min(0.2, damage * 0.004));
+      spawnSplinterBurst(wp.x, wp.y, wp.z,
+        shotDir ?? new THREE.Vector3(side, 0.2, 0), 4 + ((Math.random() * 3) | 0), 1);
+      rec.dmg += damage * 0.4;
     }
+  }
+
+  /** Легаси-обёртка (совместимость): сразу пробоина */
+  addHole(localPos: THREE.Vector3, belowWL: boolean) {
+    this.hitHull(localPos, 26, belowWL);
   }
 
   /** Сорвать ломаемую деталь палубы (штурвал/шпиль/фонарь/фигура/руль)
@@ -1062,13 +1369,10 @@ export class Ship {
     return true;
   }
 
-  /** Затопление: крен в сторону пробоин + вода в трюме утяжеляет.
-   *  Момент — по оси КОРПУСА (_lt.z) */
-  private floodRoll(m: number) {
-    if (this.water <= 0 || this.sinking) return;
-    const frac = this.water / this.holdCap;
-    this._lt.z += this.leakBias * frac * m * 0.06;
-  }
+  /** Затопление: сглаженные статические углы крена/дифферента от воды
+   *  (кинематика — применяются в fixedStep; публичны для телеметрии) */
+  floodRollCur = 0;
+  floodPitchCur = 0;
 
   /** ФИЗИЧЕСКИЙ предел крена: угол, при котором кромка ПАЛУБЫ
    *  (у миделя, самая широкая точка) касается воды. Статический крен
@@ -1198,6 +1502,13 @@ export class Ship {
     this.water = 0;
     this.leakRate = 0;
     this.leakBias = 0;
+    this.trimBias = 0;          // Task 43: дифферент от воды
+    this.lastHitT = -999;
+    this.threatTarget = null;
+    // отсеки трюма пусты, осадка — по настройке
+    for (const c of this.compartments) { c.water = 0; c.leak = 0; }
+    this._lastDraftWater = 0;
+    this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset);
     this.onFire = false;
     this.fireT = 0;
     this.fireIntensity = 0;
@@ -1270,9 +1581,14 @@ export class Ship {
     this.sailTarget = 0;
     this.rudderTarget = 0;
     // сценарий гибели: валиться в сторону пробоин (или наугад),
-    // зарываться носом/кормой, закручиваться в свою сторону
-    this.sinkSide = Math.abs(this.leakBias) > 0.15 ? Math.sign(this.leakBias) : (Math.random() < 0.5 ? -1 : 1);
-    this.sinkTrim = Math.random() < 0.62 ? 1 : -1; // чаще — носом
+    // зарывать затопленный конец (нос/корма — Task 43: по отсекам,
+    // не случайно), закручиваться в свою сторону.
+    // ВАЖНО: вода на стороне +X (leakBias>0) валит корабль НА +X —
+    // а положительный roll (+e2.z) ПОДНИМАЕТ +X; поэтому sinkSide
+    // со ЗНАКОМ МИНУС к leakBias
+    this.sinkSide = Math.abs(this.leakBias) > 0.15 ? -Math.sign(this.leakBias) : (Math.random() < 0.5 ? -1 : 1);
+    this.sinkTrim = Math.abs(this.trimBias) > 0.12 ? Math.sign(this.trimBias)
+      : (Math.random() < 0.62 ? 1 : -1);   // чаще — носом (легаси)
     this.sinkSpin = Math.random() < 0.5 ? -1 : 1;
     this.sinkRollT = this.sinkSide * (0.85 + Math.random() * 0.45);   // 49..74°
     this.sinkPitchT = this.sinkTrim * (0.24 + Math.random() * 0.20);  // 14..25°
@@ -1297,8 +1613,21 @@ export class Ship {
     const L = P.length, B = P.beam, F = P.freeboard;
     const e2 = this._e2.setFromQuaternion(this.quaternion, 'YXZ');
 
-    // вода в трюме прибывает неотвратимо (пробоины + открытые люки)
-    this.water = Math.min(this.holdCap, this.water + Math.max(this.leakRate, 0.5) * dt);
+    // вода в трюме прибывает неотвратимо (пробоины + открытые люки);
+    // прирост распределяем по отсекам пропорционально заполнению —
+    // телеметрия отсеков остаётся честной до самого конца
+    {
+      const inflow = Math.max(this.leakRate, 0.5) * dt;
+      let wSum = 0;
+      for (const c of this.compartments) wSum += c.water;
+      if (wSum > 0.01) {
+        for (const c of this.compartments) c.water = Math.min(c.cap, c.water + inflow * c.water / wSum);
+      } else {
+        const mid = this.compartments[4];
+        mid.water = Math.min(mid.cap, mid.water + inflow);
+      }
+      this.water = Math.min(this.holdCap, this.water + inflow);
+    }
 
     // палуба низкого борта: высота над ТЕКУЩЕЙ водой у корпуса
     const wy = waterHeightAt(this.position.x, this.position.z, time);
@@ -1890,17 +2219,84 @@ export class Ship {
     }
 
     // экипаж: анимация, потери (трупы/разрывы), эвакуация при потоплении;
-    // гребным судам передаём фазу гребка — гребцы отклоняются в такт
-    this.crew3d.update(dt, time, {
-      crew: this.crew, maxCrew: this.preset.maxCrew,
-      sinking: this.sinking, sunk: this.sunk,
-      position: this.position, quaternion: this.quaternion,
-      stroke: {
-        phase: this.strokePhase,
-        active: (this.rowing !== 0 && this.oarsDeployT > 0.5 && !this.sinking) ? 1 : 0,
-        dir: this.rowing < 0 ? -1 : 1,
-      },
-    });
+    // гребным судам передаём фазу гребка — гребцы отклоняются в такт.
+    // Task 43: sinceHit — экипаж прижимается к бортам на одно колено
+    // и отстреливается из ружей/пистолетов по ближайшему противнику
+    {
+      const threat = this.threatTarget && !this.threatTarget.sinking && !this.threatTarget.sunk
+        && !this.threatTarget.surrendered
+        ? this.threatTarget : null;
+      this.crew3d.update(dt, time, {
+        crew: this.crew, maxCrew: this.preset.maxCrew,
+        sinking: this.sinking, sunk: this.sunk,
+        position: this.position, quaternion: this.quaternion,
+        stroke: {
+          phase: this.strokePhase,
+          active: (this.rowing !== 0 && this.oarsDeployT > 0.5 && !this.sinking) ? 1 : 0,
+          dir: this.rowing < 0 ? -1 : 1,
+        },
+        // сек с последнего попадания по нам (8 с — «под обстрелом»)
+        sinceHit: this.sinceHit(),
+        // противник для стрелков: позиция/дистанция (или null)
+        threatPos: threat ? threat.position : null,
+        threatDist: threat ? this.position.distanceTo(threat.position) : Infinity,
+        // выстрел матроса: визуал + урон по экипажу цели
+        shoot: (weapon, from, muzzleWorld) => this.smallArmsFire(threat, weapon, from, muzzleWorld),
+      });
+    }
+  }
+
+  /** Task 43: ВЫСТРЕЛ МАТРОСА (ружьё/пистолет) — вспышка, трассер,
+   *  лёгкий урон корпусу и экипажу цели (шанс убить фигуру на палубе).
+   *  Вызывается crew.update по таймерам перезарядки */
+  smallArmsFire(target: Ship | null, weapon: 'musket' | 'pistol',
+    fromWorld: THREE.Vector3, muzzleWorld: THREE.Vector3) {
+    if (!target || target.sunk || target.sinking) return;
+    const P = this.particles;
+    // вспышка у дула + дымок
+    P.spawn(muzzleWorld.x, muzzleWorld.y, muzzleWorld.z, 0, 0.6, 0, 0.28, 0.16, 0, 0.5, 6);
+    P.smoke(muzzleWorld.x, muzzleWorld.y + 0.1, muzzleWorld.z, 0, 0.5, 0, 0.55, 0.8);
+    // трассер: 3 искры летят к цели
+    const to = this.tmpV.copy(target.position).sub(fromWorld);
+    const dist = to.length();
+    if (dist < 1) return;
+    to.divideScalar(dist);
+    for (let i = 0; i < 3; i++) {
+      P.spawn(muzzleWorld.x, muzzleWorld.y, muzzleWorld.z,
+        to.x * (70 + Math.random() * 12), to.y * (70 + Math.random() * 12) + 1.2, to.z * (70 + Math.random() * 12),
+        dist / 74, 0.09, 0, 0.02, 0);
+    }
+    // урон: шанс снять фигуру с палубы цели + царапина корпусу
+    const hitChance = weapon === 'musket' ? 0.20 : 0.11;
+    if (Math.random() < hitChance) {
+      target.smallArmsHit();
+    }
+    target.applyDamage({ kind: 'ball', amount: 0.35 });
+  }
+
+  /** Task 43: пуля стрелка противника сняла фигуру с нашей палубы */
+  smallArmsHit() {
+    if (this.sinking || this.sunk) return;
+    const killed = this.crew3d.smallArmsKill(1, this.position, this.quaternion);
+    if (killed > 0) this.crew = Math.max(0, Math.round(this.crew - killed));
+  }
+
+  /** Task 43: телеметрия разрушения для HUD/E2E */
+  damageInfo() {
+    return {
+      hullHP: +this.hullHP.toFixed(1), hullMax: this.hullMax,
+      water: +this.water.toFixed(2), holdCap: +this.holdCap.toFixed(1),
+      leakRate: +this.leakRate.toFixed(3),
+      leakBias: +this.leakBias.toFixed(3), trimBias: +this.trimBias.toFixed(3),
+      // 8 отсеков: [корма-порт, корма-штирборт, .. , нос-порт, нос-штирборт]
+      compartments: this.compartments.map(c => +c.water.toFixed(2)),
+      holes: this.hullHoles.map(h => ({
+        side: h.side, stage: h.stage, breached: h.breached,
+        belowWL: h.belowWL, y: +h.y.toFixed(2), z: +h.z.toFixed(2),
+      })),
+      sinceHit: +this.sinceHit().toFixed(1),
+      sinking: this.sinking, sinkT: +this.sinkT.toFixed(1), sunk: this.sunk,
+    };
   }
 
   /** Сдвиг мира (floating origin) */

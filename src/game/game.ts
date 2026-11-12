@@ -18,7 +18,7 @@ import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
-import { setCrewFx, deckCrewFor, buildFigure, rollTraits } from './ship/crew';
+import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits } from './ship/crew';
 import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
@@ -336,6 +336,9 @@ export class Game {
     this.gibs.addTo(this.worldGroup);
     initDebris(this.worldGroup);
     setCrewFx(this.gibs, this.particles);
+    // Task 43: мировой корень для ПЛОВЦОВ — матросы, прыгнувшие за
+    // борт с тонущего корабля, живут в мире (не в группе корабля)
+    setCrewWorldRoot(this.worldGroup);
     Ship.gibs = this.gibs;
     this.world.onDiscover = (isl) => this.pushMessage(`Открыт остров: ${isl.name}!`);
 
@@ -1029,6 +1032,7 @@ export class Game {
     this.worldGroup.add(ship.wake.mesh);
     const ai = new AIShip(ship, [], 'anchored');
     ai.returnFire = this.pgReturnFire;
+    ship.crewEngage = this.pgReturnFire;   // Task 44: без «отвечать огнём» ружья мишени молчат
     // мишень с поставленным рангоутом: стрелять есть по чему — и по парусам
     ship.sailOverride = 0.85;
     this.pgTarget = ai;
@@ -1084,7 +1088,10 @@ export class Game {
 
   setPgReturnFire(on: boolean) {
     this.pgReturnFire = on;
-    if (this.pgTarget) this.pgTarget.returnFire = on;
+    if (this.pgTarget) {
+      this.pgTarget.returnFire = on;
+      this.pgTarget.ship.crewEngage = on;   // Task 44: стрелки мишени — только в этом режиме
+    }
   }
 
   resetProvingTarget() {
@@ -2292,6 +2299,15 @@ export class Game {
         sunDim: +this.weatherVis.sunDim.toFixed(2),
       },
       proving: this.proving ? 1 : 0,
+      // Task 43: РАЗРУШАЕМОСТЬ — телеметрия игрока и цели полигона
+      damage: p.damageInfo(),
+      crewArmed: p.crew3d.armedInfo(),
+      crewCrouched: p.crew3d.crouchedCount(),
+      crewSwimmers: p.crew3d.swimmersAlive(),
+      tgtDamage: tgt ? tgt.damageInfo() : null,
+      tgtArmed: tgt ? tgt.crew3d.armedInfo() : null,
+      tgtCrouched: tgt ? tgt.crew3d.crouchedCount() : -1,
+      tgtSwimmers: tgt ? tgt.crew3d.swimmersAlive() : -1,
       tgtDist: tgt ? +p.position.distanceTo(tgt.position).toFixed(1) : -1,
       tgtHull: tgt ? +clamp(tgt.hullHP / tgt.hullMax, 0, 1).toFixed(3) : -1,
       tgtWater: tgt ? +clamp(tgt.water / tgt.holdCap, 0, 1).toFixed(3) : -1,
@@ -2595,7 +2611,7 @@ export class Game {
       });
     this.particles.update(dt);
     this.gibs.update(dt);
-    updateDebris(dt, this.time, this.wind);
+    updateDebris(dt, this.time, this.wind, { x: this.player.position.x, z: this.player.position.z });
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
     this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
 

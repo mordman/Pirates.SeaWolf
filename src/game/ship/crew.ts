@@ -3,6 +3,7 @@ import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
 import { buildCatCrewFigure } from './cats';
+import { waterHeightAt } from '../water/waves';
 import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS, APPEARANCE_BANDANA,
   type HeadwearKind, type TorsoKind, type PantsKind } from '../core/settings';
 
@@ -42,11 +43,14 @@ export function deckCrewFor(crew: number): number {
 
 // глобальные эффекты для смертей (один экземпляр на игру;
 // общий для палубного экипажа и островных пиратов)
-let FX: { gibs: GibPool | null; particles: Particles | null } = { gibs: null, particles: null };
+let FX: { gibs: GibPool | null; particles: Particles | null; worldRoot: THREE.Group | null }
+  = { gibs: null, particles: null, worldRoot: null };
 /** Вызывается один раз из game.ts после создания GibPool */
 export function setCrewFx(gibs: GibPool, particles: Particles) {
-  FX = { gibs, particles };
+  FX = { gibs, particles, worldRoot: FX.worldRoot };
 }
+/** Task 43: мир для пловцов (вызывается из game.ts) */
+export function setCrewWorldRoot(root: THREE.Group) { FX.worldRoot = root; }
 /** Текущие эффекты (гибы/частицы) — для islandFolk.ts */
 export function crewFx() { return FX; }
 
@@ -89,6 +93,20 @@ export interface CrewFigure {
    *  работа), гребцы гребут, ходоки гуляют. */
   work?: WorkPath;
   baseScaleY: number;         // исходный рост (гребцы «сидят» — 0.78)
+  // --- Task 43: СТРЕЛКИ (ружья 70% / пистолеты 30%) ---
+  /** оружие фигуры: 'musket' (дальность 50 м) | 'pistol' (20 м) | null */
+  weapon?: 'musket' | 'pistol' | null;
+  /** меш оружия (ребёнок руки; создаётся лениво при первом бое) */
+  weaponMesh?: THREE.Object3D | null;
+  /** кулдаун перезарядки, сек (>0 — заряжается) */
+  gunCd?: number;
+  /** фаза прижатия к борту на колено (0..1, нарастает/спадает) */
+  crouchT?: number;
+  /** Task 43: рука-стрелок (к ней прикреплено оружие) */
+  gunArm?: THREE.Mesh | null;
+  /** Task 43: эвакуация — фигура плывёт (нестандартное поведение) */
+  swim?: { phase: 'run' | 'jump' | 'swim' | 'drown'; t: number;
+    vx: number; vz: number; drownAt: number; jumpY: number; };
   // --- смерть ---
   dead: boolean;
   deadT: number;              // сек с момента смерти
@@ -667,6 +685,17 @@ export interface CrewShipState {
   crew: number; maxCrew: number; sinking: boolean; sunk: boolean;
   position: THREE.Vector3; quaternion: THREE.Quaternion;
   stroke?: { phase: number; active: number; dir: number };
+  /** Task 43: сек с последнего попадания по кораблю (<8 — «под
+   *  обстрелом»: экипаж прижимается к бортам на одно колено) */
+  sinceHit?: number;
+  /** Task 43: противник для стрелков (мировая позиция; null — нет) */
+  threatPos?: THREE.Vector3 | null;
+  /** Task 43: дистанция до противника, м */
+  threatDist?: number;
+  /** Task 43: коллбек выстрела (ружьё/пистолет) — Ship.smallArmsFire */
+  shoot?: (weapon: 'musket' | 'pistol', fromWorld: THREE.Vector3, muzzleWorld: THREE.Vector3) => void;
+  /** Task 43: сек с начала потопления (для прыжков за борт) */
+  sinkT?: number;
 }
 
 /** Task 40: МАХИ РУКАМИ при ходьбе — противофаза ногам */
@@ -686,6 +715,38 @@ function swingArmsIdle(f: CrewFigure) {
     f.armL.rotation.z = 0.05;
     f.armR.rotation.z = -0.05;
   }
+}
+
+/** Task 43: РУЖЬЁ / ПИСТОЛЕТ — меш оружия (ребёнок руки с пивотом
+ *  в плече; геометрия ВДОЛЬ руки: при поднятой руке (rotation.x≈−π/2)
+ *  дуло смотрит вперёд — как сабля/пистолет капитана у lander) */
+function makeWeaponMesh(kind: 'musket' | 'pistol'): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x5a4025, roughness: 0.85 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x3a3f46, metalness: 0.7, roughness: 0.45 });
+  if (kind === 'musket') {
+    // ложа вдоль руки (вниз от кисти — к плечу приклад вверх)
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.92, 0.055), wood);
+    stock.position.set(0, -0.14, 0.01);
+    g.add(stock);
+    // ствол — тонкий, тёмный, ниже кисти (к дулу)
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.55, 0.032), steel);
+    barrel.position.set(0, -0.42, 0.035);
+    g.add(barrel);
+    // курок/замок
+    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.1, 0.06), steel);
+    lock.position.set(0, -0.08, 0.05);
+    g.add(lock);
+  } else {
+    // пистолет: короткий — рукоять в кулаке + ствол вперёд
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.16, 0.05), wood);
+    grip.position.set(0, -0.04, 0.015);
+    g.add(grip);
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.26, 0.035), steel);
+    barrel.position.set(0, -0.2, 0.03);
+    g.add(barrel);
+  }
+  return g;
 }
 
 export interface CrewVisual {
@@ -713,7 +774,24 @@ export interface CrewVisual {
     shipQuat: THREE.Quaternion): number;
   /** Оживить всех (полигон/сброс повреждений) */
   reset(): void;
+  /** Task 43: пуля стрелка противника снимает фигуру с палубы
+   *  (случайную живую) — труп падает на месте */
+  smallArmsKill(maxCount: number,
+    shipPos: THREE.Vector3, shipQuat: THREE.Quaternion): number;
+  /** Task 43: живых пловцов в воде (после прыжков с тонущего) */
+  swimmersAlive(): number;
+  /** Task 43: число стрелков (ружья/пистолеты) на палубе */
+  armedInfo(): { musket: number; pistol: number };
+  /** Task 43: фигуры в позе «на колене у борта» (обстрел) */
+  crouchedCount(): number;
 }
+
+// temporaries для стрельбы (не аллоцировать в кадре)
+const _tmpA = new THREE.Vector3();
+const _tmpB = new THREE.Vector3();
+const _tmpC = new THREE.Vector3();
+const _tmpD = new THREE.Vector3();
+const _shipInvQ = new THREE.Quaternion();
 
 /** Собрать экипаж для корабля (local coords: +Z нос, +X порт).
  *  Число фигур = deckCrewFor(maxCrew): 1 фигура = 1 человек;
@@ -809,6 +887,19 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
     const f = allCats
       ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
       : buildFigure(role, rollTraits(rot, role), nextSeed(), busy || role === 'walker');
+    // Task 43: ВООРУЖЕНИЕ МАТРОСОВ — ружьё 70% (дальность 50 м),
+    // пистолет 30% (20 м). Стрелки — роли с подвижными руками
+    // (рулевой у штурвала, гребцы на банках, капитан на мостике —
+    // без оружия; коты не стреляют). Оружие вешается в МАУНТ У
+    // КИСТИ (рука без крюка) — как сабля капитана у lander
+    if (!allCats && role !== 'captain' && role !== 'helmsman' && role !== 'rower'
+      && f.wristMount) {
+      f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
+      f.gunCd = 1 + rot() * 2;    // первая очередь — не залпом
+      f.crouchT = 0;
+      // рука-стрелок: родитель маунта (та, что без крюка)
+      f.gunArm = (f.wristMount.parent as THREE.Mesh) ?? f.armR ?? f.armL ?? null;
+    }
     if (role === 'captain') {
       // капитан — РАСХАЖИВАЕТ по квартердеку за спиной рулевого
       // (замирает и смотрит на горизонт)
@@ -963,6 +1054,148 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
     }
   };
 
+  // ============================================================
+  // Task 43: ЭВАКУАЦИЯ И ПЛОВЦЫ
+  // ============================================================
+  let abandonStarted = false;
+  /** убрать пловца из мира (утонул/сброс) — с очисткой геометрии */
+  const removeSwimmer = (f: CrewFigure) => {
+    const root = FX.worldRoot;
+    if (root && f.group.parent === root) {
+      root.remove(f.group);
+      f.group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+      });
+    }
+    f.swim = undefined;
+    f.group.visible = false;
+  };
+  /** корабль тонет: раздать «прыжки» живым фигурам и вести их к
+   *  борту (фаза run); прыжок/плавание — updateSwimmers */
+  const startAbandon = (dt: number, time: number, ship: CrewShipState) => {
+    const root = FX.worldRoot;
+    const deckGone = (ship.sinkT ?? 99) > 3.5;
+    for (const f of figures) {
+      if (f.dead || f.swim || !f.group.visible) continue;
+      if (!abandonStarted && Math.random() < 0.65 || deckGone) {
+        // станет пловцом: бежит к ближнему борту
+        const side = f.group.position.x >= 0 ? 1 : -1;
+        f.swim = {
+          phase: 'run', t: 0,
+          vx: 0, vz: 0,
+          drownAt: 0, jumpY: f.group.position.y,
+        };
+        (f as CrewFigure & { swimSide?: number }).swimSide = side;
+      }
+    }
+    abandonStarted = true;
+    // фаза run — бег к борту (пока в группе корабля)
+    for (const f of figures) {
+      if (!f.swim || f.swim.phase !== 'run') continue;
+      const s = f.swim;
+      s.t += dt;
+      const side = (f as CrewFigure & { swimSide?: number }).swimSide ?? 1;
+      const w = halfW(f.group.position.z);
+      const targetX = side * Math.max(0.55, w * 0.92);
+      const k = Math.min(1, s.t / 0.9);
+      f.group.position.x += (targetX - f.group.position.x) * Math.min(1, dt * 5);
+      f.group.rotation.y = side * Math.PI / 2;   // лицом к морю
+      // семенит ногами
+      const step = time * 11;
+      if (f.legL && f.legR) {
+        f.legL.rotation.x = Math.sin(step) * 0.75;
+        f.legR.rotation.x = -Math.sin(step) * 0.75;
+      }
+      swingArms(f, step);
+      if (k >= 1) {
+        // ПРЫЖОК: отцепить фигуру в мировой корень (сохраняя позу)
+        s.phase = 'jump';
+        s.t = 0;
+        if (root) {
+          const worldPos = new THREE.Vector3().copy(f.group.position)
+            .applyQuaternion(ship.quaternion).add(ship.position);
+          root.add(f.group);
+          f.group.position.copy(worldPos);
+          f.group.rotation.set(0, 0, 0);
+          // мировое направление наружу борта
+          const out = new THREE.Vector3(side, 0, 0).applyQuaternion(ship.quaternion);
+          s.vx = out.x * (2.6 + Math.random() * 1.6);
+          s.vz = out.z * (2.6 + Math.random() * 1.6);
+          s.jumpY = 2.0 + Math.random() * 1.1;   // вертикальная скорость прыжка
+        } else {
+          // мир недоступен — просто скрыть (страховка)
+          f.group.visible = false;
+          f.swim = undefined;
+        }
+      }
+    }
+  };
+  /** пловцы: прыжок (парабола), плавание на волнах, утопление */
+  const updateSwimmers = (dt: number, time: number) => {
+    const P = FX.particles;
+    for (const f of figures) {
+      const s = f.swim;
+      if (!s || !f.group.visible) continue;
+      const g = f.group;
+      s.t += dt;
+      if (s.phase === 'jump') {
+        // парабола наружу борта
+        s.jumpY -= 9.8 * dt;
+        g.position.x += s.vx * dt;
+        g.position.z += s.vz * dt;
+        g.position.y += s.jumpY * dt;
+        g.rotation.x = -Math.min(0.6, s.t * 1.4);   // «рыбкой» вперёд
+        const wy = waterHeightAt(g.position.x, g.position.z, time);
+        if (g.position.y <= wy + 0.1) {
+          // приводнение!
+          s.phase = 'swim';
+          s.t = 0;
+          s.drownAt = 7 + Math.random() * 13;       // сколько продержится
+          P?.splash(g.position.x, wy, g.position.z, 0.75);
+          g.rotation.x = 1.35;                       // лёжа в воде
+          g.position.y = wy - 0.52;
+        }
+      } else if (s.phase === 'swim') {
+        // на волне: дрейф + барахтанье руками
+        const wy = waterHeightAt(g.position.x, g.position.z, time);
+        g.position.y = wy - 0.52 + Math.sin(time * 2.2 + f.phase) * 0.05;
+        // медленный дрейф по инерции прыжка
+        g.position.x += s.vx * dt;
+        g.position.z += s.vz * dt;
+        s.vx *= Math.exp(-dt * 0.5);
+        s.vz *= Math.exp(-dt * 0.5);
+        g.rotation.x = 1.35 + Math.sin(time * 1.7 + f.phase) * 0.09;
+        g.rotation.z = Math.sin(time * 1.3 + f.phase) * 0.16;
+        // гребки руками
+        if (f.armL && f.armR) {
+          f.armL.rotation.x = -1.2 + Math.sin(time * 5.5 + f.phase) * 0.75;
+          f.armR.rotation.x = -1.2 + Math.sin(time * 5.5 + f.phase + Math.PI) * 0.75;
+        }
+        // бульки/барашки
+        if (P && Math.random() < dt * 1.4) {
+          P.spawn(g.position.x, wy, g.position.z,
+            (Math.random() - 0.5) * 0.7, 0.6 + Math.random() * 0.8, (Math.random() - 0.5) * 0.7,
+            0.55, 0.14, 0, 0.5, 9);
+        }
+        if (s.t > s.drownAt) { s.phase = 'drown'; s.t = 0; }
+      } else if (s.phase === 'drown') {
+        // ТОНЕТ: медленно уходит под воду, кувырок, пузыри
+        g.position.y -= dt * (0.35 + s.t * 0.16);
+        g.rotation.x += dt * 0.55;
+        g.rotation.z += dt * 0.3;
+        if (P && Math.random() < dt * 5) {
+          P.spawn(g.position.x, waterHeightAt(g.position.x, g.position.z, time), g.position.z,
+            (Math.random() - 0.5) * 0.3, 0.9 + Math.random() * 1.1, (Math.random() - 0.5) * 0.3,
+            0.8, 0.1, 0, 0.05, -1.4);
+        }
+        if (s.t > 3.2) {
+          removeSwimmer(f);
+        }
+      }
+    }
+  };
+
   const vis: CrewVisual = {
     group, total: figures.length, shown: figures.length, dead: 0, isCats: allCats,
     setVisible(v: boolean) { group.visible = v; },
@@ -982,7 +1215,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       const B = new THREE.Vector3(b.x, b.y, b.z);
       const cands: { f: CrewFigure; d: number }[] = [];
       for (const f of figures) {
-        if (f.dead || !f.group.visible) continue;
+        if (f.dead || f.swim || !f.group.visible) continue;
         const p = f.group.position;
         const lo = new THREE.Vector3(p.x, p.y + (f.hitLo ?? 0.12), p.z);
         const hi = new THREE.Vector3(p.x, p.y + (f.hitH ?? 1.62), p.z);
@@ -1006,7 +1239,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       const gibs = FX.gibs;
       for (const f of figures) {
         if (washed >= n) break;
-        if (f.dead || !f.group.visible) continue;
+        if (f.dead || f.swim || !f.group.visible) continue;
         const lp = f.group.position;
         wpos.set(lp.x, lp.y + (f.midY ?? 0.75), lp.z).applyQuaternion(shipQuat).add(shipPos);
         f.dead = true;
@@ -1046,14 +1279,71 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         f.group.rotation.x = 0;
         f.group.rotation.z = 0;
         f.group.scale.set(1, f.baseScaleY, 1);
+        // Task 43: сброс боя/эвакуации
+        f.crouchT = 0;
+        if (f.swim) {
+          // пловец ещё в мире — убрать (возврата на палубу нет)
+          removeSwimmer(f);
+        }
       }
+      abandonStarted = false;
       vis.dead = 0;
       vis.shown = figures.length;
     },
+    smallArmsKill(maxCount, shipPos, shipQuat) {
+      // Task 43: пуля противника — случайная живая фигура падает
+      const alive = figures.filter(f => !f.dead && !f.swim && f.group.visible);
+      if (!alive.length) return 0;
+      for (let i = alive.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [alive[i], alive[j]] = [alive[j], alive[i]];
+      }
+      const n = Math.min(maxCount, alive.length);
+      for (let i = 0; i < n; i++) {
+        const f = alive[i];
+        killFigure(f, 'grape', f.group.position,
+          f.group.position.clone().add(new THREE.Vector3(0, 0, 1)),
+          shipPos, shipQuat);
+      }
+      vis.dead = figures.filter(f => f.dead).length;
+      vis.shown = figures.filter(f => !f.dead && f.group.visible).length;
+      return n;
+    },
+    swimmersAlive() {
+      return figures.filter(f => f.swim && f.swim.phase !== 'drown' && f.group.visible).length;
+    },
+    armedInfo() {
+      let musket = 0, pistol = 0;
+      for (const f of figures) {
+        if (f.dead || f.swim || !f.group.visible) continue;
+        if (f.weapon === 'musket') musket++;
+        else if (f.weapon === 'pistol') pistol++;
+      }
+      return { musket, pistol };
+    },
+    crouchedCount() {
+      return figures.filter(f => !f.dead && !f.swim
+        && f.group.visible && (f.crouchT ?? 0) > 0.5).length;
+    },
     update(dt, time, ship) {
+      // ==========================================================
+      // Task 43: ПЛОВЦЫ живут в МИРОВЫХ координатах — обновляются
+      // ВСЕГДА, даже когда корабль уже утонул и скрыт
+      // ==========================================================
+      updateSwimmers(dt, time);
       if (ship.sunk) { group.visible = false; return; }
-      group.visible = !ship.sinking;
-      if (ship.sinking) return;
+
+      // ==========================================================
+      // Task 43: ЭВАКУАЦИЯ — корабль тонет: живые матросы бегут
+      // к борту и ПРЫГАЮТ В ВОДУ (65% сразу, остальные — когда
+      // палуба уходит под воду, sinkT>3.5); плавают, потом ТОНУТ
+      // ==========================================================
+      if (ship.sinking) {
+        startAbandon(dt, time, ship);
+        return;
+      }
+      group.visible = true;
+      abandonStarted = false;
 
       // --- трупы: падение и истлевание ---
       for (const f of figures) {
@@ -1219,6 +1509,81 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
           } else {
             // кот-капитан: воодушевлённо прыгает на месте
             f.group.position.y += Math.abs(Math.sin(time * 9)) * 0.08;
+          }
+        }
+
+        // ========================================================
+        // Task 43: СТРЕЛКИ — прижимаются к борту НА ОДНО КОЛЕНО
+        // (когда по нам стреляют) и отстреливаются из ружей (до
+        // 50 м) / пистолетов (до 20 м) по противнику
+        // ========================================================
+        if (f.weapon && !f.dead && !f.swim) {
+          const underFire = (ship.sinceHit ?? 999) < 8;
+          const threatPos = ship.threatPos ?? null;
+          const tDist = ship.threatDist ?? Infinity;
+          const range = f.weapon === 'musket' ? 50 : 20;
+          const combat = !!threatPos && tDist < range + 10;
+          // плавный вход/выход позы
+          const wantCrouch = underFire ? 1 : 0;
+          const crouchSpeed = wantCrouch > (f.crouchT ?? 0) ? 3.2 : 1.4;
+          f.crouchT = (f.crouchT ?? 0) + (wantCrouch - (f.crouchT ?? 0)) * Math.min(1, dt * crouchSpeed);
+          const ct = f.crouchT ?? 0;
+
+          // показать/скрыть оружие (ленивое создание меша)
+          if ((underFire || combat) && !f.weaponMesh) {
+            f.weaponMesh = makeWeaponMesh(f.weapon);
+            if (f.wristMount) f.wristMount.add(f.weaponMesh);
+            else f.group.add(f.weaponMesh);
+          }
+          if (f.weaponMesh) f.weaponMesh.visible = underFire || combat;
+
+          if (ct > 0.01) {
+            // --- ПОЗА «НА КОЛЕНЕ У БОРТА» ---
+            const side = f.group.position.x >= 0 ? 1 : -1;
+            const w = halfW(f.group.position.z);
+            // прижаться к борту (по своей половине палубы)
+            const cx = side * Math.max(0.55, w * 0.76);
+            f.group.position.x += (cx - f.group.position.x) * Math.min(1, dt * 4) * ct;
+            // лицом в море (спиной к мачте — укрывается за фальшбортом)
+            f.group.rotation.y = side * Math.PI / 2;
+            // опуститься на колено + пригнуться
+            f.group.position.y = deckYAt(f.group.position.z) - 0.26 * ct;
+            f.group.rotation.x = 0.38 * ct;
+            f.group.rotation.z = Math.sin(time * 1.9 + f.phase) * 0.05 * ct;
+            if (f.legL && f.legR) {
+              // передняя нога согнута вперёд, задняя — коленом в палубу
+              f.legL.rotation.x = -0.55 * ct;
+              f.legR.rotation.x = 1.18 * ct;
+            }
+            // рука с оружием — приклад у плеча (стреляет поверх планширя)
+            if (f.gunArm) {
+              f.gunArm.rotation.x = -1.15 * ct;
+              f.gunArm.rotation.z = 0;
+            }
+          }
+
+          // --- СТРЕЛЬБА (и на колене, и стоя) ---
+          f.gunCd = (f.gunCd ?? 1) - dt;
+          if (threatPos && tDist < range && (f.gunCd ?? 1) <= 0) {
+            // мировая позиция груди стрелка
+            const chest = _tmpA.copy(f.group.position);
+            chest.y += (f.midY ?? 0.75) + 0.15;
+            chest.applyQuaternion(ship.quaternion).add(ship.position);
+            // дуло: от груди в сторону цели
+            _tmpB.copy(threatPos).sub(chest);
+            const dLen = _tmpB.length() || 1;
+            _tmpB.divideScalar(dLen);
+            const muzzle = _tmpC.copy(chest).addScaledVector(_tmpB, 0.55);
+            ship.shoot?.(f.weapon, chest, muzzle);
+            // отдача: руку отбросило
+            if (f.gunArm) f.gunArm.rotation.x += 0.22;
+            // доворот к цели (yaw — в локальных координатах корабля)
+            const lt = _tmpD.copy(threatPos).sub(ship.position).applyQuaternion(_shipInvQ.copy(ship.quaternion).invert());
+            f.group.rotation.y = Math.atan2(lt.x, lt.z) * (1 - ct * 0.35);
+            // перезарядка: ружьё — долго, пистолет — быстро
+            f.gunCd = f.weapon === 'musket'
+              ? 4.5 + Math.random() * 3
+              : 2.2 + Math.random() * 1.6;
           }
         }
       }

@@ -1,0 +1,47 @@
+⚠ Chrome 157.0.8103.50 is behind the current stable release 157.0.8103.78, which fixes 83 CVEs (CVE-2026-126840, CVE-2026-126841, CVE-2026-126842, +80 more). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+GAME LOADED: true
+OK   0: игра загрузилась
+
+===== A: стрелки: огонь только при нападении =====
+{"crewEngage":false,"threat":true,"pCrew":19,"pDead":0,"tgtCrouched":8,"armed":{"musket":7,"pistol":1}}
+OK   A1: мишень в режиме «НЕ СТРЕЛАТЬ»: crewEngage=false
+OK   A2: threatTarget мишени null (ружья не наводятся)
+OK   A3: экипаж игрока НЕ несёт потерь от стрелков (первые 6 с) | убито: 0
+OK   A4: под обстрелом матросы мишени ПРЯЧУТСЯ на колено (укрытие без агрессии) | на колене: 8
+OK   A5: у мишени ЕСТЬ вооружённые матросы (проверка не пустая) | {"musket":7,"pistol":1}
+{"crewEngage":true,"threat":true,"pDead":3,"pHull":71.5,"offEngage":false,"offThreatNull":true}
+OK   A6: режим «ОТВЕЧАТЬ ОГНЁМ»: crewEngage=true, цель наведена
+OK   A7: стрелки мишени ОТКРЫВАЮТ ОГОНЬ (потери у игрока за 10 с) | убито: 3, hull: 71.5
+OK   A8: ВЫКЛЮЧИЛИ ответный огонь — ружья замолчали
+{"found":true,"state":"route","engage":false,"threatNull":true,"pDeadDelta":0}
+OK   A9: мирный торговец (route) рядом: ружья МОЛЧАТ | state=route, engage=false, убито: 0
+
+===== B: настройки: все 8 вкладок влезают =====
+{"tabs":[{"n":"Графика","found":true,"w":76,"x":348,"visible":true,"inPanel":true},{"n":"Ресурсы","found":true,"w":74,"x":428,"visible":true,"inPanel":true},{"n":"Погода","found":true,"w":66,"x":505,"visible":true,"inPanel":true},{"n":"Физика","found":true,"w":68,"x":576,"visible":true,"inPanel":true},{"n":"Игра","found":true,"w":50,"x":647,"visible":true,"inPanel":true},{"n":"🏝 Острова","found":true,"w":90,"x":702,"visible":true,"inPanel":true},{"n":"Управление","found":true,"w":97,"x":796,"visible":true,"inPanel":true},{"n":"Звук","found":true,"w":49,"x":348,"visible":true,"inPanel":true}],"bindRows":20}
+OK   B1: все 8 вкладок найдены и видимы | Графика:76px Ресурсы:74px Погода:66px Физика:68px Игра:50px 🏝 Острова:90px Управление:97px Звук:49px
+OK   B2: вкладка «Управление» открывается — список клавиш присутствует | строк клавиш: 20
+
+===== C: выровненная земля под постройками =====
+{"counts":{"fort":6,"church":6,"tavern":6,"well":6,"townhouse":36},"fortMax":0,"otherMax":0.45,"avg":0.018,"points":324}
+OK   C1: плато под ФОРТОМ — все 8 точек (центр/стены/углы) ≤ 1.2 м | макс. отклонение: 0 м
+OK   C2: плато под прочими постройками ≤ 4.5 м | макс.: 0.45 м
+OK   C3: среднее отклонение земли от пола ≤ 0.5 м | среднее: 0.018 м по 324 точкам
+
+===== D: полноценный город вокруг форта =====
+{"church":6,"tavern":6,"well":6,"townhouse":36,"fort":6,"yard":6,"churchKids":12,"tavernKids":14}
+OK   D1: в каждом порту tier-3: церковь ≥ 5 (портов 5-6) | церквей: 6
+OK   D2: таверна ≥ 5 | таверн: 6
+OK   D3: колодец ≥ 5 | колодцев: 6
+OK   D4: дома горожан ≥ 25 (по 5-6 на порт) | домов: 36
+OK   D5: форт ≥ 5 + каменный двор у каждого | фортов: 6, дворов: 6
+OK   D6: церковь БОГАТА деталями (неф+крыша+башня+шпиль+КРЕСТ+окна ≥ 12 мешей) | мешей: 12
+OK   D7: таверна с деталями (стены+пояс+крыша+вывеска+труба+БОЧКИ ≥ 12 мешей) | мешей: 14
+
+===== E: финал =====
+JS errors: []
+OK   E1: 0 ошибок JavaScript
+
+========================================
+ALL OK
+========================================
