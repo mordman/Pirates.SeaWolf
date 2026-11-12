@@ -84,6 +84,10 @@ ev(`(() => {
 })()`);
 await sleep(800);
 ev(`window.__game.start()`);
+// Task 46: легаси-тест стадийных ПРОБОИН — на ОБЫЧНОЙ модели
+// (по умолчанию теперь дощатая: урон идёт ДОСКАМ, holes пуст)
+ev(`window.__seaPatchSettings({ gameplay: { hullModel: 'smooth' } })`);
+await sleep(1500);
 await sleep(600);
 
 // вершинные счётчики корпуса ДО
@@ -107,13 +111,15 @@ const stages = jparse(await evR(`(() => {
   const p = g.player;
   const T = window.__THREE;
   const hit = new T.Vector3(2.6, 0.15, 2.0);
-  p.hitHull(hit.clone(), 10, true, new T.Vector3(1, 0.1, 0.2));
+  // Task 45+: порог пробоины ≥42 (три попадания по 15);
+  // Task 46: тест гоняется на ОБЫЧНОЙ модели (legacy-декали)
+  p.hitHull(hit.clone(), 15, true, new T.Vector3(1, 0.1, 0.2));
   const s1 = p.damageInfo();
-  p.hitHull(hit.clone(), 12, true, new T.Vector3(1, 0.1, 0.2));
+  p.hitHull(hit.clone(), 15, true, new T.Vector3(1, 0.1, 0.2));
   const s2 = p.damageInfo();
   let visBefore = 0;
   g.scene.traverse(o => { if (o.name === 'debris') o.children.forEach(c => { if (c.visible) visBefore++; }); });
-  p.hitHull(hit.clone(), 12, true, new T.Vector3(1, 0.1, 0.2));
+  p.hitHull(hit.clone(), 15, true, new T.Vector3(1, 0.1, 0.2));
   g.stepDebugNR(0.5);
   const s3 = p.damageInfo();
   let visAfter = 0;
@@ -123,7 +129,7 @@ const stages = jparse(await evR(`(() => {
     p.hullHoles[0].mesh.traverse(o => { if (o.isMesh) innerMeshes++; });
   }
   const sc0 = p.hullHoles[0].mesh.scale.x;
-  p.hitHull(hit.clone(), 14, true, new T.Vector3(1, 0.1, 0.2));
+  p.hitHull(hit.clone(), 30, true, new T.Vector3(1, 0.1, 0.2));
   const sc1 = p.hullHoles[0].mesh.scale.x;
   return JSON.stringify({
     s1: { stage: s1.holes[0]?.stage, n: s1.holes.length },
@@ -134,11 +140,11 @@ const stages = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(stages));
-check('A1: первый удар (урон 10) — ВМЯТИНА, стадия 1',
+check('A1: первый удар (урон 15) — ВМЯТИНА, стадия 1',
   stages.s1.stage === 1 && stages.s1.n === 1, `stage=${stages.s1?.stage}`);
-check('A2: второй удар (накоплено 22) — глубокая вмятина, стадия 2',
+check('A2: второй удар (накоплено 30) — глубокая вмятина, стадия 2',
   stages.s2.stage === 2, `stage=${stages.s2?.stage}`);
-check('A3: третий удар (накоплено 34) — ПРОБОИНА, стадия 3',
+check('A3: третий удар (накоплено 45) — ПРОБОИНА, стадия 3',
   stages.s3.stage === 3 && stages.s3.breached === true, `stage=${stages.s3?.stage}`);
 check('A4: в пробоине ВИДНЫ ВНУТРЕННОСТИ (задник+бимсы+шпангоут+груз+доски ≥ 9 мешей)',
   stages.s3.innerMeshes >= 9, `мешей в дыре: ${stages.s3?.innerMeshes}`);
@@ -157,7 +163,8 @@ const split = jparse(await evR(`(() => {
   const p = g.player;
   const T = window.__THREE.Vector3;
   const spots = [[2.5, 0.1, 4.2], [2.5, 0.2, 5.2], [2.5, 0.0, 6.2]];
-  for (const s of spots) p.hitHull(new T(s[0], s[1], s[2]), 30, true, new T(1, 0.1, 0.2));
+  // Task 45+: порог пробоины ≥42 — по 45 на точку (мгновенная пробоина)
+  for (const s of spots) p.hitHull(new T(s[0], s[1], s[2]), 45, true, new T(1, 0.1, 0.2));
   g.stepDebugNR(1);
   const d = p.damageInfo();
   let wide = 0;
@@ -320,7 +327,10 @@ const battle = jparse(await evR(`(() => {
       && o.geometry.attributes.position.count > 500) c1.push(o.geometry.attributes.position.count);
   });
   const c1s = c1.slice().sort((a,b)=>b-a);
-  const topSame = JSON.stringify(geoAfterVolley.slice(0,3)) === JSON.stringify(c1s.slice(0,3))
+  // Task 46: сравнение НЕЧУВСТВИТЕЛЬНО к порядку топ-3 (близкие
+  // по вершинам меши меняются местами между снимками — не баг);
+  // суть проверки: крупные меши НЕ пересоздаются (их счёт есть в «после»)
+  const topSame = geoAfterVolley.slice(0,3).every(v => c1s.includes(v))
     && c1s.length >= 3;
   let debrisN = 0;
   g.scene.traverse(o => { if (o.name === 'debris') o.children.forEach(c => { if (c.visible) debrisN++; }); });
@@ -345,8 +355,9 @@ check('F3: экипаж вооружён: ружья ≈70% / пистолеты
   JSON.stringify(battle?.armed));
 check('F4: под обстрелом стрелки НА КОЛЕНЕ У БОРТА (crouched ≥ 2)',
   battle.crouched >= 2, `на колене: ${battle?.crouched}`);
-check('F5: стрелки ведут огонь по цели (урон корпусу от пуль > 0)',
-  battle.smallArms.dHull > 0, `dHull=${battle?.smallArms?.dHull}, dCrew=${battle?.smallArms?.dCrew}`);
+check('F5: стрелки бьют по цели — гибнут ЛЮДИ, корпус ЦЕЛ (Task 45+: пули не ломают корабль)',
+  battle.smallArms.dHull === 0 && battle.smallArms.dCrew > 0,
+  `dHull=${battle?.smallArms?.dHull}, dCrew=${battle?.smallArms?.dCrew}`);
 check('F6: ГЕОМЕТРИЯ ЦЕЛИ не нарушена (крупные меши корпуса целы)',
   battle.tgtGeo.topSame === true,
   `крупные: ${JSON.stringify(battle?.tgtGeo?.before)} → ${JSON.stringify(battle?.tgtGeo?.after)}`);

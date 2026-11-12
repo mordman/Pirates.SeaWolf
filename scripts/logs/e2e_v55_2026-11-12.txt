@@ -42,7 +42,7 @@ OK   F2: пальма — .glb загружена (демо-конвейер п�
 OK   F3: подмена применена к инстансам (palm applied > 0) | applied 5350
 
 ===== G: МИГРАЦИЯ СОХРАНЕНИЯ v9 (boolean) → v10 (режим) =====
-after reload: true {"v":15,"mode":"off","applied":false,"texScale":7}
+after reload: true {"v":16,"mode":"off","applied":false,"texScale":7}
 OK   G1: v9 с islandTextures=false читается как режим off, схема v15
 JS errors: []
 OK   I1: 0 ошибок JS

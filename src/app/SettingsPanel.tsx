@@ -674,6 +674,26 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                     onChange={e => update(d => { d.gameplay.catsInsteadOfCrew = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                {/* Task 46: разрушения и экипаж — вынесено в настройки */}
+                <div className="mt-2 mb-1 text-[11px] font-semibold text-amber-200/90">Разрушения и экипаж</div>
+                <Row label="🪵 Модель корпуса" hint="дощатая: обшивка из настоящих досок — 4 стадии повреждения (вмятина → прогиб → сколы → пролом со скелетом внутри), разрушение от нескольких попаданий; обычная: гладкая обшивка (прежде — декали-пробоины); применяется сразу — все корабли пересобираются, повреждения корпусов визуально начинаются заново (состояние корпуса/воды сохраняется)">
+                  <select value={s.gameplay.hullModel}
+                    onChange={e => update(d => { d.gameplay.hullModel = e.target.value as 'planks' | 'smooth'; })}
+                    className={inputCls}>
+                    <option value="planks">Дощатая (разрушаемые доски)</option>
+                    <option value="smooth">Обычная (гладкая обшивка)</option>
+                  </select>
+                </Row>
+                <Row label="🧑‍🤝‍🧑 Подмена погибших" hint="погибшие на палубе поднимаются заменой из трюма (люк у мачты), пока в экипаже есть живые ниже палубы; выключено — на палубе остаются только выжившие">
+                  <input type="checkbox" checked={s.gameplay.crewReplacement}
+                    onChange={e => update(d => { d.gameplay.crewReplacement = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <Row label="🔫 Стрелки экипажа" hint="мушкеты (50 м) и пистолеты (20 м) с постов у борта при атаке; выключено — только артиллерия, но поза укрытия у борта остаётся">
+                  <input type="checkbox" checked={s.gameplay.crewMarksmen}
+                    onChange={e => update(d => { d.gameplay.crewMarksmen = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
                 {/* Task 41: плотность леса переехала во вкладку «Острова» */}
                 <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
                   🏝 Деревья, деревни, жители и рыбацкие лодки —

@@ -208,6 +208,13 @@ export interface GameplaySettings {
   boatCount: number;        // 0..2 — СКОЛЬКО ШЛЮПОК на борту (штирборт/порт)
   simpleControls: boolean;  // УПРОЩЁННОЕ УПРАВЛЕНИЕ: руль на любой скорости, паруса тянут при любом курсе
   catsInsteadOfCrew: boolean; // ЗАМЕНИТЬ ВСЕХ МАТРОСОВ НА КОТОВ: экипаж на палубе игрока — коты
+  /** Task 46: модель корпуса — дощатая (разрушаемые доски, 4 стадии,
+   *  скелет в проломах) или обычная (гладкая обшивка, декали-пробоины) */
+  hullModel: 'planks' | 'smooth';
+  /** Task 46: поднимать замену погибшим из трюма (пока есть живые) */
+  crewReplacement: boolean;
+  /** Task 46: стрелковый огонь экипажа (ружья/пистолеты у борта) */
+  crewMarksmen: boolean;
 }
 
 // ============================================================
@@ -319,6 +326,11 @@ export const DEFAULT_SETTINGS: GameSettings = {
     boatCount: 2,        // шлюпки на обоих бортах (настройка)
     simpleControls: false,
     catsInsteadOfCrew: false,   // экипаж — матросы; коты покупаются в порту
+    // Task 46: модель/правила — дощатая обшивка по умолчанию
+    // («убери странные круги — корабль из досок»)
+    hullModel: 'planks',
+    crewReplacement: true,     // погибшие подменяются живыми из трюма
+    crewMarksmen: true,        // ружья/пистолеты у борта
   },
   islands: {
     treesMul: 1,      // обычный лес
@@ -402,7 +414,13 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     player.torso (8 видов одежды торса) и player.pantsKind
 //     (длинные/шорты/рваные шорты); старые записи читаются с
 //     дефолтами torso='shirt', pantsKind='long'.
-const SCHEMA_VER = 15;
+// v16 (Task 46): модель корпуса + правила экипажа — gameplay:
+//     hullModel 'planks'|'smooth' (дощатая обшивка из досок с 4
+//     стадиями разрушения / обычная гладкая с декалями),
+//     crewReplacement (подмена погибших из трюма),
+//     crewMarksmen (стрелковый огонь). Старые сохранения — дефолты
+//     'planks'/true/true.
+const SCHEMA_VER = 16;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -474,6 +492,12 @@ export function loadSettings(): GameSettings {
       if (typeof data.gameplay.boatCount === 'number') s.gameplay.boatCount = Math.min(2, Math.max(0, Math.round(data.gameplay.boatCount)));
       if (typeof data.gameplay.simpleControls === 'boolean') s.gameplay.simpleControls = data.gameplay.simpleControls;
       if (typeof data.gameplay.catsInsteadOfCrew === 'boolean') s.gameplay.catsInsteadOfCrew = data.gameplay.catsInsteadOfCrew;
+      // Task 46 (v16): модель корпуса + правила экипажа
+      if (data.gameplay.hullModel === 'planks' || data.gameplay.hullModel === 'smooth') {
+        s.gameplay.hullModel = data.gameplay.hullModel;
+      }
+      if (typeof data.gameplay.crewReplacement === 'boolean') s.gameplay.crewReplacement = data.gameplay.crewReplacement;
+      if (typeof data.gameplay.crewMarksmen === 'boolean') s.gameplay.crewMarksmen = data.gameplay.crewMarksmen;
     }
     // Task 41: ОСТРОВА — деревья/деревни/жители/лодки (глобально +
     // переопределения по островам). v13-миграция: gameplay.vegDensity → treesMul

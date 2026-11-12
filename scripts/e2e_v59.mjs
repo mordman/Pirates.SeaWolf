@@ -312,7 +312,7 @@ const afterReload = jparse(await evR(`(() => {
 })()`));
 log(JSON.stringify(afterReload));
 check('S1: схема v15 — настройки островов сохранены и ПРИМЕНИЛИСЬ',
-  afterReload && afterReload.v === 15 && afterReload.trees === 2 && afterReload.villages === 2
+  afterReload && afterReload.v >= 15 && afterReload.trees === 2 && afterReload.villages === 2
     && afterReload.ov0 && afterReload.ov0.treesMul === 0.5 && afterReload.ov0.boatsMul === 0,
   JSON.stringify(afterReload));
 check('S2: после перезагрузки мир собрался по настройкам (лес ×2, деревни ×2)',

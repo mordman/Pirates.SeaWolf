@@ -84,6 +84,10 @@ ev(`(() => {
 })()`);
 await sleep(800);
 ev(`window.__game.start()`);
+// Task 46: легаси-тест стадийных ПРОБОИН — на ОБЫЧНОЙ модели
+// (по умолчанию теперь дощатая: урон идёт ДОСКАМ, holes пуст)
+ev(`window.__seaPatchSettings({ gameplay: { hullModel: 'smooth' } })`);
+await sleep(1500);
 await sleep(600);
 
 // вершинные счётчики корпуса ДО

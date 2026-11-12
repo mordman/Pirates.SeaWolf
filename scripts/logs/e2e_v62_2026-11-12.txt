@@ -1,18 +1,16 @@
-⚠ Chrome 157.0.8103.50 is behind the current stable release 157.0.8103.78, which fixes 83 CVEs (CVE-2026-126840, CVE-2026-126841, CVE-2026-126842, +80 more). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
-[agent-browser] launched browser
 GAME LOADED: true
 OK   0: игра загрузилась
 
 ===== A: стрелки: огонь только при нападении =====
-{"crewEngage":false,"threat":true,"pCrew":19,"pDead":0,"tgtCrouched":8,"armed":{"musket":7,"pistol":1}}
+{"crewEngage":false,"threat":true,"pCrew":19,"pDead":0,"tgtCrouched":8,"armed":{"musket":6,"pistol":2}}
 OK   A1: мишень в режиме «НЕ СТРЕЛАТЬ»: crewEngage=false
 OK   A2: threatTarget мишени null (ружья не наводятся)
 OK   A3: экипаж игрока НЕ несёт потерь от стрелков (первые 6 с) | убито: 0
 OK   A4: под обстрелом матросы мишени ПРЯЧУТСЯ на колено (укрытие без агрессии) | на колене: 8
-OK   A5: у мишени ЕСТЬ вооружённые матросы (проверка не пустая) | {"musket":7,"pistol":1}
-{"crewEngage":true,"threat":true,"pDead":3,"pHull":71.5,"offEngage":false,"offThreatNull":true}
+OK   A5: у мишени ЕСТЬ вооружённые матросы (проверка не пустая) | {"musket":6,"pistol":2}
+{"crewEngage":true,"threat":true,"pDead":1,"pHull":72.2,"offEngage":false,"offThreatNull":true}
 OK   A6: режим «ОТВЕЧАТЬ ОГНЁМ»: crewEngage=true, цель наведена
-OK   A7: стрелки мишени ОТКРЫВАЮТ ОГОНЬ (потери у игрока за 10 с) | убито: 3, hull: 71.5
+OK   A7: стрелки мишени ОТКРЫВАЮТ ОГОНЬ (потери у игрока за 10 с) | убито: 1, hull: 72.2
 OK   A8: ВЫКЛЮЧИЛИ ответный огонь — ружья замолчали
 {"found":true,"state":"route","engage":false,"threatNull":true,"pDeadDelta":0}
 OK   A9: мирный торговец (route) рядом: ружья МОЛЧАТ | state=route, engage=false, убито: 0

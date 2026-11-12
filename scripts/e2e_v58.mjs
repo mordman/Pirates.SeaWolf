@@ -466,7 +466,7 @@ const afterReload = jparse(await evR(`(() => {
 })()`));
 log(JSON.stringify(afterReload));
 check('S1: схема v15, деревья и клавиша V сохранены',
-  afterReload && afterReload.v === 15 && afterReload.veg === 1 && afterReload.deckWalk === 'KeyV',
+  afterReload && afterReload.v >= 15 && afterReload.veg === 1 && afterReload.deckWalk === 'KeyV',
   JSON.stringify(afterReload));
 check('S2: слот песка в настройках жив (пустая строка = процедурный)',
   afterReload && afterReload.sand === '', `sand="${afterReload?.sand}"`);

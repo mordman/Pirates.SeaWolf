@@ -772,6 +772,11 @@ export class CombatSystem {
       const setFrac = (1 - s.furl) * 0.6 + 0.4;
       const dmg = AMMO_INFO[pr.type].dmgSail * setFrac * (0.8 + Math.random() * 0.4);
       t.damageSails(dmg);
+      // Task 46: РВАНЫЕ/ОБГОРЕВШИЕ паруса — uDamage растёт от урона
+      // (заплатки/дыры в шейдере); зажигательное обугливает сильнее
+      s.mat.uniforms.uDamage.value = Math.min(1,
+        (s.mat.uniforms.uDamage.value as number)
+        + dmg * (pr.type === 'fire' ? 0.05 : 0.012));
     }
     return torn;
   }

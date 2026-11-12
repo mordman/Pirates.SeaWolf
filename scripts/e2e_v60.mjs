@@ -320,7 +320,7 @@ check('D4: выбранный ГАРДЕРОБ применился к капи�
   capInfo && capInfo.torso === 'bare' && capInfo.pantsKind === 'shorts' && capInfo.headwear === 'top',
   `торс=${capInfo?.torso}, штаны=${capInfo?.pantsKind}, убор=${capInfo?.headwear}`);
 check('D5: СХЕМА v15: гардероб сохранён в настройках',
-  capInfo && capInfo.v === 15 && capInfo.pTorso === 'bare' && capInfo.pPants === 'shorts' && capInfo.pHat === 'top',
+  capInfo && capInfo.v >= 15 && capInfo.pTorso === 'bare' && capInfo.pPants === 'shorts' && capInfo.pHat === 'top',
   `v=${capInfo?.v}, player.torso=${capInfo?.pTorso}, pantsKind=${capInfo?.pPants}, headwear=${capInfo?.pHat}`);
 
 // перезагрузка: настройки живут, фигурка капитана в выбранном виде
@@ -350,7 +350,7 @@ const afterReload = jparse(await evR(`(() => {
 })()`));
 log(JSON.stringify(afterReload));
 check('D6: после перезагрузки схема v15 и ВНЕШНОСТЬ на месте',
-  afterReload && afterReload.v === 15 && afterReload.torso === 'bare'
+  afterReload && afterReload.v >= 15 && afterReload.torso === 'bare'
     && afterReload.pantsKind === 'shorts' && afterReload.headwear === 'top',
   `v=${afterReload?.v}, торс=${afterReload?.torso}, штаны=${afterReload?.pantsKind}, убор=${afterReload?.headwear}`);
 

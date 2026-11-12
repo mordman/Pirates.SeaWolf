@@ -25,7 +25,7 @@ OK   C3: быстрый переход к дальнему острову раб
 ===== D: своя текстура по ссылке (режим url) =====
 пустая ссылка: {"mode":"url","state":"none","map":256}
 OK   D1: режим url без ссылки — откат на зерно (не чёрный рельеф) | {"mode":"url","state":"none","map":256}
-data URL длина: 7634
+data URL длина: 7594
 data:URL: {"mode":"url","state":"ok","isData":true,"colorSpace":"srgb","repeat":1}
 OK   D2: своя текстура ЗАГРУЖЕНА (64×64 из data:URL, состояние ok) | {"mode":"url","state":"ok","isData":true,"colorSpace":"srgb","repeat":1}
 OK   D3: масштаб повторения применяется к своей текстуре (7/7 = 1.0) | repeat=1
@@ -37,16 +37,16 @@ OK   D5: битая ссылка → состояние error, рельеф со
 ===== E: вкладка «Ресурсы» — режим url и поле ссылки =====
 {"urlBtn":true,"urlModeHint":true,"fourModes":true}
 OK   E1: вкладка «Ресурсы» открывается, 4 режима включая «Своя текстура (ссылка)» | {"urlBtn":true,"urlModeHint":true,"fourModes":true}
-fill: ok | press: ok | состояние: {"texUrlLen":7634,"mode":"url","state":"ok"}
-OK   E2: поле «Ссылка на текстуру» появляется и ввод применяется (Enter/blur) | {"texUrlLen":7634,"mode":"url","state":"ok"}
-OK   E3: применённая через UI текстура загрузилась (state ok) | {"texUrlLen":7634,"mode":"url","state":"ok"}
+fill: ok | press: ok | состояние: {"texUrlLen":7594,"mode":"url","state":"ok"}
+OK   E2: поле «Ссылка на текстуру» появляется и ввод применяется (Enter/blur) | {"texUrlLen":7594,"mode":"url","state":"ok"}
+OK   E3: применённая через UI текстура загрузилась (state ok) | {"texUrlLen":7594,"mode":"url","state":"ok"}
 
 ===== F: сохранение v11 и выживание URL после перезагрузки =====
-{"v":15,"mode":"url","urlLen":7634}
-OK   F1: схема сохранения v12, режим url и ссылка в localStorage | {"v":15,"mode":"url","urlLen":7634}
+{"v":16,"mode":"url","urlLen":7594}
+OK   F1: схема сохранения v12, режим url и ссылка в localStorage | {"v":16,"mode":"url","urlLen":7594}
 RELOADED: true
-{"mode":"url","urlLen":7634}
-OK   F2: после перезагрузки режим url и ссылка на месте (валидация пропускает data:) | {"mode":"url","urlLen":7634}
+{"mode":"url","urlLen":7594}
+OK   F2: после перезагрузки режим url и ссылка на месте (валидация пропускает data:) | {"mode":"url","urlLen":7594}
 JS errors (до+после reload): []
 OK   G1: 0 ошибок JS | до=0, после=0
 

@@ -9,7 +9,7 @@ OK   A: крышки откинуты (2.6 рад) и орудия выехал�
 OK   A: при открытых портах залп — ВСЕ орудия борта | fired=14 из 14
 OK   A: закрытие — орудия заехали обратно | {"portsT":0,"gunsIn":true}
 === B: гребля — синхронно, вперёд/назад ===
-B: {"oarsN":24,"cmd":{"rowing":1,"oarsOut":true},"syncPort":true,"syncStar":true,"moved":true,"deployMid":1,"phase":136.45,"deploy":0.01,"knotsFwd":2.96,"cmdBack":{"rowing":-1},"vBack":-1.11,"knotsBack":2.17,"stowed":{"yaw":-1.51,"roll":-0.1},"rowers":33}
+B: {"oarsN":24,"cmd":{"rowing":1,"oarsOut":true},"syncPort":true,"syncStar":true,"moved":true,"deployMid":1,"phase":136.45,"deploy":0.01,"knotsFwd":2.96,"cmdBack":{"rowing":-1},"vBack":-1.11,"knotsBack":2.17,"stowed":{"yaw":-1.51,"roll":-0.1},"rowers":45}
 OK   B: вёсла есть (12×2) и вываливаются по Alt+W | n=24 rowing=1
 OK   B: гребля СИНХРОННАЯ (все вёсла борта в одной фазе) | port=true star=true
 OK   B: гребок анимирован (вёсла движутся, вывалены) | moved=true deploy=1
@@ -17,13 +17,13 @@ OK   B: гребля вперёд даёт ход (≥1 уз) | 2.96 уз
 OK   B: Alt+S — гребля назад (ход ≤ −0.3 м/с вдоль корпуса) | rowing=-1 v=-1.11 м/с
 OK   B: убранное весло лежит вдоль борта (yaw≈±1.5, не вниз) | {"yaw":-1.51,"roll":-0.1}
 === C: квартердек — геометрия и предметы ===
-C: {"hasQuarter":true,"quarterH":1.9,"frontZ":-8.93,"sternZ":-18.54,"wheelZ":-11.97,"nearestMast":1.33,"floorRise":1.9,"binnacle":true,"needleOk":true,"gunsFore":true,"wheelOnQuarter":0,"quarterChildren":44}
+C: {"hasQuarter":true,"quarterH":1.9,"frontZ":-8.93,"sternZ":-18.54,"wheelZ":-11.97,"nearestMast":1.33,"floorRise":1.9,"binnacle":true,"needleOk":true,"gunsFore":true,"wheelOnQuarter":0,"quarterChildren":9}
 OK   C: квартердек есть, подъём 1.9 м (не прижат к палубе) | h=1.9 подъём=1.9
 OK   C: штурвал НЕ в мачте (≥0.8 м) и стоит на квартердеке | до мачты=1.33 м, y-ошибка=0
 OK   C: нактоуз с магнитной стрелкой есть
 OK   C: стрелка компаса держит север при повороте корпуса
 OK   C: палубные орудия перед квартердеком | frontZ=-8.93
-C-предметы: {"lamp":2,"copper":true,"skylightGlass":2,"quarterGeoms":44}
+C-предметы: {"lamp":2,"copper":true,"skylightGlass":2,"quarterGeoms":9}
 OK   C: лампа нактоуза горит (emissive) | ламп=2
 OK   C: медная оправа (люки/нактоуз) есть
 OK   C: стекло (нактоуз/люки) просвечивает | стёкол=2
@@ -49,11 +49,11 @@ OK   F: фигура — скульптура (больше 5 примитиво
 OK   F: фигура переносится на новый корабль | sloop=9
 OK   F: штатный свиток возвращается (не конус) | примитивов=5
 === G: украшения — золото на шероховатости ТЁМНОЕ (глянец) ===
-G: {"r1":null,"r2":null,"mapOk":true,"rough":{"w":2048,"mn":40,"mx":209,"avg":168,"darkPct":5.3},"metal":{"w":2048,"mx":228},"goldOn":"deco.gold","sameMap":false}
+G: {"r1":null,"r2":null,"mapOk":true,"rough":{"w":2048,"mn":40,"mx":209,"avg":165,"darkPct":5.3},"metal":{"w":2048,"mx":228},"goldOn":"deco.gold","sameMap":false}
 OK   G: «Череп и кости» куплено и применено | r1=null gold=deco.gold
 OK   G: у корпуса карта цвета (текстура бортов)
-OK   G: roughnessMap — холст 2048, дерево матовое (avg 140..205) | {"w":2048,"mn":40,"mx":209,"avg":168,"darkPct":5.3}
-OK   G: ЗОЛОТО на шероховатости ТЕМНЕЕ дерева (≤120) — блестит | {"w":2048,"mn":40,"mx":209,"avg":168,"darkPct":5.3}
+OK   G: roughnessMap — холст 2048, дерево матовое (avg 140..205) | {"w":2048,"mn":40,"mx":209,"avg":165,"darkPct":5.3}
+OK   G: ЗОЛОТО на шероховатости ТЕМНЕЕ дерева (≤120) — блестит | {"w":2048,"mn":40,"mx":209,"avg":165,"darkPct":5.3}
 OK   G: ЗОЛОТО на металличности СВЕТЛОЕ (≥200) — металл | {"w":2048,"mx":228}
 OK   G: map и roughnessMap — РАЗНЫЕ холсты
 === H: ИИ открывает порты в бою ===
@@ -62,7 +62,7 @@ H: {"state":"combat","after":true,"animByRaf":0.7,"anim":1,"lids":true}
 OK   H: агрессия → ИИ в бою, порты ОТКРЫТЫ, крышки подняты | {"state":"combat","after":true,"animByRaf":0.7,"anim":1,"lids":true}
 === I: FPS (ДО скриншотов — captureScreenshot душит RAF headless) ===
 OK   I: FPS живой в стандартной сцене (> 4, SwiftShader) | fpsMax=7
-OK   I: рендер-цикл рисует сцену (вызовы > 50, треугольники > 100k) | calls=263 tris=490556
+OK   I: рендер-цикл рисует сцену (вызовы > 50, треугольники > 100k) | calls=290 tris=420624
 === I: скриншоты ===
 I4: "knots=2.3"
 OK   I: страница без ошибок

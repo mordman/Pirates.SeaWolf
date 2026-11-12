@@ -85,7 +85,7 @@ const mig = jparse(ev(`(() => {
 })()`));
 log('loaded after reload:', reloaded, JSON.stringify(mig));
 check('G6: сохранение v8 читается, islandTextures=\'grain\' по умолчанию, схема v15',
-  reloaded && mig.v === 15 && mig.tex === 'grain' && mig.applied === true);
+  reloaded && mig.v >= 15 && mig.tex === 'grain' && mig.applied === true);
 
 // скриншот: остров с моря (фикс прозрачности + текстуры)
 ev(`(() => {

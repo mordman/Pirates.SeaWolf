@@ -97,6 +97,7 @@ export function spawnDebrisAt(x: number, y: number, z: number,
   p.buoy = 0.6 + Math.random() * 0.9;
   p.mesh.visible = true;
   p.mesh.position.set(x, y, z);
+  p.mesh.scale.set(1, 1, 1);   // Task 46: сброс масштаба после spawnSpar
   p.mesh.rotation.set(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28);
   p.vel.copy(vel ?? new THREE.Vector3((Math.random() - 0.5) * 2.4, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 2.4));
   p.spin.set((Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.4);
@@ -145,6 +146,28 @@ export function spawnHullPlate(x: number, y: number, z: number, dir: THREE.Vecto
   spawnDebrisAt(x, y, z, 'hullplate', v, 45 + Math.random() * 25);
 }
 
+/** Task 46: СЕГМЕНТ МАЧТЫ (стеньга/брам-стеньга) отстыкован при
+ *  переломе — падает с физикой: масштаб под фактический диаметр/
+ *  длину сегмента, ориентация — мировая ориентация сегмента */
+export function spawnSpar(x: number, y: number, z: number,
+  quat: THREE.Quaternion, vel: THREE.Vector3,
+  radTop: number, radBot: number, len: number) {
+  if (!root) return;
+  let p = pieces.find(q => !q.active && q.mesh.geometry === geoSpar);
+  if (!p) p = pieces.find(q => !q.active);
+  if (!p) return;
+  p.active = true;
+  p.ttl = 25 + Math.random() * 20;
+  p.buoy = 0.8 + Math.random() * 0.4;   // дерево плавает: сегмент качается на волнах
+  p.mesh.visible = true;
+  p.mesh.position.set(x, y, z);
+  p.mesh.quaternion.copy(quat);
+  const rAvg = (radTop + radBot) * 0.5;
+  p.mesh.scale.set(rAvg / 0.095, len / 3.4, rAvg / 0.095);
+  p.vel.copy(vel);
+  p.spin.set((Math.random() - 0.5) * 1.6, (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 1.6);
+}
+
 /** Обломки с гибнущего корабля: россыпь с палубы и бортов */
 export function spawnShipDebris(P: { position: THREE.Vector3; quaternion: THREE.Quaternion; length: number; beam: number; freeboard: number }) {
   if (!root) return;
@@ -177,7 +200,9 @@ export function updateDebris(dt: number, time: number, wind?: { from: number; sp
     // плавучесть: кусок стремится к поверхности волны (плюс собственный запас)
     const target = wy + 0.05 + p.buoy * 0.14 + Math.sin(time * 1.3 + p.bobPh) * 0.10;
     p.vel.y += (target - m.position.y) * 6.5 * dt;
-    p.vel.y *= Math.exp(-dt * 3.2);
+    // под ВОДОЙ торможение сильнее (вход с высоты мачты не уносит
+    // кусок на дно мгновенно — дерево всплывает)
+    p.vel.y *= Math.exp(-dt * (m.position.y < wy ? 20 : 3.2));
     // горизонтальный дрейф: инерция + слабый ветер
     if (wind) {
       const wx = -Math.cos(wind.from) * wind.speed * 0.045;
@@ -206,6 +231,23 @@ export function debrisAlive(): number {
   let n = 0;
   for (const p of pieces) if (p.active) n++;
   return n;
+}
+
+/** Task 46: телеметрия по видам (e2e: падение сегментов мачт) */
+export function debrisInfo(): { alive: number; byKind: Record<string, number> } {
+  const byKind: Record<string, number> = {
+    plank: 0, barrel: 0, spar: 0, crate: 0, shard: 0, hullplate: 0,
+  };
+  for (const p of pieces) {
+    if (!p.active) continue;
+    if (p.mesh.geometry === geoSpar) byKind.spar++;
+    else if (p.mesh.geometry === geoShard) byKind.shard++;
+    else if (p.mesh.geometry === geoPlate) byKind.hullplate++;
+    else if (p.mesh.geometry === geoPlank) byKind.plank++;
+    else if (p.mesh.geometry === geoBarrel) byKind.barrel++;
+    else byKind.crate++;
+  }
+  return { alive: debrisAlive(), byKind };
 }
 
 /** Убрать все обломки (сброс мишени полигона / выход) */

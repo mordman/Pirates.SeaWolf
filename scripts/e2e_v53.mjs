@@ -156,7 +156,7 @@ const afterReload = jparse(ev(`(() => {
 })()`));
 log(JSON.stringify(afterReload));
 check('A5: флаг сохранён, после перезагрузки экипаж — коты (схема v15)',
-  afterReload.v === 15 && afterReload.flag === true && afterReload.isCats === true);
+  afterReload.v >= 15 && afterReload.flag === true && afterReload.isCats === true);
 // вернуть матросов (чистый стенд для B/C/D)
 ev(`(() => {
   const g = window.__game;

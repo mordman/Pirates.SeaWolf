@@ -3,6 +3,7 @@ import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pb
 import { makeHullTextures } from './hullDeco';
 import { buildFigurehead } from './figurehead';
 import { textureUrls } from '../assets/textures';
+import { PlankSystem, buildSkeleton, plankCutY } from './plankHull';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -389,6 +390,8 @@ export interface ShipVisual {
   dims: { length: number; beam: number; draft: number };
   outline: THREE.Vector2[];       // контур ватерлинии (для пены)
   masts: THREE.Object3D[];        // для ломания мачт
+  /** Task 46: дощатая модель — система досок (иначе undefined) */
+  planks?: PlankSystem;
   lantern?: THREE.PointLight;
   wheel: THREE.Object3D;
   detail?: THREE.Group;           // мелкие детали — видны только вблизи (LOD)
@@ -877,7 +880,11 @@ export function deckPlan(P: ShipPreset): DeckPlan {
   return plan;
 }
 
-function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
+/** Task 46: cutY — разрез гладкого корпуса: выше этой линии борта
+ *  гладкой оболочки нет (доски обшивки закрывают борт), ряды выше
+ *  cutY стягиваются на линию среза (вырожденные квады — индексация
+ *  не меняется, транец/днище остаются как были) */
+function buildHull(P: ShipPreset, cutY?: number): { geometry: THREE.BufferGeometry; outline: THREE.Vector2[] } {
   const S = 26, R = 8;
   const L = P.length;
   const pos: number[] = [];
@@ -932,8 +939,11 @@ function buildHull(P: ShipPreset): { geometry: THREE.BufferGeometry; outline: TH
   for (const st of stations) {
     for (let r = 0; r <= R; r++) {
       const u = r / R;
-      const y = THREE.MathUtils.lerp(-st.draft, st.bulwark, u);
-      const flare = Math.pow(u, 0.6);
+      let y = THREE.MathUtils.lerp(-st.draft, st.bulwark, u);
+      if (cutY !== undefined && y > cutY) y = cutY;
+      // полуширина — на ФАКТИЧЕСКОЙ высоте строки (после среза)
+      const u2 = (y + st.draft) / (st.draft + st.bulwark);
+      const flare = Math.pow(u2, 0.6);
       const halfW = st.w * (0.16 + 0.84 * flare);
       pushPoint(halfW, y, st.z);
       pushPoint(-halfW, y, st.z);
@@ -1255,7 +1265,7 @@ function buildDeckProps(P: ShipPreset): THREE.BufferGeometry {
 }
 
 /** Полуширина корпуса на высоте y в шпации t (та же формула развала бортов, что в buildHull) */
-function hullHalfWidthAt(P: ShipPreset, t: number, y: number): number {
+export function hullHalfWidthAt(P: ShipPreset, t: number, y: number): number {
   const p = hullProfile(t, P);
   const u = Math.min(1, Math.max(0, (y + p.draft) / (p.draft + p.bulwark)));
   const flare = Math.pow(u, 0.6);
@@ -2459,15 +2469,28 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
 }
 
 // ---------- полная сборка ----------
-export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVisual {
+export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?: boolean }): ShipVisual {
   const group = new THREE.Group();
   const L = P.length;
+  // Task 46: ДОЩАТАЯ МОДЕЛЬ — обшивка из настоящих досок (4 стадии
+  // повреждения), полный внутренний каркас, мачты из 3 сегментов,
+  // иерархия сцены Ship_Root/Skeleton/Hull_Planks/Masts_And_Spars/
+  // Sails_And_Rigging/Props с программными именами
+  const planking = !!opts?.planking;
+  group.name = 'Ship_Root';
+  /** дощатая обшивка (заполняется ниже при planking) */
+  let visualPlanks: PlankSystem | undefined;
+  /** ссылки для иерархии Task 46 (перенос в именованные группы) */
+  let castlesMesh: THREE.Mesh | undefined;
+  let ornMesh: THREE.Mesh | undefined;
+  let oarsGroup: THREE.Group | undefined;
+  let quarterGroup: THREE.Group | undefined;
   // СКОЛЬКО ШЛЮПОК на борту — настройка (Task 33): 2 — оба борта
   // (штирборт + порт), 1 — только штирборт, 0 — без шлюпок
   const boatCount = Math.max(0, Math.min(2, Math.round(opts?.boatCount ?? 2)));
 
   // корпус
-  const { geometry: hullGeo, outline } = buildHull(P);
+  const { geometry: hullGeo, outline } = buildHull(P, planking ? plankCutY(P) : undefined);
   // DoubleSide: даже если камера (или волна) заглянет под корпус/за корму —
   // стенки видны, «прозрачной кормы» нет (изнутри односторонние грани куллятся)
   // PBR: пояс обшивки + волокна — нормали, крашеное дерево — шероховатость.
@@ -2491,6 +2514,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   });
   const hull = new THREE.Mesh(hullGeo, hullMat);
   hull.castShadow = true;
+  hull.name = planking ? 'Keel_Bottom' : 'Hull';
   group.add(hull);
   // Task 39: свои доски бортов по ссылке (assets.texUrls.hull) —
   // реестр подменяет map (исходная процедурная — в userData.origMap)
@@ -2505,7 +2529,14 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     side: THREE.DoubleSide,
   });
   const deck = new THREE.Mesh(buildDeck(P), deckMat);
-  group.add(deck);
+  if (!planking) group.add(deck);   // Task 46: в дощатом режиме настил — ДОСКИ
+  else {
+    // дощатая обшивка + каркас + палубные доски
+    const ps = new PlankSystem(P);
+    ps.finishBuild();
+    group.add(ps.group);
+    visualPlanks = ps;
+  }
   // Task 39: своя палуба по ссылке (assets.texUrls.deck)
   textureUrls.registerStd('deck', deckMat);
 
@@ -2550,16 +2581,71 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     mastDefs.push({ z: -L * 0.28, h: H * 0.62 });
   }
   const masts: THREE.Object3D[] = [];
+  /** Task 46: прикрепить объект рангоута к МАЧТЕ — в дощатом
+   *  режиме к нужному СЕГМЕНТУ мачты (паруса/реи/флаг падают с
+   *  сегментом); y — мачтовая высота точки крепления */
+  const attachRig = (mastIdx: number, obj: THREE.Object3D, y: number) => {
+    const mast = masts[mastIdx];
+    if (!planking || !mast) { mast.add(obj); return; }
+    const segs = mast.userData.segments as THREE.Object3D[] | undefined;
+    if (!segs) { mast.add(obj); return; }
+    const j1 = mast.userData.j1 as number;
+    const j2 = mast.userData.j2 as number;
+    const seg = y < j1 ? segs[0] : y < j2 ? segs[1] : segs[2];
+    const base = seg === segs[0] ? 0 : seg === segs[1] ? j1 : j2;
+    obj.position.y -= base;
+    seg.add(obj);
+  };
   for (const md of mastDefs) {
     const mast = new THREE.Group();
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.24, md.h, 7), woodMat);
-    pole.position.y = md.h / 2 - P.draft * 0.3;
-    pole.castShadow = true;
-    mast.add(pole);
-    // марс (платформа)
-    const top = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.6, 0.28, 8), darkMat);
-    top.position.y = md.h * 0.72 - P.draft * 0.3;
-    mast.add(top);
+    if (planking) {
+      // === 3 СЕГМЕНТА с пивотами на марсах (Task 46): при падении
+      // HP мачты верхние сегменты отстыковываются и падают отдельно
+      // (Ship.breakMast → debris 'spar'), нижний — валится как раньше
+      const base = -P.draft * 0.3;
+      const j1 = md.h * 0.45, j2 = md.h * 0.72;
+      const seg0 = new THREE.Group();
+      const pole0 = new THREE.Mesh(new THREE.CylinderGeometry(0.185, 0.26, j1, 7), woodMat);
+      pole0.position.y = base + j1 / 2;
+      pole0.castShadow = true;
+      seg0.add(pole0);
+      mast.add(seg0);
+      const seg1 = new THREE.Group();
+      seg1.position.y = base + j1;
+      const pole1 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.185, j2 - j1, 7), woodMat);
+      pole1.position.y = (j2 - j1) / 2;
+      pole1.castShadow = true;
+      seg1.add(pole1);
+      const mars = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.58, 0.26, 8), darkMat);
+      mars.position.y = 0.13;
+      seg1.add(mars);
+      mast.add(seg1);
+      const seg2 = new THREE.Group();
+      seg2.position.y = j2 - j1;
+      const pole2 = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.15, md.h - j2, 7), woodMat);
+      pole2.position.y = (md.h - j2) / 2;
+      pole2.castShadow = true;
+      seg2.add(pole2);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.32, 0.18, 8), darkMat);
+      cap.position.y = 0.09;
+      seg2.add(cap);
+      mast.add(seg2);
+      mast.userData.segments = [seg0, seg1, seg2];
+      mast.userData.j1 = base + j1;
+      mast.userData.j2 = base + j2;
+      // параметры сегментов для падающих обломков (Ship.breakMast)
+      seg1.userData.spar = { rTop: 0.15, rBot: 0.185, len: j2 - j1 };
+      seg2.userData.spar = { rTop: 0.10, rBot: 0.15, len: md.h - j2 };
+    } else {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.24, md.h, 7), woodMat);
+      pole.position.y = md.h / 2 - P.draft * 0.3;
+      pole.castShadow = true;
+      mast.add(pole);
+      // марс (платформа)
+      const top = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.6, 0.28, 8), darkMat);
+      top.position.y = md.h * 0.72 - P.draft * 0.3;
+      mast.add(top);
+    }
     mast.position.set(0, -P.draft * 0.3 > 0 ? 0 : 0, md.z);
     mast.userData.height = md.h;
     masts.push(mast);
@@ -2587,7 +2673,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     pivot.add(yard);
     mesh.position.set(0, 0, -0.25);
     pivot.add(mesh);
-    masts[mastIndex].add(pivot);
+    attachRig(mastIndex, pivot, y + 0.05);
     // зона прострела: прямоугольник полотна в координатах корабля (brace=0);
     // при проверке поворачивается на текущий угол брасопки вокруг мачты
     const quad: SailHitQuad = {
@@ -2659,7 +2745,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     yard.position.set(0, T.y / 2, T.x / 2);
     pivot.add(yard);
     pivot.add(mesh);
-    masts[mastIndex].add(pivot);
+    attachRig(mastIndex, pivot, md.h * 0.72 - P.draft * 0.3);
     // поворот меша -90° вокруг Y: (x, y, 0) -> (0, y, x)
     const rotP = (x: number, y: number) => new THREE.Vector3(0, y, x);
     const pv = new THREE.Vector3(0, md.h * 0.72 - P.draft * 0.3, md.z);
@@ -2740,7 +2826,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     mesh.position.set(head.x, head.y, head.z - mastZ);
     mesh.rotation.y = Math.PI / 2; // локальный Z (пузо) -> мир X (борт)
     mesh.frustumCulled = false;
-    masts[0].add(mesh); // потомок фок-мачты — падает вместе с ней
+    attachRig(0, mesh, head.y); // потомок фок-мачты — падает вместе с ней
     // зона прострела: треугольник голова-(конец штага)-(галсовый угол);
     // поворот меша +90° вокруг Y: (x, y, 0) -> (0, y, -x)
     const rotP = (x: number, y: number) => new THREE.Vector3(0, y, -x);
@@ -2772,7 +2858,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   const mainMast = mastDefs[mainMastIdx];
   const { mesh: flag, mat: flagMat } = flagMesh(P.flagKind);
   flag.position.set(0.05, mainMast.h - P.draft * 0.3 - 0.4, 0);
-  masts[mainMastIdx].add(flag);
+  attachRig(mainMastIdx, flag, mainMast.h - P.draft * 0.3 - 0.4);
 
   // пушки по бортам — по раскладке gunLayout: ИТОГО ровно gunsPerSide
   // на борт. Верхняя палуба — полные лафеты, закрытые деки — стволы
@@ -2827,7 +2913,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
         // открыта — откинута вверх-наружу, прижата к борту
         const lidH = Math.min(0.52, Math.max(0.4, P.freeboard * 0.095));
         const lid = new THREE.Group();
-        lid.position.set(side * (hw + 0.05), slot.y + lidH / 2, slot.z);
+        lid.position.set(side * (hw + (planking ? 0.13 : 0.05)), slot.y + lidH / 2, slot.z);
         const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(0.06, lidH, 0.66), lidMat);
         lidMesh.position.y = -lidH / 2;
         lid.add(lidMesh);
@@ -2898,6 +2984,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
     const qMastIdx = P.masts === 2 ? 1 : 2; // грот / бизань
     const qd = buildQuarterdeck(P, qMastIdx);
     group.add(qd.group);
+    quarterGroup = qd.group;
     quarterVis = qd.vis;
     binnacleNeedle = qd.needle;
     if (qd.pinRopeEnds.length) pinRopes = { mast: qMastIdx, ends: qd.pinRopeEnds };
@@ -2957,16 +3044,19 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
       }));
     castles.castShadow = true;
     group.add(castles);
+    castlesMesh = castles;
   }
   // наружный декор: пушечные порты, вельсы, кормовая галерея, нос/гальюн
   const ornGeo = buildHullOrnaments(P);
   if (ornGeo) {
-    group.add(new THREE.Mesh(ornGeo,
+    const orn = new THREE.Mesh(ornGeo,
       new THREE.MeshStandardMaterial({
         vertexColors: true, metalness: 0.15,
         normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
         normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
-      })));
+      }));
+    group.add(orn);
+    ornMesh = orn;
   }
   // мелкие детали — только вблизи (LOD, переключает game.ts);
   // ванты с выбленками — отдельными парами на мачту (рвутся с ней)
@@ -2980,6 +3070,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   if (P.oars) {
     const o = buildOars(P);
     group.add(o.group);
+    oarsGroup = o.group;
     oarsVis = o.oars;
   }
 
@@ -2993,6 +3084,37 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   group.add(rudderMesh);
 
   const rig: SailRig = { sails };
+
+  // ===== Task 46: ИЕРАРХИЯ СЦЕНЫ с программными именами =====
+  if (planking) {
+    // Skeleton — неразрушаемый каркас (шпангоуты/бимсы/переборки +
+    // гладкое днище Keel_Bottom + планширь/надстройки/руль)
+    const gSkeleton = new THREE.Group(); gSkeleton.name = 'Skeleton';
+    // Masts_And_Spars — рангоут (мачты с сегментами, бушприт)
+    const gMasts = new THREE.Group(); gMasts.name = 'Masts_And_Spars';
+    // Sails_And_Rigging — стоячий/бегучий такелаж (паруса — потомки
+    // мачт: падают вместе со своими сегментами)
+    const gRig = new THREE.Group(); gRig.name = 'Sails_And_Rigging';
+    // Props — пушки/порты/штурвал/шпиль/фонарь/фигура/реквизит/вёсла
+    const gProps = new THREE.Group(); gProps.name = 'Props';
+    gSkeleton.add(buildSkeleton(P));
+    gSkeleton.add(hull, capRail, rudderMesh);
+    if (castlesMesh) gSkeleton.add(castlesMesh);
+    if (ornMesh) gSkeleton.add(ornMesh);
+    if (quarterGroup) gSkeleton.add(quarterGroup);
+    for (const m of masts) gMasts.add(m);
+    gMasts.add(bowsprit);
+    gRig.add(rigging.lines);
+    for (const gp of gunsPort) gProps.add(gp);
+    for (const gs of gunsStarboard) gProps.add(gs);
+    for (const gport of gunPorts) gProps.add(gport.lid);
+    gProps.add(wheelAsm, capstan, sternLantern, figurehead, props);
+    if (oarsGroup) gProps.add(oarsGroup);
+    group.add(gSkeleton, gMasts, gRig, gProps);
+    // 'Hull_Planks' уже в group (visualPlanks.group);
+    // detail (LOD) и экипаж — на корне Ship_Root
+  }
+
 
   // ломаемые детали палубы: срываются попаданиями / давлением воды;
   // шлюпка — тоже ломаемая: прямое попадание разлетается щепой
@@ -3015,7 +3137,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number }): ShipVis
   return {
     group, sails: rig, gunsPort, gunsStarboard, flag, flagMat,
     dims: { length: L, beam: P.beam, draft: P.draft }, outline,
-    masts, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
+    masts, planks: visualPlanks, lantern, wheel, detail, breakables, rigging, tintMats: [...tintSet],
     oars: oarsVis, rudderMesh,
     gunPorts, detailRigs: detailRes.detailRigs, hullMat, deckMat,
     boat: detailRes.boat, boat2: detailRes.boat2, anchors: detailRes.anchors,

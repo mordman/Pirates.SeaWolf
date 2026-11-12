@@ -27,6 +27,9 @@ export class AIShip {
   whiteFlag?: THREE.Mesh;
   /** мишень полигона: отвечать ли огнём (иначе просто стоит на якоре) */
   returnFire = false;
+  /** Task 46: мишень полигона — НЕ вступает в бой сама (её режим
+   *  задаёт игрок тумблером); пиратская эскадра на якоре — отвечает */
+  isProvingTarget = false;
 
   constructor(ship: Ship, waypoints: THREE.Vector3[], state: AIState = 'route') {
     this.ship = ship;
@@ -187,14 +190,28 @@ export class AIShip {
   }
 
   /** Игрок выстрелил рядом/попал — реакция: вооружённый корабль ОТСТРЕЛИВАЕТСЯ,
-   *  безоружный спасается бегством; военный конвоир рядом вступает в бой */
+   *  безоружный спасается бегством; военный конвоир рядом вступает в бой.
+   *  Task 46: РЕГРЕССИЯ «пираты перестали стрелять, когда идёт бой» —
+   *  ранний выход для 'anchored' глушил ВСЮ эскадру логова (7 судов на
+   *  якоре не отвечали вообще) и пропускал конвойный цикл. Теперь:
+   *   - мишень полигона (isProvingTarget) не реагирует — только игрок;
+   *   - вооружённый корабль НА ЯКОРЕ остаётся на якоре, но ОТВЕЧАЕТ
+   *     ОГНЁМ (returnFire: залпы по готовности + ружья экипажа);
+   *   - конвойный цикл (патрули → бой) выполняется всегда. */
   onPlayerAggression(nearShips: AIShip[]) {
-    if (this.state === 'anchored') return; // мишень полигона не убегает
+    if (this.isProvingTarget) return;          // мишень полигона — без инициативы
     if (this.state === 'surrender' || this.state === 'derelict') return;
     const s = this.ship;
     if (!s.surrendered) {
       const armed = s.preset.gunsPerSide > 0 && s.crew > s.preset.maxCrew * 0.25;
-      if (armed) {
+      if (this.state === 'anchored') {
+        // пиратская эскадра в бухте: с якоря не снимается — БЬЁТ по
+        // нападающему (залп с якоря + ружья экипажа через crewEngage)
+        if (armed && !this.returnFire) {
+          this.returnFire = true;
+          this.gunTimer = 1.2 + Math.random() * 1.8;   // немедленный ответ
+        }
+      } else if (armed) {
         // есть пушки и экипаж — даём отпор (залп по готовности, но быстро)
         const wasFlee = this.state === 'flee';
         this.state = 'combat';
@@ -203,10 +220,23 @@ export class AIShip {
         this.state = 'flee';
       }
     }
-    // военный конвоир реагирует на нападение поблизости
+    // военный конвоир реагирует на нападение поблизости — цикл
+    // больше НЕ пропускается ранним выходом 'anchored'
     for (const ai of nearShips) {
-      if (ai.state === 'patrol' && ai.ship.position.distanceTo(s.position) < 500) {
+      if (ai === this || ai.isProvingTarget) continue;
+      if (ai.state === 'surrender' || ai.state === 'derelict') continue;
+      const dist = ai.ship.position.distanceTo(s.position);
+      if (dist > 500) continue;
+      if (ai.state === 'patrol') {
         ai.state = 'combat';
+      } else if (ai.state === 'anchored') {
+        // сосед по стоянке просыпается: если есть пушки — отвечает
+        const a = ai.ship;
+        const aArmed = a.preset.gunsPerSide > 0 && a.crew > a.preset.maxCrew * 0.25;
+        if (aArmed && !ai.returnFire) {
+          ai.returnFire = true;
+          if (ai.gunTimer > 3.5) ai.gunTimer = 2.5 + Math.random() * 2.5;
+        }
       }
     }
   }

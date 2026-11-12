@@ -17,15 +17,15 @@ import { GLBPartSystem } from './glb/glbParts';
 import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
-import { initDebris, updateDebris, clearDebris, debrisAlive } from './fx/debris';
-import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits } from './ship/crew';
+import { initDebris, updateDebris, clearDebris, debrisAlive, debrisInfo } from './fx/debris';
+import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits, setCrewRules } from './ship/crew';
 import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
-import { GameSettings, loadSettings, rollStartingAmmo, type FxSettings, type PhysicsSettings, type PhysicsMode, type WireframeSettings } from './core/settings';
+import { GameSettings, loadSettings, saveSettings, rollStartingAmmo, type FxSettings, type PhysicsSettings, type PhysicsMode, type WireframeSettings } from './core/settings';
 import { textureUrls } from './assets/textures';
 
 // ============================================================
@@ -251,6 +251,8 @@ export class Game {
   pgTarget: AIShip | null = null; // мишень на якоре
   pgModel = 'fluyt';              // модель мишени
   pgReturnFire = false;           // отвечает ли мишень огнём
+  /** Task 46: счётчик попаданий по игроку (телеметрия: ответный огонь) */
+  playerHitCount = 0;
   // ПОЛИГОН на чистой воде (Task 36: карта ×10 — полигон уехал к 32 км)
   private PG_ANCHOR = new THREE.Vector3(32000, 0, 23000);
 
@@ -313,6 +315,11 @@ export class Game {
     // ветром (высота волн зависит от скорости ветра)
     PHYSICS.mode = this.settings.physics.mode;
     CONTROLS.simple = this.settings.gameplay.simpleControls;
+    // Task 46: правила экипажа — подмена погибших / стрелковый огонь
+    setCrewRules({
+      replacement: this.settings.gameplay.crewReplacement,
+      marksmen: this.settings.gameplay.crewMarksmen,
+    });
     this.applyPhysicsConfig(this.settings.physics);
     this.weather.onThunder = (dist) => this.audio.thunder(dist);
     this.applyFx(this.settings.fx);
@@ -520,6 +527,22 @@ export class Game {
         ? '🐱 Экипаж заменён котами: капитан-кот у штурвала, боцман-кот у шпиля, канониры-коты таскают ядра'
         : 'Экипаж снова из матросов');
     }
+    // ===== Task 46: МОДЕЛЬ КОРПУСА — дощатая ↔ обычная =====
+    if (prev.gameplay.hullModel !== s.gameplay.hullModel) {
+      this.rebuildAllVisuals(s.gameplay.hullModel === 'planks');
+    }
+    // ===== Task 46: правила экипажа =====
+    setCrewRules({ replacement: s.gameplay.crewReplacement, marksmen: s.gameplay.crewMarksmen });
+    if (prev.gameplay.crewReplacement !== s.gameplay.crewReplacement) {
+      this.pushMessage(s.gameplay.crewReplacement
+        ? 'Подмена экипажа: погибшие поднимаются заменой из трюма (люк у мачты)'
+        : 'Подмена экипажа: выключена — на палубе остаются выжившие');
+    }
+    if (prev.gameplay.crewMarksmen !== s.gameplay.crewMarksmen) {
+      this.pushMessage(s.gameplay.crewMarksmen
+        ? 'Стрелки экипажа: ружья/пистолеты с постов у борта'
+        : 'Стрелки экипажа: выключены — только артиллерия (поза у борта остаётся)');
+    }
     // каркас «треугольники без текстур» по категориям
     if (JSON.stringify(prev.graphics.wireframe) !== JSON.stringify(g.wireframe)) {
       this.applyWireframe(g.wireframe);
@@ -692,8 +715,9 @@ export class Game {
       ? rollStartingAmmo(gp.startingAmmo).ammo
       : { ...gp.startingAmmo };
     const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo, boatCount: gp.boatCount,
-      crewCats: gp.catsInsteadOfCrew };
-    const aiOpts = { durabilityMul: gp.hullDurability, boatCount: gp.boatCount };
+      crewCats: gp.catsInsteadOfCrew, planking: gp.hullModel === 'planks' };
+    const aiOpts = { durabilityMul: gp.hullDurability, boatCount: gp.boatCount,
+      planking: gp.hullModel === 'planks' };
     // игрок: шлюп в глубокой воде за пирсом
     this.player = new Ship('sloop', true, this.wind, terrain, this.particles, playerOpts);
     const seaDir = new THREE.Vector3().subVectors(this.world.port.dockEnd,
@@ -881,6 +905,7 @@ export class Game {
       sh.gold = gold;
       sh.cargo = { sugar: loot[0], rum: loot[1], timber: loot[2], spice: loot[3], silk: loot[4] };
       setFlagKind(sh.visual, 'pirate'); // все — под чёрным флагом
+      sh.flagKind = 'pirate';            // Task 46: переносится при пересборке визуала
       this.worldGroup.add(sh.visual.group);
       this.worldGroup.add(sh.foam.mesh);
       this.worldGroup.add(sh.wake.mesh);
@@ -895,6 +920,7 @@ export class Game {
       sh.crew = crew;
       sh.gold = gold;
       setFlagKind(sh.visual, 'pirate');
+      sh.flagKind = 'pirate';
       this.worldGroup.add(sh.visual.group);
       this.worldGroup.add(sh.foam.mesh);
       this.worldGroup.add(sh.wake.mesh);
@@ -934,7 +960,7 @@ export class Game {
     this.bus.on(GameEvents.PROJECTILE_HIT, (p) => {
       const d = (p as { pos: THREE.Vector3; target: Ship });
       this.audio.woodHit(distToPlayer(d.pos));
-      if (d.target === this.player) this.rig.addShake(0.5);
+      if (d.target === this.player) { this.rig.addShake(0.5); this.playerHitCount++; }
       // ИИ реагирует на агрессию игрока
       const ai = this.aiShips.find(a => a.ship === d.target);
       if (ai) ai.onPlayerAggression(this.aiShips);
@@ -1022,7 +1048,8 @@ export class Game {
     this.removeProvingTarget();
     const terrain = (x: number, z: number) => heightAt(x, z);
     const ship = new Ship(modelId, false, this.wind, terrain, this.particles,
-      { durabilityMul: this.settings.gameplay.hullDurability, boatCount: this.settings.gameplay.boatCount });
+      { durabilityMul: this.settings.gameplay.hullDurability, boatCount: this.settings.gameplay.boatCount,
+        planking: this.settings.gameplay.hullModel === 'planks' });
     ship.position.copy(this.pgTargetPos());
     ship.position.y = 0;
     ship.quaternion.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); // параллельно игроку
@@ -1032,6 +1059,7 @@ export class Game {
     this.worldGroup.add(ship.wake.mesh);
     const ai = new AIShip(ship, [], 'anchored');
     ai.returnFire = this.pgReturnFire;
+    ai.isProvingTarget = true;              // Task 46: без инициативы — только тумблер игрока
     ship.crewEngage = this.pgReturnFire;   // Task 44: без «отвечать огнём» ружья мишени молчат
     // мишень с поставленным рангоутом: стрелять есть по чему — и по парусам
     ship.sailOverride = 0.85;
@@ -1164,6 +1192,7 @@ export class Game {
     const gp = this.settings.gameplay;
     const np = new Ship(presetId, true, this.wind, (x, z) => heightAt(x, z), this.particles,
       { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo }, boatCount: gp.boatCount,
+        planking: gp.hullModel === 'planks',
         crewCats: gp.catsInsteadOfCrew });
     // не отнимать боезапас при смене (берём максимум из текущего и стартового)
     (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
@@ -1221,6 +1250,45 @@ export class Game {
     this.pushMessage(`⚓ Новый корабль: ${np.preset.name} (${np.preset.shipClass})` +
       (free ? ` — экипаж ${np.crew}/${np.preset.maxCrew}` : ''));
     return null;
+  }
+
+  /** ============================================================
+   *  Task 46: ПЕРЕСБОРКА ВИЗУАЛОВ ВСЕХ КОРАБЛЕЙ — дощатая модель
+   *  корпуса ↔ обычная (настройка «Игра → Модель корпуса»).
+   *  Физика/урон/вода/экипаж/мачты — СОХРАНЯЮТСЯ; внешние
+   *  повреждения (декали/доски/сорванные детали) — с нуля.
+   *  ============================================================ */
+  private rebuildAllVisuals(planking: boolean) {
+    const ships: Ship[] = [this.player, ...this.aiShips.map(a => a.ship)];
+    if (this.pgTarget) ships.push(this.pgTarget.ship);
+    for (const sh of ships) {
+      if (!sh || sh.sunk) continue;
+      sh.rebuildVisual(planking);
+      // купленный флаг/скины — на новый визуал
+      if (sh.flagKind) setFlagKind(sh.visual, sh.flagKind);
+      if (sh === this.player) {
+        this.applyUpgrades(sh);
+        this.applySkins(sh);
+        this.attachCats();
+        // контроллер шлюпки держит ссылки на старый визуал
+        this.boatLaunch?.abort();
+        this.boatLaunch?.dispose();
+        this.boatLaunch = new BoatLaunch({
+          ship: sh, worldGroup: this.worldGroup, particles: this.particles,
+          islands: () => this.world.islands,
+          heightAt: (x, z) => heightAt(x, z),
+          msg: (t) => this.pushMessage(t),
+          onSplash: () => this.audio.splash(0),
+        });
+        this.combat.resizeReloads(sh.visual.gunsPort.length + sh.visual.gunsStarboard.length);
+      }
+    }
+    // каркас (wireframe) — на новые материалы
+    this.applyWireframe(this.settings.graphics.wireframe);
+    this.rig.snap();
+    this.pushMessage(planking
+      ? 'Модель корпуса: ДОЩАТАЯ — обшивка из досок, 4 стадии повреждения, скелет виден в проломах'
+      : 'Модель корпуса: обычная (гладкая обшивка, прежние пробоины)');
   }
 
   pushMessage(text: string) {
@@ -1469,6 +1537,7 @@ export class Game {
     if (sk.kind === 'flag' && sk.flag) {
       this.skinsOn.flag = sk.flag;
       setFlagKind(this.player.visual, sk.flag);
+      this.player.flagKind = sk.flag;
     } else if (sk.kind === 'sail') {
       this.skinsOn.sail = sk.hex !== undefined && sk.hex >= 0 ? sk.hex : null;
       setSailColor(this.player.visual, this.skinsOn.sail ?? this.player.preset.colors.sail);
@@ -1488,7 +1557,7 @@ export class Game {
 
   /** Надетые скины — на любой корабль игрока (после смены/покупки) */
   private applySkins(sh: Ship) {
-    if (this.skinsOn.flag) setFlagKind(sh.visual, this.skinsOn.flag);
+    if (this.skinsOn.flag) { setFlagKind(sh.visual, this.skinsOn.flag); sh.flagKind = this.skinsOn.flag; }
     if (this.skinsOn.sail != null) setSailColor(sh.visual, this.skinsOn.sail);
     if (this.skinsOn.hull != null) setHullTint(sh.visual, this.skinsOn.hull);
     // фигура и украшение — на любом корабле (штатные по умолчанию)
@@ -2221,7 +2290,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown> };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number> } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -2306,6 +2375,45 @@ export class Game {
       crewSwimmers: p.crew3d.swimmersAlive(),
       // Task 45: подмена погибших — резерв экипажа (живые в трюме)
       crewReserves: p.crew3d.reservesInfo(),
+      // Task 46: дощатая модель — состояние досок игрока и мишени
+      plankInfo: p.plankHull ? p.plankHull.byState() : null,
+      model: p.plankHull ? 'planks' : 'smooth',
+      // Task 46: иерархия визуала игрока (имена групп + сегменты мачт)
+      hullHier: {
+        root: p.visual.group.name,
+        groups: p.visual.group.children.map(c => c.name || c.type),
+        plankMeshes: p.plankHull
+          ? p.plankHull.group.children.map(m => `${m.name}:${(((m as THREE.Mesh).geometry?.attributes.position?.count ?? 0) / 3) | 0}`)
+          : [],
+        skeletonTris: p.visual.group.getObjectByName('Skeleton')
+          ? (() => {
+            let n = 0;
+            p.visual.group.getObjectByName('Skeleton')!.traverse((o: THREE.Object3D) => {
+              const geo = (o as THREE.Mesh).geometry;
+              if (geo && geo.index) n += geo.index.count / 3;
+              else if (geo) n += (geo.attributes.position?.count ?? 0) / 3;
+            });
+            return n | 0;
+          })()
+          : -1,
+      },
+      mastSegments: p.visual.masts[0]?.userData?.segments
+        ? p.visual.masts.map((m: THREE.Object3D) =>
+            (m.userData.segments as THREE.Object3D[] | undefined)?.filter(s => s.parent).length ?? 0)
+        : null,
+      // Task 46: счётчик попаданий ПО игроку (ответный огонь пиратов)
+      playerHitCount: this.playerHitCount,
+      // Task 46: пиратская эскадра — состояние ответного огня
+      pirates: this.aiShips
+        .filter(a => a.ship.flagKind === 'pirate')
+        .slice(0, 9)
+        .map(a => ({
+          model: a.ship.preset.id,
+          state: a.state,
+          returnFire: a.returnFire,
+          crewEngage: a.ship.crewEngage,
+          dist: Math.round(a.ship.position.distanceTo(p.position)),
+        })),
       tgtDamage: tgt ? tgt.damageInfo() : null,
       tgtArmed: tgt ? tgt.crew3d.armedInfo() : null,
       tgtCrouched: tgt ? tgt.crew3d.crouchedCount() : -1,
@@ -2323,6 +2431,7 @@ export class Game {
       tgtFire: tgt ? +tgt.fireIntensity.toFixed(2) : -1,
       playerFire: +p.fireIntensity.toFixed(2),
       debrisAlive: debrisAlive(),
+      debris: debrisInfo(),
       tgtShown: tgt ? tgt.crew3d.shown : -1,
       tgtCrewDead: tgt ? tgt.crew3d.dead : -1,
       // паруса мишени по мачтам: дыры/uDamage (проверка каскада ломания)
@@ -2533,6 +2642,27 @@ export class Game {
         };
       })(),
     };
+    // Task 46: точечная правка настроек из консоли/e2e (глубокий мердж
+    // патча в текущие настройки + applySettings — как из панели)
+    dbg.__seaPatchSettings = (patch: Record<string, unknown>) => {
+      const deep = (base: unknown, over: unknown): unknown => {
+        if (typeof base !== 'object' || base === null
+          || typeof over !== 'object' || over === null || Array.isArray(over)) return over;
+        const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+        const src = over as Record<string, unknown>;
+        for (const k of Object.keys(src)) {
+          out[k] = k in out ? deep(out[k], src[k]) : src[k];
+        }
+        return out;
+      };
+      this.applySettings(deep(this.settings, patch) as GameSettings);
+      saveSettings(this.settings);
+      return 'ok:' + JSON.stringify(patch);
+    };
+    // Task 46: СВЕЖИЕ данные обломков (телеметрия __sea.refreshes
+    // только на рендер-кадрах; e2e зовёт эту функцию для точных
+    // замеров сразу после синхронных мутаций)
+    dbg.__seaDebrisInfo = () => debrisInfo();
 
     // действия команды (R)
     if (this.player.pumpAction && !this.docked) {

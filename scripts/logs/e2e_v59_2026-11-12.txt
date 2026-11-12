@@ -16,7 +16,7 @@ OK   R1: при ×1 мир штатный: деревни активны, ест
 ===== T: деревья ×1000 (бюджет) =====
 ✗ Failed to read: Resource temporarily unavailable (os error 11) (the command reached the daemon but no response came back; it may or may not have run, so it was not retried)
 ✗ Failed to read: Resource temporarily unavailable (os error 11) (the command reached the daemon but no response came back; it may or may not have run, so it was not retried)
-×1000: {"trees":1499985,"budgetHit":true,"villages":61,"folk":806,"boats":261,"vegPerIsland0":131601,"vegPerIsland1":66737} (128375 мс)
+×1000: {"trees":1499985,"budgetHit":true,"villages":61,"folk":806,"boats":261,"vegPerIsland0":131601,"vegPerIsland1":66737} (135796 мс)
 OK   T1: ×1000 — лес упёрся в БЮДЖЕТ ~1,5 млн (instances ≥ 1 млн) | 29,232 → 1,499,985 (×51.3)
 OK   T2: возврат ×1 — штатное число деревьев | 29,232
 {"trees":108775,"budgetHit":false,"villages":61,"folk":806,"boats":261,"vegPerIsland0":82108,"vegPerIsland1":1301}
@@ -42,8 +42,8 @@ OK   B2: лодки ×2 — примерно вдвое больше | 261 → 5
 
 ===== S: схема v15 =====
 RELOADED: true
-{"v":15,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
-OK   S1: схема v15 — настройки островов сохранены и ПРИМЕНИЛИСЬ | {"v":15,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
+{"v":16,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
+OK   S1: схема v15 — настройки островов сохранены и ПРИМЕНИЛИСЬ | {"v":16,"trees":2,"villages":2,"ov0":{"treesMul":0.5,"boatsMul":0},"appliedTrees":54631,"appliedVillages":122,"veg0":1282,"boats0":0}
 OK   S2: после перезагрузки мир собрался по настройкам (лес ×2, деревни ×2) | деревьев 54,631 (база 29232), деревень 122 (база 61)
 OK   S3: переопределение острова 0 применилось (лес ×0.5, лодок 0) | остров0 деревьев 1282, лодок 0
 

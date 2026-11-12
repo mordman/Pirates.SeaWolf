@@ -1,10 +1,10 @@
 GAME LOADED: true
 
 ===== A: LOD — дальние острова на упрощённых моделях =====
-{"offB":6091,"farIslands":1,"lodSlots":8,"trisFull":95782,"trisLod":21148,"palm":{"full":136,"lod":32,"far":false},"bamboo":{"full":80,"lod":24,"far":false}}
+{"offB":6091,"farIslands":1,"lodSlots":8,"trisFull":95782,"trisLod":7092,"palm":{"full":136,"lod":12,"far":false},"bamboo":{"full":80,"lod":8,"far":false}}
 OK   A1: дальний видимый остров (off>700 от берега) ПЕРЕКЛЮЧИЛСЯ на LOD | off=6091 м, островов far=1, слотов=8
-OK   A2: LOD-модель ДЕШЕВЛЕ полной минимум вдвое (palm/bamboo) | palm 136→32 трис, bamboo 80→24
-OK   A3: экономия треугольников на LOD-острове ≥ 50% | 95782 → 21148 (78%)
+OK   A2: LOD-модель ДЕШЕВЛЕ полной минимум вдвое (palm/bamboo) | palm 136→12 трис, bamboo 80→8
+OK   A3: экономия треугольников на LOD-острове ≥ 50% | 95782 → 7092 (93%)
 {"farIslands":1,"fullSlots":224,"palmSrc":"glb","ficusSrc":"proc"}
 OK   A4: у берега остров вернул ПОЛНУЮ модель (пальмы GLB/proc, не lod) | palm=glb, ficus=proc, far-островов=1
 OK   A5: сосед (дальний) остался на LOD — переключение по-островно | far-островов=1
@@ -21,23 +21,23 @@ OK   B5: ПРИЦЕЛ — рука с пистолетом вытянута (pos
 OK   B6: ВЫСТРЕЛ с прицела работает (пуля в полёте) | пуль: 1
 
 ===== C: гардероб — все виды встречаются =====
-{"n":240,"parrots":18,"parrotPct":7.5,"pegs":41,"hooks":52,"avgVerts":1698,"maxVerts":2904,"avgLegVerts":153,"torsoKinds":{"bare":35,"vest":22,"shirt":63,"striped":38,"tshirt":40,"stripedV":12,"sweater":20,"coat":10},"pantsKinds":{"shorts":70,"long":148,"torn":22},"hatKinds":{"straw":31,"top":20,"hat":29,"bandana":69,"none":47,"cap":21,"wide":23},"wristMounts":240}
-OK   C1: ВСЕ 8 видов торса встречаются (вкл. ГОЛЫЙ ТОРС и ПОЛОСЫ) | виды: bare,vest,shirt,striped,tshirt,stripedV,sweater,coat
-OK   C2: ВСЕ 3 кроя штанов (длинные/шорты/РВАНЫЕ) | виды: shorts,long,torn
-OK   C3: ВСЕ 7 головных уборов (вкл. широкополая/соломенная/вязаная/цилиндр) | виды: straw,top,hat,bandana,none,cap,wide
+{"n":240,"parrots":21,"parrotPct":8.8,"pegs":45,"hooks":59,"avgVerts":1729,"maxVerts":2934,"avgLegVerts":158,"torsoKinds":{"vest":22,"bare":29,"striped":42,"stripedV":13,"tshirt":34,"shirt":65,"coat":13,"sweater":22},"pantsKinds":{"long":139,"shorts":66,"torn":35},"hatKinds":{"wide":17,"bandana":80,"straw":27,"none":41,"cap":27,"top":19,"hat":29},"wristMounts":240}
+OK   C1: ВСЕ 8 видов торса встречаются (вкл. ГОЛЫЙ ТОРС и ПОЛОСЫ) | виды: vest,bare,striped,stripedV,tshirt,shirt,coat,sweater
+OK   C2: ВСЕ 3 кроя штанов (длинные/шорты/РВАНЫЕ) | виды: long,shorts,torn
+OK   C3: ВСЕ 7 головных уборов (вкл. широкополая/соломенная/вязаная/цилиндр) | виды: wide,bandana,straw,none,cap,top,hat
 OK   C4: МАУНТ у кисти у всех фигурок (оружие следует за рукой) | 240/240
-OK   C5: попугаи по-прежнему ~10% (5–16%) | 7.5%
+OK   C5: попугаи по-прежнему ~10% (5–16%) | 8.8%
 
 ===== D: экран капитана — гардероб и схема v15 =====
 {"screen":true,"одежды":8,"уборы":7,"штаны":3}
 OK   D1: на экране капитана все 8 видов ОДЕЖДЫ | одежд=8
 OK   D2: все 3 вида ШТАНОВ (вкл. рваные шорты) | штанов=3
 OK   D3: все 7 ГОЛОВНЫХ УБОРОВ | уборов=7
-{"ok":true,"Голый торс":true,"Шорты":true,"Цилиндр":true} {"torso":"bare","pantsKind":"shorts","headwear":"top","v":15,"pTorso":"bare","pPants":"shorts","pHat":"top"}
+{"ok":true,"Голый торс":true,"Шорты":true,"Цилиндр":true} {"torso":"bare","pantsKind":"shorts","headwear":"top","v":16,"pTorso":"bare","pPants":"shorts","pHat":"top"}
 OK   D4: выбранный ГАРДЕРОБ применился к капитану (голый торс/шорты/цилиндр) | торс=bare, штаны=shorts, убор=top
-OK   D5: СХЕМА v15: гардероб сохранён в настройках | v=15, player.torso=bare, pantsKind=shorts, headwear=top
-{"v":15,"torso":"bare","pantsKind":"shorts","headwear":"top"}
-OK   D6: после перезагрузки схема v15 и ВНЕШНОСТЬ на месте | v=15, торс=bare, штаны=shorts, убор=top
+OK   D5: СХЕМА v15: гардероб сохранён в настройках | v=16, player.torso=bare, pantsKind=shorts, headwear=top
+{"v":16,"torso":"bare","pantsKind":"shorts","headwear":"top"}
+OK   D6: после перезагрузки схема v15 и ВНЕШНОСТЬ на месте | v=16, торс=bare, штаны=shorts, убор=top
 
 ===== E: финал =====
 JS errors: 0

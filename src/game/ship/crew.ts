@@ -49,6 +49,16 @@ let FX: { gibs: GibPool | null; particles: Particles | null; worldRoot: THREE.Gr
 export function setCrewFx(gibs: GibPool, particles: Particles) {
   FX = { gibs, particles, worldRoot: FX.worldRoot };
 }
+// ============================================================
+// Task 46: ПРАВИЛА ЭКИПАЖА (настройки «Игра»):
+//  replacement — поднимать замену погибшим из трюма;
+//  marksmen — стрелковый огонь экипажа (ружья/пистолеты)
+// ============================================================
+export const CREW_RULES = { replacement: true, marksmen: true };
+export function setCrewRules(r: { replacement?: boolean; marksmen?: boolean }) {
+  if (typeof r.replacement === 'boolean') CREW_RULES.replacement = r.replacement;
+  if (typeof r.marksmen === 'boolean') CREW_RULES.marksmen = r.marksmen;
+}
 /** Task 43: мир для пловцов (вызывается из game.ts) */
 export function setCrewWorldRoot(root: THREE.Group) { FX.worldRoot = root; }
 /** Текущие эффекты (гибы/частицы) — для islandFolk.ts */
@@ -1437,11 +1447,16 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       lastTime = time;
       lastCrew = ship.crew;
       {
-        // заявки: каждый погибший вооружённый — заменить
-        for (const f of figures) {
-          if (f.dead && f.weapon && !f.replQueued) {
-            f.replQueued = true;
-            replQueue.push(time + 2 + Math.random() * 2.5);
+        // Task 46: заявки на подмену — КАЖДЫЙ погибший (не только
+        // вооружённый): «погибшие матросы подменяются живыми из
+        // общего количества экипажа на корабле» — включая гребцов,
+        // канониров и вахтенных, убитых картечью/ядрами
+        if (CREW_RULES.replacement) {
+          for (const f of figures) {
+            if (f.dead && !f.swim && !f.replQueued) {
+              f.replQueued = true;
+              replQueue.push(time + 2 + Math.random() * 2.5);
+            }
           }
         }
         // активация: пока есть запасные фигуры и живые в трюме
@@ -1601,8 +1616,11 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
                 f.legR.rotation.x = 1.18 * ct;    // задняя коленом в палубу
               }
               if (f.gunArm) { f.gunArm.rotation.x = -1.15 * ct; f.gunArm.rotation.z = 0; }
-              // ОГОНЬ С ПОСТА (только с колена — «стреляют оттуда»)
-              if (threatPos && tDistShip < range && (f.gunCd ?? 1) <= 0 && ct > 0.5) {
+              // ОГОНЬ С ПОСТА (только с колена — «стреляют оттуда»);
+              // Task 46: выключен в настройках — ружья молчат
+              // (поза у борта остаётся — это укрытие)
+              if (CREW_RULES.marksmen && threatPos && tDistShip < range
+                && (f.gunCd ?? 1) <= 0 && ct > 0.5) {
                 const chest = _tmpA.copy(f.group.position);
                 chest.y += (f.midY ?? 0.75) + 0.15;
                 chest.applyQuaternion(ship.quaternion).add(ship.position);
