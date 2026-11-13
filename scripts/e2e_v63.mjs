@@ -281,6 +281,13 @@ const subst = jparse(await evR(`(() => {
   g.setPgReturnFire(false);
   const p = g.player;
   const T = window.__THREE.Vector3;
+  // Task 48: перестрелка D1-D5 теперь жарче (окно угрозы 95 м,
+  // шанс 0.26, сбивание за борт) — экипаж/запасы выедаются, корпус
+  // тает от пушек мишени; для ДЕТЕРМИНИРОВАННОЙ проверки подмены
+  // полностью восстанавливаем корабль (как «сброс повреждений»)
+  g.stepDebugNR(0.2);
+  p.clearDamage();
+  g.stepDebugNR(0.2);
   const shown0 = p.crew3d.shown;
   const res0 = p.crew3d.reservesInfo();
   const crew0 = p.crew;
@@ -330,10 +337,11 @@ const exhaust = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(exhaust));
-check('D9: исчерпание экипажа — палуба РЕДЕЕТ (shown ≤ 4)',
-  exhaust.shown <= 4, `на палубе ${exhaust?.shown}, всего убито ${exhaust?.total}`);
-check('D10: резервы пусты (below = 0, заявок нет)',
-  exhaust.res.below === 0 && exhaust.res.pending === 0,
+const deckAlive = exhaust.crew - exhaust.res.below;
+check('D9: исчерпание экипажа — палуба РЕДЕЕТ (живых на палубе ≤ 4)',
+  deckAlive <= 4, `на палубе ${deckAlive} (shown ${exhaust?.shown}), всего убито ${exhaust?.total}`);
+check('D10: резервы пусты (below ≤ 2 — очки смытых за борт пловцов, заявок нет)',
+  exhaust.res.below <= 2 && exhaust.res.pending === 0 && exhaust.res.spares === 0,
   JSON.stringify(exhaust?.res));
 check('D11: даже расстрел экипажа НЕ трогает корпус (holes = 0)',
   exhaust.holes === 0 && exhaust.water === 0,
@@ -477,24 +485,35 @@ check('E6: ДИФФЕРЕНТ НОСОМ ВНИЗ (floodPitch > +0.15°)',
   flood1.floodPitch > 0.15, `floodPitch=${flood1?.floodPitch}°`);
 
 // дотопление до гибели + прыжки за борт
+// Task 48: дотопление КОРОТКИМИ шагами из скрипта — длинный эвал
+// (40×5 с симуляции) падает по таймауту демона и ПРОГОНЯЕТСЯ ДВАЖДЫ:
+// корабль тонет до первого замера, пловцы уже утонули → swim1=0
+let sinkingStarted = false, fracAtSink = 0, iters = 0;
+for (let k = 0; k < 40; k++) {
+  const st = jparse(await evR(`(() => {
+    const g = window.__game;
+    const p = g.player;
+    if (!p.sinking) g.stepDebugNR(5);
+    return JSON.stringify({ s: p.sinking, f: +(p.water / p.holdCap).toFixed(3) });
+  })()`));
+  iters = k + 1;
+  if (st && st.s) { sinkingStarted = true; fracAtSink = st.f; break; }
+}
 const flood2 = jparse(await evR(`(() => {
   const g = window.__game;
   const p = g.player;
-  let i = 0;
-  while (!p.sinking && i++ < 24) g.stepDebugNR(5);
-  const sinkingStarted = p.sinking;
-  const fracAtSink = +(p.water / p.holdCap).toFixed(3);
   g.stepDebugNR(5);
   const swim1 = p.crew3d.swimmersAlive();
   g.stepDebugNR(40);
   const swim2 = p.crew3d.swimmersAlive();
   return JSON.stringify({
-    fracAtSink, sinkingStarted, iters: i,
     roll: +(p.euler.z * 57.3).toFixed(1),
     pitch: +(p.euler.x * 57.3).toFixed(1),
     swim1, swim2,
+    probe: { shown: p.crew3d.shown, dead: p.crew3d.dead, crew: p.crew, sinkT: +p.sinkT.toFixed(1), model: p.plankHull ? 'planks' : 'smooth' },
   });
 })()`));
+flood2.fracAtSink = fracAtSink; flood2.sinkingStarted = sinkingStarted; flood2.iters = iters;
 log(JSON.stringify(flood2));
 check('E7: трюм заполнился — корабль ТОНЕТ',
   flood2.sinkingStarted === true, `frac=${flood2?.fracAtSink}, итераций ${flood2?.iters}`);

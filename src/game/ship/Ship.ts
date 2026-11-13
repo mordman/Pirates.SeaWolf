@@ -180,6 +180,13 @@ export class Ship {
   // и дифферентится на затопленный конец (нос/корма)
   // ============================================================
   compartments: { water: number; leak: number; cap: number }[] = [];
+  /** Task 48: ВИДИМАЯ вода в отсеках (по референсу buildFloodComps):
+   *  8 полупрозрачных боксов в МИРОВЫХ координатах — уровень
+   *  горизонтален (вода всегда уровенная), поднимается по мере
+   *  заполнения отсека и виден через проломы в досках на нужном
+   *  борту. Ленивая сборка при первом попадании воды в трюм */
+  private floodWater: THREE.Mesh[] | null = null;
+  private floodWaterMat: THREE.MeshStandardMaterial | null = null;
   /** дифферентящий момент воды: −1 корма .. +1 нос (из отсеков) */
   trimBias = 0;
   /** время симуляции (для underFire и др.) */
@@ -703,32 +710,23 @@ export class Ship {
       this.quaternion.w + this.dq.w * qs
     ).normalize();
 
-    // --- Task 43: СТАТИЧЕСКИЙ КРЕН/ДИФФЕРЕНТ ОТ ВОДЫ В ТРЮМЕ ---
-    // кинематический доворот вокруг СВЯЗНЫХ осей корпуса (Z — крен,
-    // X — дифферент): вода на борту +X валит корабль на +X (отриц.
-    // roll), вода в носу дифферентит носом вниз (+pitch). Плавно
-    // (k=0.4/с) — как настоящая потеря остойчивости
+    // --- Task 43/48: СТАТИЧЕСКИЙ КРЕН/ДИФФЕРЕНТ ОТ ВОДЫ В ТРЮМЕ ---
+    // ЦЕЛЕВЫЕ углы сходятся здесь (k=0.4/с — как настоящая потеря
+    // остойчивости), а ПРИМЕНЯЮТСЯ в updateVisual поверх физического
+    // кватерниона (раньше доворачивали САМ кватернион — пружина
+    // колонн гасила крен до ~1° и корабль визуально стоял ровно;
+    // теперь затопленный борт ЗАМЕТНО валится, как в референсе)
     {
       const frac = clamp(this.water / this.holdCap, 0, 1);
       if (frac > 0.01 && !this.sinking) {
         const rollLimW = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
-        // 0.9 рад·bias·frac: однобортное заполнение тянет до предела
-        // палубы (deckRollLim ~14-18°) — «корабль валится на борт»
-        const rollT = clamp(-this.leakBias * frac * 0.9, -rollLimW, rollLimW);
-        const pitchT = clamp(this.trimBias * frac * 0.16, -0.16, 0.16);
+        // Task 48: 1.6 рад·bias·frac — однобортное заполнение валит
+        // корабль на затопленный борт до предела палубы
+        const rollT = clamp(-this.leakBias * frac * 1.6, -rollLimW, rollLimW);
+        const pitchT = clamp(this.trimBias * frac * 0.22, -0.22, 0.22);
         const k = Math.min(1, dt * 0.4);
-        const pR = this.floodRollCur, pP = this.floodPitchCur;
         this.floodRollCur += (rollT - this.floodRollCur) * k;
         this.floodPitchCur += (pitchT - this.floodPitchCur) * k;
-        const dr = this.floodRollCur - pR, dpx = this.floodPitchCur - pP;
-        if (Math.abs(dr) > 1e-7) {
-          this.dq.setFromAxisAngle(AXIS_Z, dr);
-          this.quaternion.multiply(this.dq);
-        }
-        if (Math.abs(dpx) > 1e-7) {
-          this.dq.setFromAxisAngle(AXIS_X, dpx);
-          this.quaternion.multiply(this.dq);
-        }
       }
     }
 
@@ -799,20 +797,27 @@ export class Ship {
         const c = cps[i];
         if (c.leak <= 0) continue;
         totLeak += c.leak;
-        const add = c.leak * dt;
+        // Task 48: НАПОР ПО ТОРРИЧЕЛЛИ (как в референсе: Q ~ √h):
+        // пока отсек пустый — вода бьёт из пробоины полным напором,
+        // по мере заполнения разница уровней падает — поток слабеет
+        const head = Math.sqrt(Math.max(0.04, 1 - c.water / Math.max(0.01, c.cap)));
+        const add = c.leak * head * dt;
         const room = c.cap - c.water;
         if (add <= room) {
           c.water += add;
         } else {
           c.water = c.cap;
-          // излишек — соседям (BFS по переборкам, пока есть куда)
+          // излишек — соседям (BFS по переборкам, пока есть куда).
+          // Task 48: сначала ВДОЛЬ трюма (люки в переборках корма↔нос),
+          // через ДП — в последнюю очередь (киль/шпангоуты мешают —
+          // затопленный борт держит воду дольше, крен заметнее)
           let over = add - room;
           const queue = [i];
           const seen = new Set([i]);
           let qi = 0;
           while (over > 1e-6 && qi < queue.length) {
             const j = queue[qi++];
-            for (const nb of [j ^ 1, j - 2, j + 2]) {
+            for (const nb of [j - 2, j + 2, j ^ 1]) {
               if (nb < 0 || nb > 7 || seen.has(nb)) continue;
               seen.add(nb);
               const n = cps[nb];
@@ -829,14 +834,16 @@ export class Ship {
         }
       }
       // медленное ВЫРАВНИВАНИЕ уровней (щели в переборках): через
-      // ДП — медленнее (киль/шпангоуты мешают — крен держится дольше)
+      // ДП — ЗАМЕТНО медленнее (Task 48: киль/шпангоуты мешают —
+      // однобортное затопление держит крен, как в референсе, где
+      // перетекание борт↔борт втрое медленнее продольного)
       const heelMul = 1 + Math.abs(this.euler.z) * 2.2;
       for (let row = 0; row < 4; row++) {
         const a = cps[row * 2], b = cps[row * 2 + 1];
         const fa = a.water / a.cap, fb = b.water / b.cap;
         if (Math.abs(fa - fb) > 1e-4) {
           const src = fa > fb ? a : b, dst = fa > fb ? b : a;
-          const q = Math.min(src.water, Math.abs(fa - fb) * a.cap * 0.5) * dt * 0.035 * heelMul;
+          const q = Math.min(src.water, Math.abs(fa - fb) * a.cap * 0.5) * dt * 0.014 * heelMul;
           src.water -= q;
           dst.water = Math.min(dst.cap, dst.water + q);
         }
@@ -1064,7 +1071,7 @@ export class Ship {
     const heelMax = Math.min(BUOYANCY_CONFIG.heelMax, this.deckRollLim());
     const heelTarget = clamp(
       -lateralPort * this.sailFrac * 0.006
-      - this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.3,
+      - this.leakBias * clamp(this.water / this.holdCap, 0, 1) * 0.45,
       -heelMax, heelMax);
     this.rideHeel += (heelTarget - this.rideHeel) * Math.min(1, dt * 1.2);
     this._rHeelQ.setFromAxisAngle(this._t1.set(0, 0, 1), this.rideHeel);
@@ -1178,8 +1185,10 @@ export class Ship {
   /** Время с последнего попадания по кораблю (сек; 999 — никогда) */
   sinceHit(): number { return Math.max(0, this.simT - this.lastHitT); }
 
-  /** Дополнительная осадка от воды в трюме (м) — для простой физики */
-  waterDraft(): number { return clamp(this.water / this.holdCap, 0, 1) * 0.55; }
+  /** Дополнительная осадка от воды в трюме (м) — для простой физики.
+   *  Task 48: 0.8 — полный трюм сажает заметно глубже (видно
+   *  глазами, как затопленный корабль приседает) */
+  waterDraft(): number { return clamp(this.water / this.holdCap, 0, 1) * 0.8; }
   private _lastDraftWater = 0;
 
   /** Task 43: течь В КОНКРЕТНЫЙ ОТСЕК по позиции пробоины (локальные
@@ -1470,7 +1479,9 @@ export class Ship {
       spawnSplinterBurst(wp.x, wp.y, wp.z,
         outward, 8 + ((Math.random() * 4) | 0), 1 + ((Math.random() * 2) | 0));
       if (r.belowWL && this.particles) {
-        this.addLeakAt(0.05 + Math.random() * 0.03, lp);
+        // Task 48: разрыв ломает сразу несколько досок — течь на
+        // доску уменьшена, чтобы дыра не открывала «фонтан»
+        this.addLeakAt(0.03 + Math.random() * 0.02, lp);
         this.particles.splash(wp.x, waterHeightAt(wp.x, wp.z, this.simT) + 0.15, wp.z, 0.8);
       }
     }
@@ -1754,11 +1765,22 @@ export class Ship {
     this.rudderTarget = 0;
   }
 
-  startSinking() {
+    startSinking() {
     if (this.sinking) return;
     this.sinking = true;
     this.sinkT = 0;
     this.sinkPhase = 1;
+    // Task 48: крен/дифферент от затопления ЗАПЕКАЕМ в физический
+    // кватернион (сценарий гибели продолжает валить корабль с той
+    // же стороны — без визуального скачка «выпрямился и заново
+    // завалился»); визуальное смещение обнуляем — оно уже в квате
+    if (Math.abs(this.floodRollCur) > 1e-5 || Math.abs(this.floodPitchCur) > 1e-5) {
+      this._floodRollQ.setFromAxisAngle(AXIS_Z, this.floodRollCur);
+      this._floodPitchQ.setFromAxisAngle(AXIS_X, this.floodPitchCur);
+      this.quaternion.multiply(this._floodRollQ).multiply(this._floodPitchQ).normalize();
+    }
+    this.floodRollCur = 0;
+    this.floodPitchCur = 0;
     // ВНИМАНИЕ: пожар НЕ гасим — горящий корабль, уходящий носом в воду,
     // дотягивает пламя до фазы 2 (палуба под водой — там вода его гасит)
     this.sailTarget = 0;
@@ -2060,10 +2082,103 @@ export class Ship {
   }
 
   // ---------- визуал ----------
+  /** ============================================================
+   *  Task 48: ВИДИМАЯ ВОДА В ОТСЕКАХ (по референсу buildFloodComps
+   *  «Златого Грифона»). Восемь боксов в мировых координатах:
+   *  уровень воды ВСЕГДА горизонтален (морская вода в трюме
+   *  спокойна), верх не выше морской поверхности (напор
+   *  уравнивается), высота — от заполнения отсека. Через проломы
+   *  в дощатой обшивке видно, КАКОЙ борт и какой конец корабля
+   *  затоплены. Сборка — лениво при первом попадании воды.
+   *  ============================================================ */
+  /** крен/дифферент от затопления — ВИЗУАЛЬНОЕ смещение поверх
+   *  физики (Task 48): физический кватернион не доворачиваем —
+   *  пружина колонн его гасила; рендерим наклон отдельно */
+  private _floodRollQ = new THREE.Quaternion();
+  private _floodPitchQ = new THREE.Quaternion();
+  private _floodVisQ = new THREE.Quaternion();
+
+  private updateFloodWater(time: number) {
+    // суммарная вода: нет — все боксы скрыть (и не собирать зря)
+    let total = 0;
+    for (const c of this.compartments) total += c.water;
+    if (this.floodWater) {
+      for (const m of this.floodWater) m.visible = false;
+    }
+    if (total < 0.02 || this.sunk) return;
+    if (!this.floodWater) {
+      // первая вода в трюме — собрать 8 боксов (общий материал)
+      const parent = this.visual.group.parent;
+      if (!parent) return;
+      this.floodWaterMat = new THREE.MeshStandardMaterial({
+        color: 0x2e7d8f, transparent: true, opacity: 0.55,
+        roughness: 0.12, metalness: 0.05,
+        side: THREE.DoubleSide, depthWrite: false,
+      });
+      this.floodWater = [];
+      const geo = new THREE.BoxGeometry(1, 1, 1);
+      for (let i = 0; i < 8; i++) {
+        const m = new THREE.Mesh(geo, this.floodWaterMat);
+        m.visible = false;
+        m.renderOrder = 2;
+        m.name = 'Hold_Water_' + i;
+        parent.add(m);
+        this.floodWater.push(m);
+      }
+    }
+    const P = this.preset;
+    const L = P.length, B = P.beam;
+    const seaY = waterHeightAt(this.position.x, this.position.z, time);
+    const vq = this._floodVisQ;   // корабль с учётом крена от воды
+    const v = this.tmpV;
+    for (let row = 0; row < 4; row++) {
+      for (let s = 0; s < 2; s++) {
+        const c = this.compartments[row * 2 + s];
+        const ratio = c.water / Math.max(0.01, c.cap);
+        if (ratio < 0.02) continue;
+        // геометрия отсека в координатах корабля: центр ряда и борт
+        const z = -L * 0.375 + row * L * 0.25;
+        const x = (s === 1 ? 1 : -1) * Math.max(0.5, B * 0.27);
+        const t = (z + L / 2) / L;
+        const yBot = -P.draft * 0.55;                       // дно трюма
+        const yTop = hullProfile(t, P).bulwark - 1.0;       // уровень палубы
+        // дно и верх заполнения — в МИР (с креном от затопления):
+        // уровень горизонтален, верх не выше моря
+        const botW = v.set(x, yBot, z).applyQuaternion(vq).add(this.position);
+        const botY = botW.y;
+        const topW = v.set(x, yBot + ratio * (yTop - yBot), z)
+          .applyQuaternion(vq).add(this.position);
+        const topY = Math.min(topW.y, seaY - 0.03);
+        const h = topY - botY;
+        if (h < 0.05) continue;
+        // центр бокса: XZ от корабля, Y — середина уровня
+        const cen = v.set(x, 0, z).applyQuaternion(vq).add(this.position);
+        const m = this.floodWater[row * 2 + s];
+        m.visible = true;
+        m.position.set(cen.x, botY + h / 2, cen.z);
+        m.scale.set(Math.max(0.5, B * 0.42), h, Math.max(0.6, L * 0.23));
+        m.rotation.set(0, 0, 0);
+      }
+    }
+  }
+
   updateVisual(time: number, dt: number, particles: Particles, negShift?: THREE.Vector3) {
     const v = this.visual;
     v.group.position.copy(this.position);
-    v.group.quaternion.copy(this.quaternion);
+    // Task 48: крен/дифферент от затопления — ПОВЕРХ физики
+    // (кренящий момент воды не борется с пружиной колонн — корабль
+    // визуально валится на затопленный борт; при потоплении сценарий
+    // гибели сам крутит кватернион, floodRollCur обнулён)
+    if (!this.sinking) {
+      this._floodRollQ.setFromAxisAngle(AXIS_Z, this.floodRollCur);
+      this._floodPitchQ.setFromAxisAngle(AXIS_X, this.floodPitchCur);
+      this._floodVisQ.copy(this.quaternion).multiply(this._floodRollQ).multiply(this._floodPitchQ);
+    } else {
+      this._floodVisQ.copy(this.quaternion);
+    }
+    v.group.quaternion.copy(this._floodVisQ);
+    // Task 48: вода в отсеках — видимая, на нужном борту
+    this.updateFloodWater(time);
 
     // паруса: количество поставленных парусов соответствует ФАКТИЧЕСКОЙ
     // СКОРОСТИ — экипаж ставит паруса по мере разгона и убирает по мере
@@ -2467,9 +2582,10 @@ export class Ship {
         to.x * (70 + Math.random() * 12), to.y * (70 + Math.random() * 12) + 1.2, to.z * (70 + Math.random() * 12),
         dist / 74, 0.09, 0, 0.02, 0);
     }
-    // урон: ТОЛЬКО шанс снять фигуру с палубы цели (матросы гибнут);
+    // урон: ТОЛЬКО шанс снять фигуру с палубы цели (матросы гибнут
+    // или — у борта — СБИВАЮТСЯ ЗА БОРТ, Task 48);
     // урона корпусу/парусам НЕТ — корабль не разрушается от пуль
-    const hitChance = weapon === 'musket' ? 0.20 : 0.11;
+    const hitChance = weapon === 'musket' ? 0.26 : 0.15;
     if (Math.random() < hitChance) {
       // направление полёта — приоритет фигур у борта со стороны стрелка
       target.smallArmsHit(to.clone());
@@ -2520,5 +2636,15 @@ export class Ship {
       const mesh = o as THREE.Mesh;
       if (mesh.geometry) mesh.geometry.dispose();
     });
+    // Task 48: вода отсеков живёт в мировом корне — убрать за собой
+    if (this.floodWater) {
+      for (const m of this.floodWater) {
+        m.parent?.remove(m);
+        m.geometry.dispose();
+      }
+      this.floodWater = null;
+    }
+    this.floodWaterMat?.dispose();
+    this.floodWaterMat = null;
   }
 }

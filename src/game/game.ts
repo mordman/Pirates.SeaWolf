@@ -3047,20 +3047,11 @@ export class Game {
       this.rig.snap();
     }
     const p = this.player;
-    p.hullHP = p.hullMax;
-    p.sailHP = p.sailMax;
-    p.crew = Math.round(p.preset.maxCrew * 0.8);
-    p.water = 0; p.leakRate = 0; p.onFire = false; p.fireT = 0; p.fireIntensity = 0;
-    p.sinking = false; p.sinkT = 0; p.sunk = false;
-    p.mastsBroken = 0; p.mastAnim = -1;
-    for (let i = 0; i < p.mastHP.length; i++) { p.mastHP[i] = p.mastMaxHP; p.mastFall[i] = -1; }
-    for (const m of p.visual.masts) { m.rotation.set(0, 0, 0); m.position.y = 0; }
-    for (const h of p.hullHoles) { p.visual.group.remove(h.mesh); h.mesh.geometry.dispose(); }
-    p.hullHoles = [];
-    p.leakBias = 0;
-    p.visual.group.visible = true;
-    p.velocity.set(0, 0, 0);
-    p.angular.set(0, 0, 0);
+    // Task 48: полный сброс повреждений ОДНИМ вызовом — раньше respawn
+    // чистил корпус/мачты вручную и ЗАБЫВАЛ отсеки трюма (течь жила
+    // дольше корабля: возрождённый корабль снова набирал воду и тонул
+    // вторично) и дощатую обшивку (дыры оставались на новом корпусе)
+    p.clearDamage();
     p.position.copy(this.spawnPos);
     p.position.y = 0;
     p.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(

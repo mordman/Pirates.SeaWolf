@@ -189,7 +189,9 @@ check('B2: щепы от разлетающейся секции (обломки
 log('\n===== C: вода в трюме по отсекам, крен и дифферент =====');
 const flood1 = jparse(await evR(`(() => {
   const g = window.__game;
-  g.stepDebugNR(12);
+  // Task 48: 20 с — напор по Торричелли слабеет по мере заполнения
+  // (раньше поток был постоянным и 12 с хватало)
+  g.stepDebugNR(20);
   const d = g.player.damageInfo();
   return JSON.stringify({
     comps: d.compartments,
@@ -216,24 +218,33 @@ check('C5: ДИФФЕРЕНТ НОСОМ ВНИЗ (floodPitch > +0.2°)',
 check('C6: вода в трюме САЖАЕТ КОРАБЛЬ ГЛУБЖЕ (draft > 0.1 м)',
   flood1.draft > 0.1, `осадка +${flood1?.draft} м`);
 
-// дотопление шагами по 5 с — остановиться ВСКОРЕ после начала гибели
+// дотопление КОРОТКИМИ шагами из скрипта (длинный эвал с 40×5 с
+// симуляции падает по таймауту демона и ПРОГОНЯЕТСЯ ДВАЖДЫ —
+// корабль успевает утонуть до первого замера пловцов, Task 48)
+let sinkingStarted = false, fracAtSink = 0, iters = 0;
+for (let k = 0; k < 40; k++) {
+  const st = jparse(await evR(`(() => {
+    const g = window.__game;
+    const p = g.player;
+    if (!p.sinking) g.stepDebugNR(5);
+    return JSON.stringify({ s: p.sinking, f: +(p.water / p.holdCap).toFixed(3) });
+  })()`));
+  iters = k + 1;
+  if (st && st.s) { sinkingStarted = true; fracAtSink = st.f; break; }
+}
 const flood2 = jparse(await evR(`(() => {
   const g = window.__game;
   const p = g.player;
-  let i = 0;
-  while (!p.sinking && i++ < 18) g.stepDebugNR(5);
-  const sinkingStarted = p.sinking;
-  const fracAtSink = +(p.water / p.holdCap).toFixed(3);
   g.stepDebugNR(4);
   const d = p.damageInfo();
   return JSON.stringify({
-    frac: fracAtSink, sinkingStarted,
-    iters: i, sinkT: d.sinkT,
+    sinkT: d.sinkT,
     roll: +(p.euler.z * 57.3).toFixed(1),
     pitch: +(p.euler.x * 57.3).toFixed(1),
     comps: d.compartments,
   });
 })()`));
+flood2.frac = fracAtSink; flood2.sinkingStarted = sinkingStarted; flood2.iters = iters;
 log(JSON.stringify(flood2));
 check('C7: трюм заполнился до порога — корабль ТОНЕТ',
   flood2.sinkingStarted === true, `frac=${flood2?.frac}, итераций: ${flood2?.iters}`);
@@ -312,6 +323,12 @@ const battle = jparse(await evR(`(() => {
   });
   const c0 = [];
   scanBig(c0);
+  // Task 48: цель БЛИЗКО (38 м) ещё ДО залпов — на дальней дистанции
+  // разлёт ядер рождает 13 отдельных зон-вмятин, ни одна не набирает
+  // 3 попаданий до пробоины (тест флейковал: то 1 пробоина, то 0)
+  tgt.position.copy(p.position).add(new T(0, 0, 38));
+  tgt.noSurrender = true;
+  g.stepDebugNR(0.3);
   for (let i = 0; i < 6; i++) {
     g.combat.aiBallVolley(p, tgt);
     g.stepDebugNR(4.5);
@@ -319,8 +336,6 @@ const battle = jparse(await evR(`(() => {
   const d = tgt.damageInfo();
   const geoAfterVolley = c0.slice().sort((a,b)=>b-a);
   tgt.clearDamage();
-  tgt.position.copy(p.position).add(new T(0, 0, 38));
-  tgt.noSurrender = true;
   p.applyDamage({ kind: 'ball', amount: 4, hitPoint: p.position.clone() });
   g.stepDebugNR(3);
   const crouched = p.crew3d.crouchedCount();

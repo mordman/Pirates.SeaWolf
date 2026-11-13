@@ -530,7 +530,9 @@ export class CombatSystem {
       const plEngaged = (time - this.lastPlayerShotT) < 14 || pl.sinceHit() < 14;
       pl.threatTarget = null;
       if (plEngaged && !pl.sunk && !pl.sinking) {
-        let bestD = 60;
+        // Task 48: окно угрозы 95 м — ружья (85 м) работают на
+        // дистанции абордажной перестрелки, а не только «борт в борт»
+        let bestD = 95;
         for (const t of this.others) {
           if (t.sunk || t.sinking || t.surrendered) continue;
           const d = pl.position.distanceTo(t.position);
@@ -540,7 +542,7 @@ export class CombatSystem {
       const playerEngages = !pl.sunk && !pl.sinking;
       for (const t of this.others) {
         t.threatTarget = (playerEngages && t.crewEngage && !t.surrendered
-          && !pl.surrendered && t.position.distanceTo(pl.position) < 60)
+          && !pl.surrendered && t.position.distanceTo(pl.position) < 95)
           ? pl : null;
       }
     }

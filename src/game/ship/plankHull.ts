@@ -597,24 +597,62 @@ export class PlankSystem {
   }
 
   // ============================================================
-  // УРОН: попадание в борт (y, z — локальные) → доски в радиусе.
-  // Ближайшие доски получают больше; HP 100; state по HP:
-  // >75 → 0, 75–50 → 1, 50–15 → 2, ≤15 → 3 (сквозной пролом).
-  // Прочность досок — из настроек (hpMul: урон делится).
+  // УРОН (Task 48): удар вырезает в обшивке СПЛОШНУЮ дыру — как в
+  // референсе (tearPlank): все доски, ТЕЛО которых попало в радиус
+  // разрыва, ломаются ВМЕСТЕ с первой сломанной. Раньше урон шёл
+  // по ЦЕНТРАМ досок — из-за разбежки стыков ломались доски через
+  // одну и борт превращался в «шахматную доску».
+  //  • дистанция — от ПРЯМОУГОЛЬНИКА доски (rectDist), не от центра:
+  //    ядро, попавшее в кромку, ломает ЭТУ доску, а не соседнюю,
+  //    чей центр оказался ближе;
+  //  • прямой зоне (rectDist < R_TEAR) — полный урон; когда первая
+  //    доска ломается, ВСЕ доски внутри R_TEAR вырываются с корнем —
+  //    непрерывный пролом;
+  //  • кольцо (R_TEAR..R_SPRAY) — частичный урон с спадом (вмятины
+  //    → прогибы → следующее попадание расширяет дыру);
+  //  • HP 100; state по HP: >75 → 0, 75–50 → 1, 50–15 → 2, ≤15 → 3.
+  //  Прочность досок — из настроек (hpMul: урон и радиус разрыва).
   // ============================================================
+  /** расстояние от точки (a,b) до ПРЯМОУГОЛЬНИКА доски в её
+   *  плоскости (0 — точка внутри доски):
+   *    борт (cls 0):   (a,b) = (y, z);  полуразмеры (w/2, len/2)
+   *    палуба (cls 1): (a,b) = (x, z);  полуразмеры (w/2, len/2)
+   *    транец (cls 2): (a,b) = (y, x);  полуразмеры (w/2, len/2) */
+  private rectDist(r: PlankRec, a: number, b: number): number {
+    const ha = r.w / 2, hb = r.len / 2;
+    const ca = r.cls === 1 ? r.x : r.y;   // палуба — по x; борт/транец — по y
+    const cb = r.cls === 2 ? r.x : r.z;   // транец — по x; борт/палуба — по z (вдоль!)
+    const da = Math.abs(a - ca) - ha;
+    const db = Math.abs(b - cb) - hb;
+    return Math.hypot(da > 0 ? da : 0, db > 0 ? db : 0);
+  }
+
+  /** максимальный радиус урона от точки удара (кольцо щепы) */
+  private sprayR(eff: number): number {
+    return this.tearR(eff) + 1.05;
+  }
+
+  /** радиус СПЛОШНОГО разрыва при сломе (растёт с уроном ядра,
+   *  падает с прочностью досок из настроек) */
+  private tearR(eff: number): number {
+    return 0.40 + Math.min(0.55, Math.max(0, eff) * 0.006);
+  }
+
   damageSide(side: 1 | -1, y: number, z: number, dmg: number): PlankDamageResult {
-    const R = 1.18;
+    const hpMul = Math.max(0.05, PLANK_RULES.hpMul);
+    const R = this.sprayR(dmg / hpMul);
     const cands = this.recsByMesh[side === 1 ? 0 : 1]
-      .map(r => ({ r, d: Math.hypot((r.y - y) * 1.1, (r.z - z) * 0.8) }))
+      .map(r => ({ r, d: this.rectDist(r, y, z) }))
       .filter(c => c.d < R)
       .sort((a, b) => a.d - b.d);
     return this.applyDamage(cands, dmg, y, z);
   }
 
   damageDeck(x: number, z: number, dmg: number): PlankDamageResult {
-    const R = 1.0;
+    const hpMul = Math.max(0.05, PLANK_RULES.hpMul);
+    const R = this.sprayR(dmg / hpMul);
     const cands = this.recsByMesh[2]
-      .map(r => ({ r, d: Math.hypot((r.x - x) * 1.25, (r.z - z) * 0.9) }))
+      .map(r => ({ r, d: this.rectDist(r, x, z) }))
       .filter(c => c.d < R)
       .sort((a, b) => a.d - b.d);
     return this.applyDamage(cands, dmg, x, z);
@@ -622,9 +660,10 @@ export class PlankSystem {
 
   /** попадание в ТРАНЕЦ: y — высота, x — точка по ширине кормы */
   damageTransom(y: number, x: number, dmg: number): PlankDamageResult {
-    const R = 1.18;
+    const hpMul = Math.max(0.05, PLANK_RULES.hpMul);
+    const R = this.sprayR(dmg / hpMul);
     const cands = this.recsByMesh[3]
-      .map(r => ({ r, d: Math.hypot((r.y - y) * 1.1, (r.x - x) * 0.8) }))
+      .map(r => ({ r, d: this.rectDist(r, y, x) }))
       .filter(c => c.d < R)
       .sort((a, b) => a.d - b.d);
     return this.applyDamage(cands, dmg, y, x);
@@ -636,10 +675,14 @@ export class PlankSystem {
     const meshIdxOf = (r: PlankRec) => r.cls === 1 ? 2 : r.cls === 2 ? 3 : (r.side === 1 ? 0 : 1);
     const dirty = new Set<number>();
     // прочность досок из настроек: урон делится на множитель
-    const eff = dmg / Math.max(0.05, PLANK_RULES.hpMul);
-    const touch = (r: PlankRec, amount: number) => {
-      if (amount <= 0) return;
-      r.hp = Math.max(0, r.hp - amount);
+    const hpMul = Math.max(0.05, PLANK_RULES.hpMul);
+    const eff = dmg / hpMul;
+    const R_TEAR = this.tearR(eff);
+    const R_SPRAY = R_TEAR + 1.05;
+    /** возвращает true, если ЭТОТ вызов сломал доску (state → 3) */
+    const touch = (r: PlankRec, amount: number, forceBreak = false) => {
+      if (amount <= 0 && !forceBreak) return false;
+      r.hp = forceBreak ? 0 : Math.max(0, r.hp - amount);
       const st = (r.hp > 75 ? 0 : r.hp > 50 ? 1 : r.hp > 15 ? 2 : 3) as 0 | 1 | 2 | 3;
       if (st !== r.state) {
         r.state = st;
@@ -650,18 +693,40 @@ export class PlankSystem {
           if (r.cls !== 1 && r.belowWL) {
             this.brokenBelowWL.push(r);
           }
+          return true;
         }
       }
+      return false;
     };
+    // --- прямой зоне — полный урон, кольцу — с спадом (край дыры
+    // подтачивается: 4-е попадание расширяет разрыв) ---
+    let tore = false;
     for (const c of cands) {
-      const fall = 1 - c.d / 1.18;            // 1 в центре .. 0 на краю
-      touch(c.r, eff * (0.32 + 0.68 * fall));  // ближайшая — полным весом
+      if (c.d >= R_SPRAY) break;
+      if (c.d < R_TEAR) {
+        if (touch(c.r, eff)) tore = true;
+      } else {
+        const fall = 1 - (c.d - R_TEAR) / (R_SPRAY - R_TEAR);
+        touch(c.r, eff * (0.16 + 0.58 * fall));
+      }
+    }
+    // ============================================================
+    // СПЛОШНОЙ РАЗРЫВ (Task 48, по референсу tearPlank): первая
+    // сломанная доска вырывается С КОРНЕМ — все доски, чьё тело в
+    // радиусе R_TEAR от точки удара, уходят вместе с ней. Пролом
+    // растёт НЕПРЕРЫВНО (все доски подряд), а не «через одну»
+    // ============================================================
+    if (tore) {
+      for (const c of cands) {
+        if (c.d < R_TEAR) touch(c.r, 0, true);
+      }
     }
     // ============================================================
     // КАСКАД «ПАНЕЛЬ ОБШИВКИ ВЫРВАНО»: в зоне 2.2 м вокруг точки
-    // УДАРА накоплено ≥6 СЛОМАННЫХ досок (за серию попаданий) и
-    // бонус ещё не разыгран — оставшиеся доски зоны получают −46:
-    // дыра расширяется СКАЧКОМ, панель отлетает целиком
+    // УДАРА накоплено ≥12 СЛОМАННЫХ досок (Task 48: разрыв сам
+    // даёт 8-10, порог поднят — раньше срабатывал с одного разрыва)
+    // — оставшиеся доски зоны получают −46: дыра расширяется
+    // СКАЧКОМ, панель отлетает целиком
     // ============================================================
     const mIdx = meshIdxOf(cands[0].r);
     const hitY = cands[0].r.cls === 1 ? cands[0].r.y : y;
@@ -673,10 +738,10 @@ export class PlankSystem {
     const inZone = this.recsByMesh[mIdx].filter(r => zoneDist(r) < 2.2);
     const brokenInZone = inZone.filter(r => r.state === 3).length;
     const zoneRest = inZone.filter(r => r.state < 3 && !r.cascadeHit);
-    if (brokenInZone >= 6 && zoneRest.length) {
+    if (brokenInZone >= 12 && zoneRest.length) {
       for (const r of zoneRest) {
         r.cascadeHit = true;
-        touch(r, 46 / Math.max(0.05, PLANK_RULES.hpMul));   // добивание соседей
+        touch(r, 46 / hpMul);   // добивание соседей
       }
       res.cascade = true;
     }

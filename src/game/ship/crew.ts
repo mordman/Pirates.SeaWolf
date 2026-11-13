@@ -104,7 +104,7 @@ export interface CrewFigure {
   work?: WorkPath;
   baseScaleY: number;         // исходный рост (гребцы «сидят» — 0.78)
   // --- Task 43: СТРЕЛКИ (ружья 70% / пистолеты 30%) ---
-  /** оружие фигуры: 'musket' (дальность 50 м) | 'pistol' (20 м) | null */
+  /** оружие фигуры: 'musket' (дальность 85 м) | 'pistol' (32 м) | null */
   weapon?: 'musket' | 'pistol' | null;
   /** меш оружия (ребёнок руки; создаётся лениво при первом бое) */
   weaponMesh?: THREE.Object3D | null;
@@ -125,8 +125,10 @@ export interface CrewFigure {
   replQueued?: boolean;
   /** Task 45: фигура поднята из трюма (замена погибшего) */
   fromSpare?: boolean;
-  /** Task 43: эвакуация — фигура плывёт (нестандартное поведение) */
-  swim?: { phase: 'run' | 'jump' | 'swim' | 'drown'; t: number;
+  /** Task 43: эвакуация — фигура плывёт (нестандартное поведение).
+   *  Task 48: фаза 'float' — СБИТЫЙ ЗА БОРТ труп: приводнится лицом
+   *  вниз, дрейфует с волнами, потом медленно уходит под воду */
+  swim?: { phase: 'run' | 'jump' | 'swim' | 'drown' | 'float'; t: number;
     vx: number; vz: number; drownAt: number; jumpY: number; };
   // --- смерть ---
   dead: boolean;
@@ -1129,6 +1131,41 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
     f.swim = undefined;
     f.group.visible = false;
   };
+  // ============================================================
+  // Task 48: СБИТ ЗА БОРТ. Пуля/удар валит матроса ЗА фальшборт:
+  // фигура отцепляется в мир, летит наружу параболой (фаза 'jump')
+  // и приводнится мёртвым телом (фаза 'float' — лицом вниз,
+  // дрейф + пузыри, затем 'drown' — медленно уходит под воду)
+  // ============================================================
+  const killOverboard = (f: CrewFigure, shipPos: THREE.Vector3,
+    shipQuat: THREE.Quaternion) => {
+    const root = FX.worldRoot;
+    f.dead = true;
+    f.deadT = 0;
+    f.deathMode = 'fall';
+    f.corpseLife = 0;
+    f.fallDir = Math.random() < 0.5 ? 1 : -1;
+    f.fallRoll = (Math.random() - 0.5) * 0.8;
+    if (!root) { f.group.visible = false; return; }
+    const side = f.group.position.x >= 0 ? 1 : -1;   // +X порт: наружу
+    const lp = f.group.position;
+    const wpos = new THREE.Vector3(lp.x, lp.y + (f.midY ?? 0.75), lp.z)
+      .applyQuaternion(shipQuat).add(shipPos);
+    root.add(f.group);
+    f.group.position.copy(wpos);
+    f.group.rotation.set(0, f.group.rotation.y, 0);
+    const out = new THREE.Vector3(side, 0, 0).applyQuaternion(shipQuat);
+    f.swim = {
+      phase: 'jump', t: 0,
+      vx: out.x * (1.7 + Math.random() * 1.3),
+      vz: out.z * (1.7 + Math.random() * 1.3),
+      drownAt: 0, jumpY: 0.9 + Math.random() * 0.7,
+    };
+    // кровь в полёте + крик брызг при приводнении даст updateSwimmers
+    FX.particles?.blood(wpos.x, wpos.y, wpos.z,
+      out.x * 2.2, 0.6, out.z * 2.2, 6, 0.9);
+  };
+
   /** корабль тонет: раздать «прыжки» живым фигурам и вести их к
    *  борту (фаза run); прыжок/плавание — updateSwimmers */
   const startAbandon = (dt: number, time: number, ship: CrewShipState) => {
@@ -1206,14 +1243,39 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         g.rotation.x = -Math.min(0.6, s.t * 1.4);   // «рыбкой» вперёд
         const wy = waterHeightAt(g.position.x, g.position.z, time);
         if (g.position.y <= wy + 0.1) {
-          // приводнение!
-          s.phase = 'swim';
-          s.t = 0;
-          s.drownAt = 7 + Math.random() * 13;       // сколько продержится
+          // приводнение! (Task 48: мёртвое тело — фаза 'float')
           P?.splash(g.position.x, wy, g.position.z, 0.75);
-          g.rotation.x = 1.35;                       // лёжа в воде
-          g.position.y = wy - 0.52;
+          if (f.dead) {
+            s.phase = 'float';
+            s.t = 0;
+            s.drownAt = 8 + Math.random() * 9;   // сколько продержится
+            g.rotation.x = 1.5;                    // лицом вниз
+            g.position.y = wy - 0.55;
+          } else {
+            s.phase = 'swim';
+            s.t = 0;
+            s.drownAt = 7 + Math.random() * 13;   // сколько продержится
+            g.rotation.x = 1.35;                   // лёжа в воде
+            g.position.y = wy - 0.52;
+          }
         }
+      } else if (s.phase === 'float') {
+        // Task 48: СБИТЫЙ ЗА БОРТ — мёртвый дрейф: лицом вниз,
+        // качается на волне, редкие пузыри; потом уходит под воду
+        const wy = waterHeightAt(g.position.x, g.position.z, time);
+        g.position.y = wy - 0.55 + Math.sin(time * 1.6 + f.phase) * 0.04;
+        g.position.x += s.vx * dt;
+        g.position.z += s.vz * dt;
+        s.vx *= Math.exp(-dt * 0.4);
+        s.vz *= Math.exp(-dt * 0.4);
+        g.rotation.x = 1.5 + Math.sin(time * 1.2 + f.phase) * 0.07;
+        g.rotation.z = Math.sin(time * 0.9 + f.phase) * 0.12;
+        if (P && Math.random() < dt * 0.7) {
+          P.spawn(g.position.x, wy, g.position.z,
+            (Math.random() - 0.5) * 0.3, 0.4 + Math.random() * 0.5, (Math.random() - 0.5) * 0.3,
+            0.4, 0.12, 0, 0.4, 9);
+        }
+        if (s.t > s.drownAt) { s.phase = 'drown'; s.t = 0; }
       } else if (s.phase === 'swim') {
         // на волне: дрейф + барахтанье руками
         const wy = waterHeightAt(g.position.x, g.position.z, time);
@@ -1364,6 +1426,8 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       // Task 43/45: пуля противника — фигура падает. Предпочтение —
       // стрелки на СТОРОНЕ СТРЕЛКА (они стоят в линии у борта и
       // видны из-за фальшборта); без направления — случайная.
+      // Task 48: фигура У БОРТА (или 1 из 3 в любом месте) валится
+      // ЗА ФАЛЬШБОРТ — пуля «снимает матроса с корабля» в воду
       const alive = figures.filter(f => !f.dead && !f.swim && f.group.visible);
       if (!alive.length) return 0;
       if (fromDirWorld) {
@@ -1383,16 +1447,23 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       const n = Math.min(maxCount, alive.length);
       for (let i = 0; i < n; i++) {
         const f = alive[i];
-        killFigure(f, 'grape', f.group.position,
-          f.group.position.clone().add(new THREE.Vector3(0, 0, 1)),
-          shipPos, shipQuat);
+        const lp = f.group.position;
+        // у самого борта (кромка фальшборта) или каждый третий — ЗА БОРТ
+        const nearRail = Math.abs(lp.x) >= Math.max(0.55, halfW(lp.z) * 0.62);
+        if (nearRail || Math.random() < 0.34) {
+          killOverboard(f, shipPos, shipQuat);
+        } else {
+          killFigure(f, 'grape', f.group.position,
+            f.group.position.clone().add(new THREE.Vector3(0, 0, 1)),
+            shipPos, shipQuat);
+        }
       }
       vis.dead = figures.filter(f => f.dead).length;
       vis.shown = figures.filter(f => !f.dead && f.group.visible).length;
       return n;
     },
     swimmersAlive() {
-      return figures.filter(f => f.swim && f.swim.phase !== 'drown' && f.group.visible).length;
+      return figures.filter(f => f.swim && !f.dead && f.swim.phase !== 'drown' && f.group.visible).length;
     },
     armedInfo() {
       let musket = 0, pistol = 0;
@@ -1450,10 +1521,12 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         // Task 46: заявки на подмену — КАЖДЫЙ погибший (не только
         // вооружённый): «погибшие матросы подменяются живыми из
         // общего количества экипажа на корабле» — включая гребцов,
-        // канониров и вахтенных, убитых картечью/ядрами
+        // канониров и вахтенных, убитых картечью/ядрами.
+        // Task 48: и СБИТЫХ ЗА БОРТ (у них стоит f.swim, но они
+        // мертвы — мёртвый пловец ≠ живый пловец: замена нужна)
         if (CREW_RULES.replacement) {
           for (const f of figures) {
-            if (f.dead && !f.swim && !f.replQueued) {
+            if (f.dead && !f.replQueued) {
               f.replQueued = true;
               replQueue.push(time + 2 + Math.random() * 2.5);
             }
@@ -1508,9 +1581,10 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         });
       }
 
-      // --- трупы: падение и истлевание ---
+      // --- трупы: падение и истлевание (Task 48: сбитые за борт —
+      // в мире, ими управляет updateSwimmers, тут не трогаем) ---
       for (const f of figures) {
-        if (!f.dead || f.deathMode !== 'fall') continue;
+        if (!f.dead || f.swim || f.deathMode !== 'fall') continue;
         f.deadT += dt;
         const k = Math.min(1, f.deadT / 0.5);
         const e = 1 - (1 - k) * (1 - k); // easeOut
@@ -1563,7 +1637,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
         // ========================================================
         if (f.weapon && !f.swim) {
           let handled = false;
-          const range = f.weapon === 'musket' ? 50 : 20;
+          const range = f.weapon === 'musket' ? 85 : 32;
           // «наша» атака: противник в пределах дальности оружия (+10 м):
           // и когда НАС атакуют (underFire), и когда МЫ атакуем (threat
           // рядом) — в обоих случаях стрелки занимают посты у борта
