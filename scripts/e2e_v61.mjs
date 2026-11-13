@@ -297,15 +297,21 @@ const battle = jparse(await evR(`(() => {
   const tgt = g.combat.others.find(o => !o.sunk && !o.sinking && !o.surrendered);
   tgt.clearDamage();
   const T = window.__THREE.Vector3;
-  tgt.position.copy(p.position).add(new T(0, 0, 130));
+  tgt.position.copy(p.position).add(new T(0, 0, 55));
   tgt.velocity.set(0, 0, 0);
   tgt.noSurrender = true;
   tgt.surrendered = false;
-  const c0 = [];
-  tgt.visual.group.traverse(o => {
+  // Task 47: меш ЭКИПАЖА пересобирается при гибели матроса в бою
+  // (это не поломка корпуса) — исключаем поддерево экипажа из снимка
+  const crewSet = new Set();
+  if (tgt.crew3d && tgt.crew3d.group) tgt.crew3d.group.traverse(o => crewSet.add(o));
+  const scanBig = (out) => tgt.visual.group.traverse(o => {
+    if (crewSet.has(o)) return;
     if (o.isMesh && o.geometry && o.geometry.attributes.position
-      && o.geometry.attributes.position.count > 500) c0.push(o.geometry.attributes.position.count);
+      && o.geometry.attributes.position.count > 500) out.push(o.geometry.attributes.position.count);
   });
+  const c0 = [];
+  scanBig(c0);
   for (let i = 0; i < 6; i++) {
     g.combat.aiBallVolley(p, tgt);
     g.stepDebugNR(4.5);
@@ -322,10 +328,7 @@ const battle = jparse(await evR(`(() => {
   const tgtHull0 = tgt.hullHP, tgtCrew0 = tgt.crew;
   g.stepDebugNR(18);
   const c1 = [];
-  tgt.visual.group.traverse(o => {
-    if (o.isMesh && o.geometry && o.geometry.attributes.position
-      && o.geometry.attributes.position.count > 500) c1.push(o.geometry.attributes.position.count);
-  });
+  scanBig(c1);
   const c1s = c1.slice().sort((a,b)=>b-a);
   // Task 46: сравнение НЕЧУВСТВИТЕЛЬНО к порядку топ-3 (близкие
   // по вершинам меши меняются местами между снимками — не баг);

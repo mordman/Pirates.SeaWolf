@@ -122,8 +122,8 @@ check('A2: иерархия Ship_Root → Skeleton/Hull_Planks/Masts_And_Spars/S
   && ['Skeleton', 'Hull_Planks', 'Masts_And_Spars', 'Sails_And_Rigging', 'Props']
     .every(n => hier.groups.includes(n)),
   JSON.stringify(hier?.groups));
-check('A3: доски — 3 именованных меша (порт/штирборт/палуба), записи > 300',
-  hier.plankMeshes.length === 3 && hier.planks.total > 300
+check('A3: доски — именованные меши (порт/штирборт/палуба/транец), записи > 300',
+  hier.plankMeshes.length >= 3 && hier.planks.total > 300
   && hier.plankMeshes.every(m => m.startsWith('Planks_')),
   `${hier?.planks.total} досок: ${JSON.stringify(hier?.plankMeshes)}`);
 check('A4: каркас смоделирован (скелет > 1500 треугольников — виден в проломах)',
@@ -433,27 +433,30 @@ check('D7: стрелки ВКЛ — перестрелка возобновил
 log('\n===== E: мачты: отстык верхних сегментов =====');
 // мутация — отдельным вызовом (телеметрия __sea обновляется на
 // рендер-кадрах; данные читаем напрямую из объектов)
+// Task 47: мишень полигона — СВЕЖИЙ корабль (в бою C у игрока
+// могли сломаться обе мачты — перелом было нечем проверять)
 await evR(`(() => {
   const g = window.__game;
-  const p = g.player;
-  // перелом грот-мачты (как от ядра/книппеля)
-  p.breakMast(1);
+  g.startProving('fluyt');
+  g.stepDebugNR(0.4);
+  const t = g.pgTarget.ship;
+  t.breakMast(1);
   g.stepDebugNR(2);
   return 'ok';
 })()`);
 await sleep(400);
 const mast = jparse(await evR(`(() => {
   const g = window.__game;
-  const p = g.player;
+  const t = g.pgTarget.ship;
   // прямые данные (не снапшот __sea): присоединённые сегменты
-  const seg = p.visual.masts.map(m =>
+  const seg = t.visual.masts.map(m =>
     (m.userData.segments || []).filter(s => s.parent).length);
-  const m1 = p.visual.masts[1];
+  const m1 = t.visual.masts[1];
   const segDetail = (m1.userData.segments || []).map(s => !!s.parent);
   const di = window.__seaDebrisInfo();
   return JSON.stringify({
     seg, segDetail, spar: di.byKind.spar, alive: di.alive,
-    fall: p.mastFall,
+    fall: t.mastFall,
   });
 })()`));
 log(JSON.stringify(mast));
@@ -462,6 +465,8 @@ check('E1: у сломанной мачты остались ТОЛЬКО ниж
   `грот-мачта: ${JSON.stringify(mast?.segDetail)} (все: ${JSON.stringify(mast?.seg)})`);
 check('E2: верхние сегменты падают обломками SPAR (≥2 живых)',
   mast.spar >= 2 && mast.alive >= 2, `spar=${mast?.spar}, живых обломков=${mast?.alive}`);
+await evR(`(() => { window.__game.exitProving(); window.__game.stepDebugNR(0.3); return 1; })()`);
+await sleep(700);
 
 // ============ F: НАСТРОЙКИ LIVE: дощатая ↔ обычная ============
 log('\n===== F: модель корпуса в настройках (live) =====');
@@ -530,8 +535,8 @@ const persist = jparse(await evR(`(() => {
   });
 })()`));
 log(JSON.stringify(persist));
-check('F6: схема v16: hullModel/crewReplacement/crewMarksmen сохранены',
-  persist.v === 16 && persist.hullModel === 'planks'
+check('F6: схема v16+: hullModel/crewReplacement/crewMarksmen сохранены',
+  persist.v >= 16 && persist.hullModel === 'planks'
   && persist.crewReplacement === true && persist.crewMarksmen === true,
   JSON.stringify(persist));
 

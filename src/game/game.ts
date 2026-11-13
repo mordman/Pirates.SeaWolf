@@ -10,7 +10,7 @@ import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehe
 import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
-import { CombatSystem, AMMO_INFO, AmmoType } from './combat/combat';
+import { CombatSystem, AMMO_INFO, AmmoType, setHullDamageMul } from './combat/combat';
 import { World, heightAt, VILLAGES, type PortDef } from './world/world';
 import { Lander } from './player/lander';
 import { GLBPartSystem } from './glb/glbParts';
@@ -19,6 +19,8 @@ import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive, debrisInfo } from './fx/debris';
 import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits, setCrewRules } from './ship/crew';
+import { setPlankRules } from './ship/plankHull';
+import { setShipDurabilityMap } from './ship/Ship';
 import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
@@ -320,6 +322,11 @@ export class Game {
       replacement: this.settings.gameplay.crewReplacement,
       marksmen: this.settings.gameplay.crewMarksmen,
     });
+    // Task 47: КОРАБЛИ — прочность досок, урон ядер, живучесть
+    // по каждому кораблю (до создания судов — карта множителей)
+    setPlankRules({ hpMul: this.settings.ships.plankStrength });
+    setHullDamageMul(this.settings.ships.ballDamage);
+    setShipDurabilityMap(this.settings.ships.durability);
     this.applyPhysicsConfig(this.settings.physics);
     this.weather.onThunder = (dist) => this.audio.thunder(dist);
     this.applyFx(this.settings.fx);
@@ -476,6 +483,33 @@ export class Game {
       for (const a of this.aiShips) rescale(a.ship);
       if (this.pgTarget) rescale(this.pgTarget.ship);
       this.pushMessage(`Прочность кораблей: ×${s.gameplay.hullDurability.toFixed(2)}`);
+    }
+    // ===== Task 47: КОРАБЛИ — доски/ядра/живучесть по судам =====
+    if (prev.ships.plankStrength !== s.ships.plankStrength) {
+      setPlankRules({ hpMul: s.ships.plankStrength });
+      this.pushMessage(`Прочность досок обшивки: ×${s.ships.plankStrength.toFixed(2)} ` +
+        `(×1 — пролом с 3 попаданий, ×2 — с 5-6, ×0.5 — с 1-2)`);
+    }
+    if (prev.ships.ballDamage !== s.ships.ballDamage) {
+      setHullDamageMul(s.ships.ballDamage);
+      this.pushMessage(`Урон ядер: ×${s.ships.ballDamage.toFixed(2)} (по корпусу и мачтам)`);
+    }
+    if (JSON.stringify(prev.ships.durability) !== JSON.stringify(s.ships.durability)) {
+      setShipDurabilityMap(s.ships.durability);
+      // перемасштабировать живучесть судов, у которых сменился
+      // личный множитель (текущие повреждения — пропорционально)
+      const rescaleShip = (sh: Ship) => {
+        const k = (s.ships.durability[sh.preset.id] ?? 1)
+          / (prev.ships.durability[sh.preset.id] ?? 1);
+        if (k === 1) return;
+        sh.hullMax *= k; sh.hullHP *= k;
+        sh.sailMax *= k; sh.sailHP *= k;
+        sh.mastMaxHP *= k;
+        for (let i = 0; i < sh.mastHP.length; i++) sh.mastHP[i] *= k;
+      };
+      rescaleShip(this.player);
+      for (const a of this.aiShips) rescaleShip(a.ship);
+      if (this.pgTarget) rescaleShip(this.pgTarget.ship);
     }
     this.rig.camera.far = g.drawDistance * 2 + 4000;
     this.rig.camera.updateProjectionMatrix();

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile, FlagKind } from './buildShip';
+import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile, hullHalfWidthAt, FlagKind } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT } from './crew';
 import type { PlankSystem, PlankRec } from './plankHull';
 import { waterHeightAt } from '../water/waves';
@@ -45,6 +45,16 @@ interface BuoyCol {
   keel0: number;          // киль при проектной осадке (до сдвига)
   top0: number;           // планширь при проектной осадке
   A0: number;             // площадь при проектной осадке (до компенсации развала)
+}
+
+// ============================================================
+// Task 47: ЖИВУЧЕСТЬ ПО КАЖДОМУ КОРАБЛЮ — карта множителей
+// (id пресета → ×прочности), выставляется из настроек игры
+// (вкладка «Корабли»). Умножается на глобальную прочность.
+// ============================================================
+let SHIP_DURABILITY: Record<string, number> = {};
+export function setShipDurabilityMap(m: Record<string, number>) {
+  SHIP_DURABILITY = m ?? {};
 }
 
 /** Опции создания корабля (настройки игры) */
@@ -261,8 +271,9 @@ export class Ship {
     this.plankHull = this.visual.planks ?? null;
     this.boatCountOpt = opts?.boatCount ?? 2;
     this.crewCatsOpt = !!opts?.crewCats;
-    // прочность по настройке игры (по умолчанию 1× — исторические ТТХ)
-    const mul = opts?.durabilityMul ?? 1;
+    // прочность по настройке игры (по умолчанию 1× — исторические ТТХ):
+    // глобальный множитель × личный множитель ЭТОГО корабля (Task 47)
+    const mul = (opts?.durabilityMul ?? 1) * (SHIP_DURABILITY[this.preset.id] ?? 1);
     this.hullHP = this.preset.hullHP * mul;
     this.hullMax = this.hullHP;
     this.sailHP = this.preset.sailHP * mul;
@@ -1424,11 +1435,32 @@ export class Ship {
     const deckY = hullProfile(t, this.preset).bulwark - 1.0;
     const hw = this.halfWidthAt(lp.z);
     const onDeck = lp.y > deckY - 0.4 && Math.abs(lp.x) < hw * 0.62;
+    // Task 47: ТРАНЕЦ — попадания в кормовую стену (не в настил
+    // квартердека и не в борт у самой кормы): зона за кормовой
+    // линией настила, в пределах ширины стены транца
+    {
+      const q = this.preset.quarter ?? 0;
+      const floorY = deckY + q;
+      const onQFloor = q > 0 && Math.abs(lp.y - floorY) < 0.5;
+      const wallHalf = Math.max(0.34,
+        hullHalfWidthAt(this.preset, 0.035, lp.y)) + 0.10;
+      if (lp.z < -L * 0.46 && !onQFloor && Math.abs(lp.x) < wallHalf) {
+        const res = this.plankHull.damageTransom(lp.y, lp.x, damage * 2.6);
+        this.plankHitFx(res, lp, belowWL, shotDir);
+        return;
+      }
+    }
     // ×2.6: одно ядро (11-19) даёт ближайшей доске ~29-49 из 100 HP —
     // 3 прямых попадания = слом; соседи по поясу — вмятины/прогиб
     const res = onDeck
       ? this.plankHull.damageDeck(lp.x, lp.z, damage * 2.6)
       : this.plankHull.damageSide(lp.x >= 0 ? 1 : -1, lp.y, lp.z, damage * 2.6);
+    this.plankHitFx(res, lp, belowWL, shotDir);
+  }
+
+  /** щепа/течь/панель по результату урона досок (борт/палуба/транец) */
+  private plankHitFx(res: { changed: number; broken: PlankRec[]; cascade: boolean },
+    lp: THREE.Vector3, belowWL: boolean, shotDir?: THREE.Vector3) {
     if (!res.changed) return;
     for (const r of res.broken) {
       const wp = this.tmpV.copy(r.center).applyQuaternion(this.quaternion).add(this.position);

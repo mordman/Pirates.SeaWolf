@@ -252,6 +252,23 @@ export const MUL_LABELS: Record<string, (v: number) => string> = {
     : `×${v}`,
 };
 
+// ============================================================
+// КОРАБЛИ (Task 47): прочность досок обшивки, урон ядер и
+// живучесть КАЖДОГО корабля по отдельности (по id пресета).
+// Всё применяется НА ЛЕТУ.
+// ============================================================
+export interface ShipsSettings {
+  /** прочность досок обшивки (×0.25..×4): >1 — доски держат больше
+ *  попаданий, <1 — хрупкие; влияет на все корабли в дощатом режиме */
+  plankStrength: number;
+  /** урон ядер (×0.25..×4): сила попаданий снарядов по корпусу
+ *  (доски, HP корпуса, срыв деталей) и мачтам */
+  ballDamage: number;
+  /** живучесть по каждому кораблю: id пресета → множитель ×0.25..×4
+ *  (корпус/паруса/мачты этого судна; 1/отсутствует — норма) */
+  durability: Record<string, number>;
+}
+
 export interface GameSettings {
   graphics: GraphicsSettings;
   controls: ControlsSettings;
@@ -263,6 +280,7 @@ export interface GameSettings {
   assets: AssetsSettings;     // текстуры/шейдеры рельефа + модели (Task 37)
   player: PlayerAppearance;   // внешность капитана (Task 39)
   islands: IslandsSettings;   // мир: деревья/деревни/жители/лодки (Task 41)
+  ships: ShipsSettings;       // корабли: доски/ядра/живучесть (Task 47)
 }
 
 /** Физика корабля и плавучесть (Task 33) */
@@ -338,6 +356,11 @@ export const DEFAULT_SETTINGS: GameSettings = {
     folkMul: 1,       // штатное число жителей
     boatsMul: 1,      // штатное число рыбацких лодок
     perIsland: {},    // переопределений нет — все как глобально
+  },
+  ships: {
+    plankStrength: 1,   // доски — норма (3 прямых ядра = пролом)
+    ballDamage: 1,      // ядра — историческая сила
+    durability: {},     // у каждого корабля — норма (×1)
   },
   weather: { mode: 'clear', windSpeed: 7.5, windDir: 40 },
   fx: { smokeVisible: true, smokeSize: 1, smokeDensity: 1, smokeTransparency: 0.45 },
@@ -420,7 +443,12 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     crewReplacement (подмена погибших из трюма),
 //     crewMarksmen (стрелковый огонь). Старые сохранения — дефолты
 //     'planks'/true/true.
-const SCHEMA_VER = 16;
+// v17 (Task 47): НОВЫЙ раздел ships — прочность досок обшивки
+//     (plankStrength ×0.25..4), урон ядер (ballDamage ×0.25..4),
+//     живучесть КАЖДОГО корабля по отдельности (durability:
+//     id пресета → множитель; отсутствующие — ×1). Старые
+//     сохранения — дефолты 1/1/{}.
+const SCHEMA_VER = 17;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -517,6 +545,20 @@ export function loadSettings(): GameSettings {
           if (typeof ov.folkMul === 'number') o.folkMul = Math.min(5, Math.max(0, ov.folkMul));
           if (typeof ov.boatsMul === 'number') o.boatsMul = Math.min(5, Math.max(0, ov.boatsMul));
           if (Object.keys(o).length) s.islands.perIsland[String(idx)] = o;
+        }
+      }
+    }
+    // Task 47: КОРАБЛИ — доски/ядра/живучесть по судам
+    if (isObj(data.ships)) {
+      const sh = data.ships;
+      if (typeof sh.plankStrength === 'number') s.ships.plankStrength = Math.min(4, Math.max(0.25, sh.plankStrength));
+      if (typeof sh.ballDamage === 'number') s.ships.ballDamage = Math.min(4, Math.max(0.25, sh.ballDamage));
+      if (isObj(sh.durability)) {
+        for (const [id, mul] of Object.entries(sh.durability)) {
+          if (typeof mul === 'number' && isFinite(mul)) {
+            const v = Math.min(4, Math.max(0.25, mul));
+            if (v !== 1) s.ships.durability[id] = v;
+          }
         }
       }
     }

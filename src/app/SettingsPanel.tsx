@@ -15,7 +15,44 @@ import { TEXTURE_SLOTS, type TextureSlotId } from '@/game/assets/textures';
 // сохраняется в localStorage.
 // ============================================================
 
-type Tab = 'graphics' | 'assets' | 'weather' | 'physics' | 'gameplay' | 'islands' | 'controls' | 'audio';
+type Tab = 'graphics' | 'assets' | 'weather' | 'physics' | 'gameplay' | 'ships' | 'islands' | 'controls' | 'audio';
+
+// ============================================================
+// Task 47: КОРАБЛИ — живучесть по каждому судну. Лёгкий список
+// (без подтягивания three.js-пресетов в бандл панели)
+// ============================================================
+const SHIP_DURABILITY_LIST: { id: string; name: string; war: boolean }[] = [
+  { id: 'sloop', name: 'Шлюп «Бриз»', war: false },
+  { id: 'fluyt', name: 'Флейт «Морская корова»', war: false },
+  { id: 'brig', name: 'Бриг «Ревнитель»', war: true },
+  { id: 'caravel', name: 'Каравелла «Нинья»', war: true },
+  { id: 'pinnace', name: 'Пинасс «Морской пёс»', war: true },
+  { id: 'cog', name: 'Когг «Ганзейский волк»', war: false },
+  { id: 'galleon', name: 'Галеон «Золотая лань»', war: true },
+  { id: 'frigate', name: 'Фрегат «Неустрашимый»', war: true },
+  { id: 'victory', name: 'HMS Victory', war: true },
+  { id: 'santisima', name: 'Santísima Trinidad', war: true },
+  { id: 'soleil', name: 'Soleil Royal', war: true },
+  { id: 'blago', name: '«Благополучие»', war: true },
+  { id: 'agamemnon', name: 'HMS Agamemnon', war: true },
+  { id: 'ingermanland', name: '«Ингерманланд»', war: true },
+  { id: 'constitution', name: 'USS Constitution', war: true },
+  { id: 'surprise', name: 'HMS Surprise', war: true },
+  { id: 'hermione', name: 'Hermione', war: true },
+  { id: 'mystique', name: 'Le Mystique', war: true },
+  { id: 'galley', name: 'Галера «Капудана»', war: true },
+  { id: 'blackpearl', name: 'Чёрная жемчужина', war: true },
+  { id: 'amsterdam', name: 'Amsterdam', war: false },
+  { id: 'abergavenny', name: 'Earl of Abergavenny', war: false },
+  { id: 'gotheborg', name: 'Götheborg', war: false },
+  { id: 'friendship', name: 'Friendship of Salem', war: false },
+  { id: 'endeavour', name: 'HMS Endeavour', war: false },
+  { id: 'bounty', name: 'HMS Bounty', war: false },
+  { id: 'essex', name: 'Whaler Essex', war: false },
+  { id: 'rebecca', name: 'Rebecca', war: false },
+  { id: 'svati', name: '«Свати»', war: false },
+  { id: 'ladyw', name: 'Lady Washington', war: false },
+];
 
 const PRESET_LABELS: Record<QualityPreset, string> = {
   low: 'Низкое', medium: 'Среднее', high: 'Высокое', ultra: 'Ультра',
@@ -213,7 +250,7 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
           {/* Task 44: 8 вкладок — ПЕРЕНОС на 2 строки (в одну строку
               «Управление»/«Звук» не влезали и обрезались) */}
           <div className="flex flex-wrap gap-1">
-            {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['islands', '🏝 Острова'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
+            {([['graphics', 'Графика'], ['assets', 'Ресурсы'], ['weather', 'Погода'], ['physics', 'Физика'], ['gameplay', 'Игра'], ['ships', '⛵ Корабли'], ['islands', '🏝 Острова'], ['controls', 'Управление'], ['audio', 'Звук']] as [Tab, string][]).map(([t, label]) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`rounded px-2.5 py-1 text-[11px] font-semibold transition ${
                   tab === t ? 'bg-amber-700/60 text-amber-100' : 'text-stone-400 hover:text-amber-200'}`}>
@@ -751,6 +788,72 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                 <div className="mt-1 text-[10px] text-stone-500">
                   ×0.5 — «стеклянные» корпуса, ×3 — морские крепости.
                     При смене прочности текущие повреждения сохраняются пропорционально.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ============ КОРАБЛИ (Task 47) ============
+              Доски обшивки, урон ядер и живучесть КАЖДОГО
+              корабля по отдельности — всё применяется сразу */}
+          {tab === 'ships' && (
+            <div className="divide-y divide-stone-800/60">
+              <div className="py-2">
+                <div className="mb-1 text-[11px] font-semibold text-amber-200/90">Обшивка и оружие</div>
+                <Row label="🪵 Прочность досок обшивки" hint="сколько попаданий ядром держит доска: ×1 — пролом с 3 прямых попаданий, ×2 — с 5–6, ×0.5 — хрупкие (1–2); действует на все корабли в дощатой модели; применяется сразу">
+                  <Slider value={s.ships.plankStrength} min={0.25} max={4} step={0.25}
+                    onChange={v => update(d => { d.ships.plankStrength = v; })}
+                    format={v => `×${v.toFixed(2)}`} />
+                </Row>
+                <Row label="⚫ Урон ядер" hint="сила попаданий снарядов по корпусу (доски обшивки, прочность корпуса, срыв палубных деталей) и по мачтам; картечь по экипажу и книппели по парусам не меняются; применяется сразу">
+                  <Slider value={s.ships.ballDamage} min={0.25} max={4} step={0.25}
+                    onChange={v => update(d => { d.ships.ballDamage = v; })}
+                    format={v => `×${v.toFixed(2)}`} />
+                </Row>
+                <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
+                  Пример: «стеклянные» бои — доски ×0.5 + урон ×2 (корабли
+                  ломаются с 1 залпа); морские крепости — доски ×4 + урон ×0.5.
+                </div>
+              </div>
+              <div className="py-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <div className="text-[11px] font-semibold text-amber-200/90">Живучесть кораблей — по каждому судну</div>
+                  <button onClick={() => update(d => { d.ships.durability = {}; })}
+                    className="rounded-lg border border-stone-600 bg-stone-900 px-2 py-1 text-[10px] font-bold text-stone-300 transition hover:border-amber-500 hover:text-amber-200">
+                    Сбросить все
+                  </button>
+                </div>
+                <div className="mb-1.5 text-[10px] text-stone-500">
+                  Корпус, паруса и мачты выбранного судна: ×1 — норма,
+                  ×0.25 — «картонный», ×4 — морская крепость. Применяется
+                  сразу, текущие повреждения сохраняются пропорционально.
+                </div>
+                <div className="max-h-[380px] divide-y divide-stone-800/40 overflow-y-auto pr-1">
+                  {([['Военные', true], ['Торговые и исследовательские', false]] as [string, boolean][]).map(([groupLabel, war]) => (
+                    <div key={String(war)}>
+                      <div className="sticky top-0 z-10 bg-stone-900/95 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-300/70">
+                        {groupLabel}
+                      </div>
+                      {SHIP_DURABILITY_LIST.filter(x => x.war === war).map(ship => (
+                        <Row key={ship.id} label={ship.name}>
+                          <Slider value={s.ships.durability[ship.id] ?? 1} min={0.25} max={4} step={0.25}
+                            onChange={v => update(d => {
+                              if (v === 1) delete d.ships.durability[ship.id];
+                              else d.ships.durability[ship.id] = v;
+                            })}
+                            format={v => v === 1 ? 'норма' : `×${v.toFixed(2)}`} />
+                        </Row>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="py-2">
+                <div className="text-[10px] leading-relaxed text-stone-500">
+                  Модель корпуса (дощатая/обычная), подмена экипажа и стрелки —
+                  во вкладке <b className="text-amber-300">Игра</b>, раздел
+                  «Разрушения и экипаж». Общая прочность всех судов разом —
+                  там же, «Прочность кораблей».
                 </div>
               </div>
             </div>

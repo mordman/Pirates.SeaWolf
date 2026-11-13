@@ -57,13 +57,25 @@ await sleep(1500);
 ev(`localStorage.removeItem('seawolves.settings.v1')`);
 run('reload');
 // Task 39: экран создания капитана открывается В НАЧАЛЕ — закрыть
-// («Позже», без применения): он блокирует клавиатуру (uiOpen)
-await sleep(1200);
-ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) b.click(); return 'char-closed'; } return 'no-screen'; })()`);
-await sleep(900);
+// («Позже», без применения): он блокирует клавиатуру (uiOpen).
+// Task 47: экран может появиться ПОЗЖЕ гидрации — закрываем
+// циклом с повторами (до реального исчезновения), и ЕЩЁ РАЗ после
+// старта игры (поднятие флага открывает его заново)
+const closeChar = async () => {
+  for (let i = 0; i < 15; i++) {
+    const r = ev(`(() => { const scr = document.querySelector('[data-char-screen]'); if (scr) { const b = [...scr.querySelectorAll('button')].find(b => b.textContent.includes('Позже')); if (b) { b.click(); return 'clicked'; } return 'no-btn'; } return 'gone'; })()`);
+    if (r.includes('gone')) return true;
+    await sleep(1000);
+  }
+  return false;
+};
+await sleep(2500);
+log('экран капитана закрыт:', await closeChar());
 await sleep(9000);
 log('старт:', clickBtn('Поднять флаг'));
 await sleep(2500);
+await closeChar();
+await sleep(800);
 
 // ================= A: пушечные порты =================
 log('=== A: порты — закрыты молчат, открываются, ядра из дул ===');

@@ -37,6 +37,17 @@ export const AMMO_INFO: Record<AmmoType, { name: string; short: string; muzzle: 
   fire:  { name: 'Зажигательное',   short: 'ЗЖГ',  muzzle: 160, dmgHull: 7,  dmgSail: 4,  dmgCrew: 0.5, pellets: 1, drag: 0.03, fireChance: 0.38 },
 };
 
+// ============================================================
+// Task 47: УРОН ЯДЕР — множитель из настроек (вкладка «Корабли»):
+// масштабирует урон снарядов по КОРПУСУ (доски обшивки, HP
+// корпуса, срыв деталей) и по МАЧТАМ. На картечь/книппели по
+// экипажу и парусам НЕ влияет.
+// ============================================================
+let HULL_DMG_MUL = 1;
+export function setHullDamageMul(m: number) {
+  if (typeof m === 'number' && isFinite(m) && m > 0) HULL_DMG_MUL = m;
+}
+
 interface Projectile {
   active: boolean;
   pos: THREE.Vector3;
@@ -895,8 +906,9 @@ export class CombatSystem {
           if (broke) this.emit(GameEvents.MAST_BROKEN, { target: t, mast: mi, pos: pr.pos.clone() });
         }
       } else {
-        const dmg = pr.type === 'ball' ? 11 + Math.random() * 8
-          : pr.type === 'fire' ? 6 : 1.6;
+        // Task 47: урон ядер по мачтам — с множителем из настроек
+        const dmg = (pr.type === 'ball' ? 11 + Math.random() * 8
+          : pr.type === 'fire' ? 6 : 1.6) * HULL_DMG_MUL;
         const broke = t.damageMast(hit.mast, dmg);
         if (pr.type === 'grape') {
           // картечь по рангоуту: вахтенные у мачты гибнут только при
@@ -944,7 +956,7 @@ export class CombatSystem {
       } else {
         t.applyDamage({
           kind: pr.type === 'fire' && Math.random() < info.fireChance ? 'fire' : pr.type,
-          amount: info.dmgHull * amount,
+          amount: info.dmgHull * amount * HULL_DMG_MUL,
           hitPoint: pr.pos.clone(),
         });
         if (crewKilled > 0) {
@@ -956,13 +968,13 @@ export class CombatSystem {
       // пробоина с внутренностями; урон определяет стадию, щепы
       // летят по мировому направлению полёта снаряда
       if (pr.type === 'ball' || pr.type === 'fire') {
-        t.hitHull(hit.lp, info.dmgHull * amount, belowWL,
+        t.hitHull(hit.lp, info.dmgHull * amount * HULL_DMG_MUL, belowWL,
           this._vN.copy(hit.dir).applyQuaternion(t.quaternion));
       }
       // тяжёлые попадания срывают палубные детали (штурвал/шпиль/фонарь)
       // и выламывают доски обшивки — обломок всплывает рядом с бортом
       if (pr.type === 'ball' || pr.type === 'fire') {
-        t.damageProp(hit.lp, info.dmgHull * amount);
+        t.damageProp(hit.lp, info.dmgHull * amount * HULL_DMG_MUL);
         if (Math.random() < 0.45) {
           const dirW = this._vN.copy(hit.dir).applyQuaternion(t.quaternion);
           spawnDebrisAt(pr.pos.x, pr.pos.y, pr.pos.z, 'plank', new THREE.Vector3(
