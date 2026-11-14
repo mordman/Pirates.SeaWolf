@@ -30,6 +30,8 @@ export function appearanceToTraits(a: PlayerAppearance): Traits {
     height: 1,
     parrot: a.parrot,
     bald: false,           // Task 50: у капитана игрока волосы всегда есть
+    hair: 'short',         // Task 51: причёска капитана (по умолчанию)
+    glasses: false,        // Task 51: очки не выбраны
   };
 }
 

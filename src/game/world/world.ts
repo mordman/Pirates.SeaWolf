@@ -791,6 +791,9 @@ export class World {
   private villageGroups: THREE.Group[] = [];
   /** дальность видимости статики мира (настройка графики, м) */
   visDistance = 5600;
+  /** Task 51: ТРУБЫ домов (мировые точки) — game.ts спавит ДЫМ над
+   *  ближними трубами (тёплые очаги в хижинах/тавернах/домах) */
+  chimneys: THREE.Vector3[] = [];
 
   // животные
   private gullMesh!: THREE.InstancedMesh;
@@ -1564,12 +1567,29 @@ export class World {
       const door = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.6, 0.18), dark);
       door.position.set(0, 1.3, dpt / 2 + 0.06);
       hut.add(door);
+      // Task 51: ДЕТАЛИЗАЦИЯ — тёплое окно рядом с дверью и ТРУБА
+      // на скате (дым — из chimneys, см. game.ts)
+      const winWarm = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.14),
+        new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xff9a3a, emissiveIntensity: 1.15 }));
+      winWarm.position.set(w * 0.27, 2.4, dpt / 2 + 0.07);
+      hut.add(winWarm);
+      const win2 = winWarm.clone();
+      win2.position.x = -w * 0.27;
+      hut.add(win2);
+      const pipe = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.7, 0.62),
+        new THREE.MeshStandardMaterial({ color: 0x8a8078, roughness: 0.95 }));
+      pipe.position.set(w * 0.22, 5.6, -dpt * 0.16);
+      hut.add(pipe);
       const baseR = Math.max(w, dpt) * 0.72;
       const hy = flattenUnder(hp.x, hp.z, baseR, 14);
       hut.position.set(hp.x, hy, hp.z);
       hut.rotation.y = dirA + (rng.next() - 0.5) * 0.5;
       hut.castShadow = true;
       g.add(hut);
+      hut.updateMatrixWorld(true);
+      // мировая точка над трубой — сюда смотрит спавн дыма
+      this.chimneys.push(new THREE.Vector3(w * 0.22, 6.6, -dpt * 0.16)
+        .applyMatrix4(hut.matrixWorld));
     };
     const hutBase = shore.clone().addScaledVector(dir, -38);
     const nHuts = [2, 4, 6, 8][tier];
@@ -1881,6 +1901,7 @@ export class World {
         [0, S, S * 2, wallT], [0, -S, S * 2, wallT],
         [S, 0, wallT, S * 2], [-S, 0, wallT, S * 2],
       ];
+      const embrasureMat = new THREE.MeshStandardMaterial({ color: 0x1c1a18, roughness: 1 });
       for (const [wx, wz, ww, wd] of wallsSpec) {
         const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, wallH, wd), stone);
         wall.position.set(wx, wallH / 2, wz);
@@ -1892,7 +1913,49 @@ export class World {
           merlon.position.set(ww > wallT ? k : wx, wallH + 1.0, wd > wallT ? k : wz);
           fort.add(merlon);
         }
+        // Task 51: АМБРАЗУРЫ — тёмные бойницы вровень с орудиями
+        // (батареи верхнего яруса смотрят в бойницы, а не «сквозь»)
+        const isGateWall = wx === 0 && wz > 0;   // ворота — ниже отдельно
+        for (let k = -S + 5.5; k < S; k += 5.5) {
+          if (isGateWall && Math.abs(k) < 4) continue;   // не в створе ворот
+          const emb = new THREE.Mesh(new THREE.BoxGeometry(
+            ww > wallT ? 1.5 : wallT + 0.15, 1.0, wd > wallT ? 1.5 : wallT + 0.15), embrasureMat);
+          emb.position.set(ww > wallT ? k : wx, wallH - 1.2, wd > wallT ? k : wz);
+          fort.add(emb);
+        }
       }
+      // Task 51: ВОРОТА в стене к порту (локальная +Z = к гавани):
+      // арка-проём + деревянные створки с коваными полосами
+      {
+        const gw = 7.4, gh = 6.2;
+        const arch = new THREE.Mesh(new THREE.BoxGeometry(gw + 1.6, gh + 1.0, wallT + 0.3), stoneDark);
+        arch.position.set(0, (gh + 1.0) / 2, S);
+        fort.add(arch);
+        const gate = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, 0.5),
+          new THREE.MeshStandardMaterial({ color: 0x5c4128, roughness: 0.9 }));
+        gate.position.set(0, gh / 2, S);
+        fort.add(gate);
+        for (const by of [gh * 0.3, gh * 0.72]) {
+          const band = new THREE.Mesh(new THREE.BoxGeometry(gw + 0.3, 0.42, 0.6), iron);
+          band.position.set(0, by, S);
+          fort.add(band);
+        }
+        const gap = new THREE.Mesh(new THREE.BoxGeometry(0.14, gh, 0.55),
+          new THREE.MeshStandardMaterial({ color: 0x2a2018, roughness: 1 }));
+        gap.position.set(0, gh / 2, S + 0.06);
+        fort.add(gap);
+        // фонари по сторонам ворот (тёплый свет над створками)
+        const lampGlow = new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xffa84a, emissiveIntensity: 1.4 });
+        for (const lx of [-(gw / 2 + 1.3), gw / 2 + 1.3]) {
+          const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.75, 0.55), lampGlow);
+          lamp.position.set(lx, gh + 0.9, S - wallT / 2);
+          fort.add(lamp);
+          const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.5, 0.18), iron);
+          bracket.position.set(lx, gh + 0.2, S - wallT / 2);
+          fort.add(bracket);
+        }
+      }
+      const slit = new THREE.MeshStandardMaterial({ color: 0x14120f, roughness: 1 });
       for (const [tx, tz] of [[S, S], [S, -S], [-S, S], [-S, -S]] as [number, number][]) {
         const ftower = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 6.2, wallH + 6.5, 8), stone);
         ftower.position.set(tx, (wallH + 6.5) / 2, tz);
@@ -1901,6 +1964,33 @@ export class World {
         const cap = new THREE.Mesh(new THREE.ConeGeometry(6.2, 4.4, 8), stoneDark);
         cap.position.set(tx, wallH + 6.5 + 2.2, tz);
         fort.add(cap);
+        // Task 51: ОКНА-ЩЕЛИ башен (верхний ярус — дозорные)
+        for (const [ox, oz] of [[5.3, 0], [-5.3, 0], [0, 5.3], [0, -5.3]] as [number, number][]) {
+          const tw = new THREE.Mesh(new THREE.BoxGeometry(
+            Math.abs(ox) > 1 ? 0.2 : 0.9, 1.3, Math.abs(oz) > 1 ? 0.2 : 0.9), slit);
+          tw.position.set(tx + ox * 0.985, wallH + 3.4, tz + oz * 0.985);
+          fort.add(tw);
+        }
+      }
+      // Task 51: ФЛАГШТОК на дворе форта — казённый вымпел гарнизона
+      {
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 16, 6),
+          new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.9 }));
+        mast.position.set(0, 8, -8);
+        fort.add(mast);
+        const fc = document.createElement('canvas');
+        fc.width = 44; fc.height = 28;
+        const fx = fc.getContext('2d')!;
+        fx.fillStyle = '#24365c'; fx.fillRect(0, 0, 44, 28);
+        fx.fillStyle = '#e8e4d8';
+        fx.fillRect(4, 11, 36, 6); fx.fillRect(19, 3, 6, 22);
+        const ftex = new THREE.CanvasTexture(fc);
+        ftex.colorSpace = THREE.SRGBColorSpace;
+        const banner = new THREE.Mesh(new THREE.PlaneGeometry(5.0, 3.1),
+          new THREE.MeshStandardMaterial({ map: ftex, side: THREE.DoubleSide, roughness: 0.9 }));
+        banner.position.set(2.6, 14.2, -8);
+        banner.rotation.y = Math.PI / 2;
+        fort.add(banner);
       }
       const mkCannon = (cx: number, cz: number, ry: number) => {
         const cg = new THREE.Group();
@@ -2019,10 +2109,22 @@ export class World {
         const door = new THREE.Mesh(new THREE.BoxGeometry(1.3, 2.3, 0.16), dark);
         door.position.set(0, 1.15, dpt / 2 + 0.06);
         hut.add(door);
+        // Task 51: тёплое окно + труба с дымом (как в портовых хижинах)
+        const winWarm = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.75, 0.13),
+          new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xff9a3a, emissiveIntensity: 1.15 }));
+        winWarm.position.set(w * 0.27, 1.95, dpt / 2 + 0.06);
+        hut.add(winWarm);
+        const pipe = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.4, 0.5),
+          new THREE.MeshStandardMaterial({ color: 0x8a8078, roughness: 0.95 }));
+        pipe.position.set(w * 0.22, 4.5, -dpt * 0.16);
+        hut.add(pipe);
         hut.position.set(hx, h, hz);
         hut.rotation.y = dirA + rng.range(-0.6, 0.6);
         hut.castShadow = true;
         g.add(hut);
+        hut.updateMatrixWorld(true);
+        this.chimneys.push(new THREE.Vector3(w * 0.22, 5.4, -dpt * 0.16)
+          .applyMatrix4(hut.matrixWorld));
       }
       const fire = new THREE.Group();
       const stones = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.18, 5, 9),

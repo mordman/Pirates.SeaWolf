@@ -1344,6 +1344,18 @@ export default function Home() {
           </div>
         </div>
       )}
+      {/* Task 51: ПОДЗОРНАЯ ТРУБА — виньетка-кружок поверх экрана,
+          мир виден «в трубу» (FOV камеры сужен до 13°) */}
+      {hud?.spyglass && (
+        <div data-spyglass="1" className="pointer-events-none absolute inset-0 z-40"
+          style={{ background: 'radial-gradient(circle at 50% 50%, transparent 27%, rgba(8,6,4,0.96) 42%)' }}>
+          <div className="absolute inset-0"
+            style={{ boxShadow: 'inset 0 0 120px 40px rgba(0,0,0,0.55)' }} />
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 text-[11px] tracking-wide text-amber-200/70">
+            🔭 Подзорная труба капитана — {keyLabel(settings.controls.spyglass)} — опустить
+          </div>
+        </div>
+      )}
       {/* ---- настройки ---- */}
       {settingsOpen && (
         <SettingsPanel initial={settings} onApply={applySettings} onClose={closeSettings}

@@ -37,6 +37,11 @@ export interface CameraContext {
 
 export class CameraRig {
   camera: THREE.PerspectiveCamera;
+  /** Task 51: ПОДЗОРНАЯ ТРУБА капитана — FOV плавно сужается к 13°
+   *  (×4 приближение): вдаль видны острова и паруса, не различимые
+   *  невооружённым глазом */
+  spyglass = false;
+  private spyFov = 55;
   mode: CameraMode = 'iso';
   // параметры по режимам
   private dist: Record<CameraMode, number> = { iso: 95, rear: 42, side: 38, free: 55 };
@@ -224,6 +229,16 @@ export class CameraRig {
     // лёгкий крен камеры от качки (снижается стабилизацией)
     const stabRoll = ship.roll * (1 - this.stabilization) * 0.6;
     this.camera.rotateZ(stabRoll);
+    // Task 51: ПОДЗОРНАЯ ТРУБА — FOV плавно сужается к 13° (×4):
+    // вдалеке проступают острова/паруса, которых глазом не разглядеть
+    {
+      const wantFov = this.spyglass ? 13 : 55;
+      this.spyFov += (wantFov - this.spyFov) * Math.min(1, dt * 7);
+      if (Math.abs(this.camera.fov - this.spyFov) > 0.05) {
+        this.camera.fov = this.spyFov;
+        this.camera.updateProjectionMatrix();
+      }
+    }
   }
 
   private _t1 = new THREE.Vector3();

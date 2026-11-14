@@ -18,6 +18,7 @@ import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive, debrisInfo } from './fx/debris';
+import { initFlotsam, spawnFlotsam, updateFlotsam, pickFlotsam, flotsamInfo, clearFlotsam } from './world/flotsam';
 import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits, setCrewRules } from './ship/crew';
 import { setPlankRules } from './ship/plankHull';
 import { setShipDurabilityMap } from './ship/Ship';
@@ -68,6 +69,8 @@ export interface HudState {
   waterPct: number;
   onFire: boolean;
   firePct: number;        // сила пожара 0..1
+  /** Task 51: подзорная труба поднята (виньетка + FOV 13°) */
+  spyglass: boolean;
   anchored: boolean;
   grounded: boolean;
   sinking: boolean;
@@ -216,6 +219,21 @@ export class Game {
   private negShift = new THREE.Vector3();  // для воды
 
   wind = { from: 0.7, speed: 7.5 };
+  /** Task 51: таймер спавна дыма из труб (раз в 0.8 с на трубу) */
+  private chimneyT = 0;
+  /** Task 51: суда, с которых лут уже рассыпан (Set ссылок) */
+  private looted = new Set<Ship>();
+  /** Task 51: ПОДЗОРНАЯ ТРУБА поднята (FOV ×4) */
+  spyglassOn = false;
+
+  /** Task 51: поднять/опустить подзорную трубу: в прицеле нельзя */
+  toggleSpyglass(): boolean {
+    if (this.combat.aim.active || this.docked) return this.spyglassOn;
+    this.spyglassOn = !this.spyglassOn;
+    this.rig.spyglass = this.spyglassOn;
+    this.pushMessage(this.spyglassOn ? 'Подзорная труба поднята' : 'Труба опущена');
+    return this.spyglassOn;
+  }
 
   docked = false;
   dead = false;
@@ -353,6 +371,7 @@ export class Game {
     this.worldGroup.add(this.particles.firePoints); // огонь — аддитивный пул
     this.gibs.addTo(this.worldGroup);
     initDebris(this.worldGroup);
+    initFlotsam(this.worldGroup);   // Task 51: лут потопленных судов
     setCrewFx(this.gibs, this.particles);
     // Task 43: мировой корень для ПЛОВЦОВ — матросы, прыгнувшие за
     // борт с тонущего корабля, живут в мире (не в группе корабля)
@@ -1899,8 +1918,17 @@ export class Game {
     // Task 50: прицел требует ВИДИМЫЙ курсор (наведение по позиции
     // мыши) — при активации прицела освобождаем перехват
     if (this.combat.aim.active && this.input.pointerLocked) this.input.releaseLock();
+    // Task 51: прицеливание — опустить трубу (нужен широкий обзор)
+    if (this.combat.aim.active && this.spyglassOn) {
+      this.spyglassOn = false;
+      this.rig.spyglass = false;
+    }
     if (inp.pressed(c.aimPort)) {
       this.combat.toggleAim(-1);
+    }
+    // Task 51: подзорная труба (T) — независимо от бортов
+    if (inp.pressed(c.spyglass)) {
+      this.toggleSpyglass();
     }
     if (inp.pressed(c.aimStarboard)) {
       if (boardTarget) {
@@ -1985,6 +2013,7 @@ export class Game {
       speed: 0, headingDeg: 0, windFromDeg: 0, windSpeed: 0, windRelDeg: 0,
       sailLevel: 0, rudder: 0, hullPct: 1, sailPct: 1, crew: 0, maxCrew: 0, waterPct: 0,
       onFire: false, firePct: 0, anchored: false, grounded: false, sinking: false,
+      spyglass: false,
       ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cats: 0, cargo: {},
       cargoT: 0, cargoMaxT: 0,
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
@@ -2038,6 +2067,7 @@ export class Game {
     h.gold = Math.floor(p.gold);
     h.cats = this.catCount;
     h.cargo = { ...p.cargo };
+    h.spyglass = this.spyglassOn;          // Task 51: труба капитана
     h.aiming = this.combat.aim.active;
     h.aimSide = this.combat.aim.side === 1 ? 'правый борт' : 'левый борт';
     h.aimRange = Math.round(this.combat.aim.range);
@@ -2295,6 +2325,89 @@ export class Game {
   /** Полный кадр симуляции (физика + системы + рендер).
    *  Вызывается из RAF и напрямую из E2E (stepDebug): в headless-
    *  браузере кадры душатся до ~0.4 fps — тесты гоняют мир сами. */
+  /** Task 51: КОЛЛИЗИИ С ПРИЧАЛАМИ И ЛОДКАМИ. Корабль больше не
+   *  проходит сквозь пирс: нос/мидель/корма выталкиваются от
+   *  ПРЯМОУГОЛЬНИКА пирса (ширина 7.2, длина dockLen) по ближайшей
+   *  грани — вдоль пирса проходить МОЖНО, сквозь — нельзя; рыбацкие
+   *  шлюпки сносит волной от корпуса — лодка лёгкая, сдвигаем её
+   *  (дрейф продолжается с нового места) */
+  private collideSmallCraft(): boolean {
+    const p = this.player;
+    if (p.sinking || p.sunk) return false;
+    const T = THREE;
+    const fwd = p.forward;
+    let bumped = false;
+    for (const port of this.world.ports) {
+      const dockLen = [62, 86, 110, 124][port.tier];
+      const a = port.dockEnd.clone().addScaledVector(port.dir, -(dockLen - 8));
+      const b = port.dockEnd;
+      const ex = (b.x - a.x) / dockLen, ez = (b.z - a.z) / dockLen;   // ось ВДОЛЬ
+      const px2 = -ez, pz2 = ex;                                       // ось ПОПЕРЁК
+      const halfDock = 3.6 + p.preset.beam * 0.55;
+      const halfShip = p.preset.length * 0.42;
+      for (const t of [0.42, 0, -0.42]) {
+        const cx = p.position.x + fwd.x * p.preset.length * t - a.x;
+        const cz = p.position.z + fwd.z * p.preset.length * t - a.z;
+        const lx = cx * ex + cz * ez;        // вдоль пирса (0..dockLen)
+        const ly = cx * px2 + cz * pz2;      // поперёк (0 = ось)
+        if (lx < -halfShip || lx > dockLen + halfShip) continue;
+        const penSide = halfDock - Math.abs(ly);
+        if (penSide <= 0) continue;         // борт вне полосы — свободно
+        const penFront = lx + halfShip;     // до носового торца полосы
+        const penBack = (dockLen + halfShip) - lx;
+        // минимальное проникновение — ту грань и выталкиваем
+        let nx = 0, nz = 0, pen = penSide;
+        if (penFront < pen) { pen = penFront; nx = -ex; nz = -ez; }
+        else if (penBack < pen) { pen = penBack; nx = ex; nz = ez; }
+        else { const sgn = ly >= 0 ? 1 : -1; nx = sgn * px2; nz = sgn * pz2; }
+        p.pushAway(new T.Vector3(nx, 0, nz), 16, 0.9);
+        bumped = true;
+        if (p.speed() > 4 && Math.random() < 0.25) {
+          p.applyDamage({ kind: 'ground', amount: 2 + p.speed() * 0.5 });
+        }
+      }
+    }
+    // --- ЛОДКИ: сносим шлюпку от корпуса (эллипс корабля в его осях) ---
+    const invQ = p.quaternion.clone().invert();
+    const pushBoat = (bx: number, bz: number, apply: (dx: number, dz: number) => void) => {
+      const v = new T.Vector3(bx - p.position.x, 0, bz - p.position.z).applyQuaternion(invQ);
+      const halfB = p.preset.beam * 0.55 + 1.6;
+      const halfL = p.preset.length * 0.5 + 2.4;
+      if (Math.abs(v.x) < halfB && Math.abs(v.z) < halfL) {
+        const side = v.x >= 0 ? 1 : -1;
+        const push = (halfB - Math.abs(v.x)) + 1.5;
+        // мировая нормаль борта (перпендикуляр к ДП)
+        const wx = side * fwd.z, wz = -side * fwd.x;
+        apply(wx * push, wz * push);
+        p.velocity.multiplyScalar(0.985);   // лодка не пробка, но мешает ходу
+        bumped = true;
+      }
+    };
+    for (const b of this.world.coastFleet.boats) {
+      if (b.sinking || !b.mesh.visible) continue;
+      if (Math.hypot(b.x - p.position.x, b.z - p.position.z) > 220) continue;
+      pushBoat(b.x, b.z, (dx, dz) => {
+        b.x += dx; b.z += dz;
+        b.mesh.position.x = b.x; b.mesh.position.z = b.z;
+        // дрейф продолжится с новой точки: пересчитать ang/rad
+        b.ang = Math.atan2(b.z - b.cz, b.x - b.cx);
+        b.rad = Math.hypot(b.x - b.cx, b.z - b.cz);
+        b.mesh.rotation.y += 0.25 * Math.sign(dx * fwd.z - dz * fwd.x);
+      });
+    }
+    for (const fv of this.world.fishing) {
+      for (const b of fv.boats) {
+        if (b.sinking || !b.mesh.visible) continue;
+        if (Math.hypot(b.x - p.position.x, b.z - p.position.z) > 220) continue;
+        pushBoat(b.x, b.z, (dx, dz) => {
+          b.x += dx; b.z += dz;
+          b.mesh.position.x = b.x; b.mesh.position.z = b.z;
+        });
+      }
+    }
+    return bumped;
+  }
+
   stepFrame(dt: number) {
     this.handleInput(dt);
 
@@ -2349,7 +2462,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -2728,6 +2841,31 @@ export class Game {
       const w = window as unknown as { __buildFigure?: typeof buildFigure };
       w.__buildFigure ??= buildFigure;
     }
+    // Task 51: лут на воде + трубы/форт (телеметрия e2e)
+    dbg.__flotsamInfo = () => flotsamInfo();
+    dbg.__chimneyInfo = () => ({
+      pipes: this.world.chimneys.length,
+      near: this.world.chimneys.filter(ch =>
+        Math.hypot(ch.x - this.player.position.x, ch.z - this.player.position.z) < 1200).length,
+    });
+    dbg.__fortInfo = () => {
+      let fort: THREE.Object3D | null = null;
+      this.scene.traverse(o => { if (!fort && o.name === 'fort') fort = o; });
+      const f = fort as THREE.Group | null;
+      // амбразуры/ворота/флаг — считаем детей форта по материалам:
+      // тёмные (бойницы/щели) и латунные полосы ворот
+      let darks = 0, parts = 0;
+      if (f) {
+        f.traverse(o => {
+          const m = o as THREE.Mesh;
+          if (!(m as unknown as { isMesh?: boolean }).isMesh) return;
+          parts++;
+          const mat = m.material as THREE.MeshStandardMaterial;
+          if (mat && mat.color && mat.color.getHex() === 0x1c1a18) darks++;
+        });
+      }
+      return { found: !!f, parts, embrasures: darks };
+    };
 
     // действия команды (R)
     if (this.player.pumpAction && !this.docked) {
@@ -2810,6 +2948,66 @@ export class Game {
     this.gibs.update(dt);
     updateDebris(dt, this.time, this.wind, { x: this.player.position.x, z: this.player.position.z });
     this.world.update(this.time, dt, this.player.position, waterHeightAt);
+
+    // Task 51: ДЫМ ИЗ ТРУБ — над ближними трубами хижин/таверн/домов
+    // вятся редкие клубы (тёплые очаги); экономим частицы — спавн
+    // раз в ~0.8 с на трубу и только ближе 1200 м
+    {
+      const pp = this.player.position;
+      this.chimneyT -= dt;
+      if (this.chimneyT <= 0) {
+        this.chimneyT = 0.8;
+        for (const ch of this.world.chimneys) {
+          const d = Math.hypot(ch.x - pp.x, ch.z - pp.z);
+          if (d > 1200) continue;
+          const w = this.wind;
+          this.particles.smoke(ch.x, ch.y, ch.z,
+            -Math.cos(w.from) * 0.55 + (Math.random() - 0.5) * 0.3,
+            1.05 + Math.random() * 0.4,
+            -Math.sin(w.from) * 0.55 + (Math.random() - 0.5) * 0.3,
+            1.5, 3.8 + Math.random() * 1.6);
+        }
+      }
+    }
+
+    // Task 51: ЛУТ ПОТОПЛЕННЫХ — судно ушло под воду: на месте
+    // остаются сундук с деньгами и мешки с товарами (один раз)
+    for (const a of this.aiShips) {
+      const sh = a.ship;
+      if (sh.sunk && !this.looted.has(sh)) {
+        this.looted.add(sh);
+        spawnFlotsam(sh.position.x, sh.position.z, sh.gold, sh.cargo);
+        if (sh.gold > 0 || Object.keys(sh.cargo).length) {
+          this.pushMessage('Судно затонуло — на волнах остался груз!');
+        }
+      }
+    }
+    updateFlotsam(dt, this.time, this.wind, this.player.position);
+    // подбор: подойти вплотную (7 м) — сундук/мешок поднимают с борта
+    if (!this.player.sinking && !this.player.sunk && !this.docked) {
+      const got = pickFlotsam(this.player.position.x, this.player.position.z, 7);
+      if (got.gold > 0 || Object.keys(got.cargo).length) {
+        this.player.gold += got.gold;
+        const parts: string[] = [];
+        if (got.gold > 0) parts.push(`${got.gold} золотых`);
+        for (const [k, n] of Object.entries(got.cargo)) {
+          const have = this.player.cargo[k] ?? 0;
+          const held = Object.values(this.player.cargo).reduce((a, b) => a + b, 0);
+          const room = Math.max(0, this.player.holdCap - held + have);
+          const take = Math.min(n, room);
+          if (take > 0) {
+            this.player.cargo[k] = have + take;
+            parts.push(`${k} ×${take}`);
+          }
+        }
+        this.pushMessage(`Подобрано с воды: ${parts.join(', ')}`);
+      }
+    }
+
+    // Task 51: столкновения с причалами и лодками (после физики)
+    if (this.collideSmallCraft() && this.player.speed() > 2.5 && Math.random() < dt * 2) {
+      this.pushMessage('Корпус задел препятствие!');
+    }
     this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
 
   // небо и свет (+ погода: облачность, приглушение, вспышки молний)

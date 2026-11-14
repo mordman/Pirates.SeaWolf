@@ -54,3 +54,8 @@ server.log
 /skills/tool-results
 skills/
 /tool-results/
+
+# Task 51: скриншоты и логи прогонов — локальные артефакты, не для git
+scripts/shots/*
+!scripts/shots/.gitkeep
+scripts/logs/

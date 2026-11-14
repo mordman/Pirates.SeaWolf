@@ -224,7 +224,14 @@ export interface Traits {
   height: number;          // 0.92..1.08
   parrot: boolean;         // Task 39: попугай на плече (~10% фигур)
   bald: boolean;           // Task 50: лысая голова (без волос под убором)
+  hair: HairKind;          // Task 51: причёска (лысина — bald=true)
+  glasses: boolean;        // Task 51: круглые очки (у редких мастовых)
 }
+
+/** Task 51: ПРИЧЁСКИ — короткая (как прежде), длинная до плеч
+ *  (полусфера + затылок), ХВОСТИК (пучок сзади головы на манере
+ *  моряков), торчащая «ёжик» (дикие патлы пиратов) */
+export type HairKind = 'short' | 'long' | 'ponytail' | 'wild';
 
 /** Вероятность попугая на плече у процедурной фигуры (ТЗ: 10%) */
 export const PARROT_CHANCE = 0.10;
@@ -315,6 +322,16 @@ export function rollTraits(rnd: () => number, role: CrewRole, kind: CrewKind = '
     height: 0.92 + rnd() * 0.16,
     parrot: pirateBits && rnd() < PARROT_CHANCE,
     bald: rnd() < (kind === 'navy' ? 0.06 : bareOrNone ? 0.34 : 0.05),
+    // Task 51: причёска (красится под убор — видна с затылка/боков)
+    hair: (() => {
+      const r = rnd();
+      if (r < 0.50) return 'short' as const;
+      if (r < 0.68) return 'long' as const;
+      if (r < 0.85) return 'ponytail' as const;
+      return 'wild' as const;
+    })(),
+    // Task 51: очки — редкость (штурманы/мастовые; солдатам ни к чему)
+    glasses: kind !== 'navy' && rnd() < 0.07,
   };
 }
 
@@ -604,11 +621,47 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
 
   // --- голова ---
   bake(t, new THREE.SphereGeometry(headR, 10, 8), traits.skin, 0, headY, 0);
-  // волосы (если нет головного убора или под ним); Task 50: ЛЫСИНА —
-  // у части фигур головы гладкие (солдаты стригены, матросы лысеют)
+  // ВОЛОСЫ (если нет головного убора или под ним); Task 50: ЛЫСИНА —
+  // у части фигур головы гладкие (солдаты стригены, матросы лысеют).
+  // Task 51: 4 ПРИЧЁСКИ — короткая/длинная до плеч/ХВОСТИК-пучок
+  // сзади/торчащие патлы; цвет волос общий, виден с затылка и боков
+  // даже под треуголкой/банданой
   if (!traits.bald) {
-    bake(t, new THREE.SphereGeometry(headR * 1.04, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
-      BEARD[Math.floor(rnd() * BEARD.length)], 0, headY + 0.01, 0);
+    const hairC = BEARD[Math.floor(rnd() * BEARD.length)];
+    // шапка волос сверху (у всех, кроме «ёлки»)
+    if (traits.hair !== 'wild') {
+      bake(t, new THREE.SphereGeometry(headR * 1.04, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        hairC, 0, headY + 0.01, 0);
+    } else {
+      // дикие патлы: шапка + торчащие пряди-клинья по бокам
+      bake(t, new THREE.SphereGeometry(headR * 1.06, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.62),
+        hairC, 0, headY + 0.012, 0);
+      for (const ha of [-0.9, -0.4, 0.4, 0.9]) {
+        bake(t, new THREE.ConeGeometry(0.028, 0.09, 4), hairC,
+          Math.sin(ha) * headR * 0.92, headY + headR * 0.62, Math.cos(ha) * headR * 0.5,
+          new THREE.Euler(Math.cos(ha) * 0.7, 0, -Math.sin(ha) * 0.7));
+      }
+    }
+    if (traits.hair === 'long') {
+      // затылок до плеч — широкий «фартук» сзади головы
+      bake(t, new THREE.BoxGeometry(0.19, 0.2, 0.05), hairC, 0, headY - headR * 0.5, -headR * 0.88);
+      bake(t, new THREE.BoxGeometry(0.2, 0.1, 0.055), hairC, 0, headY - headR * 0.18, -headR * 0.95);
+    } else if (traits.hair === 'ponytail') {
+      // ХВОСТИК: пучок сзади + хвост-кисть вниз (морская манера)
+      bake(t, new THREE.SphereGeometry(0.045, 6, 5), hairC, 0, headY + headR * 0.25, -headR * 0.95);
+      bake(t, new THREE.CylinderGeometry(0.022, 0.03, 0.15, 5), hairC,
+        0, headY - headR * 0.1, -headR * 1.02, new THREE.Euler(0.25, 0, 0));
+    }
+  }
+  // Task 51: ОЧКИ — круглые линзы + дужка через лоб + перемычка
+  if (traits.glasses) {
+    const gm = 0xc9c2b0;
+    for (const gx of [-0.052, 0.052]) {
+      bake(t, new THREE.TorusGeometry(0.036, 0.007, 5, 10), gm, gx, headY + 0.008, headR - 0.006);
+      bake(t, new THREE.CircleGeometry(0.033, 10), 0xbcd4de, gx, headY + 0.008, headR - 0.008);
+    }
+    bake(t, new THREE.BoxGeometry(0.03, 0.012, 0.014), gm, 0, headY + 0.012, headR - 0.004);
+    bake(t, new THREE.BoxGeometry(headR * 2.0, 0.014, 0.016), gm, 0, headY + 0.03, headR - 0.002);
   }
   // повязка на глаз: наглазник + ремешок через лоб
   if (traits.eyePatch) {
@@ -898,7 +951,7 @@ export interface CrewVisual {
   kindStats: {
     soldierCoats: number; aprons: number; straw: number;
     hooks: number; pegs: number; patches: number; parrots: number;
-    bald: number;
+    bald: number; ponytails: number; glasses: number;
   };
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
@@ -956,6 +1009,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   const ks = {
     soldierCoats: 0, aprons: 0, straw: 0,
     hooks: 0, pegs: 0, patches: 0, parrots: 0, bald: 0,
+    ponytails: 0, glasses: 0,
   };
   const rollKind = (role: CrewRole): Traits => {
     const tr = rollTraits(rot, role, kind);
@@ -967,6 +1021,8 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     if (tr.eyePatch) ks.patches++;
     if (tr.parrot) ks.parrots++;
     if (tr.bald) ks.bald++;
+    if (tr.hair === 'ponytail') ks.ponytails++;
+    if (tr.glasses) ks.glasses++;
     return tr;
   };
   const L = P.length;

@@ -118,6 +118,16 @@ export class Ship {
   private lastWashT = -99;
   private cutT = 0;                // кулдаун эмиссии брызг резания/зелёной воды
   private force = new THREE.Vector3();
+
+  /** Task 51: ВНЕШНЕЕ ОТТАЛКИВАНИЕ (причалы/лодки): импульс СРАЗУ в
+   *  скорость + микросдвиг позиции — сила, приложенная ПОСЛЕ шага
+   *  физики, обнулялась бы в начале следующего (force.set(0)) и не
+   *  успевала подействовать */
+  pushAway(dir: THREE.Vector3, power: number, damp = 0.9) {
+    this.velocity.addScaledVector(dir, power * 0.45);
+    this.velocity.multiplyScalar(damp);
+    this.position.addScaledVector(dir, 0.25);
+  }
   private torque = new THREE.Vector3();
   private _f = new THREE.Vector3();
   private _r = new THREE.Vector3();
@@ -2085,11 +2095,41 @@ export class Ship {
       }
       return `Тушение пожара... ${Math.round(this.fireIntensity * 100)}%`;
     }
-    if (this.water > 0.01) {
-      const pump = 0.05 + this.crew * 0.004;
-      this.water = Math.max(0, this.water - pump * dt);
-      this.leakRate = Math.max(0, this.leakRate - 0.004 * dt);
-      return this.water > 0.05 ? 'Откачка воды...' : 'Трюм осушён';
+    // Task 51 ФИКС «не работает откачка»: раньше качали this.water —
+    // СУММУ отсеков, которую каждый шаг физики пересчитывали из
+    // отсеков заново → откачка мгновенно аннулировалась. Теперь
+    // цепочки вёдер качают ИЗ ОТСЕКОВ (сначала самые полные), а
+    // пробоины ЗАТЫКАЮТ (ветошь/доски) — ДАЖЕ КОГДА ТРЮМ УЖЕ СУХОЙ:
+    // иначе течь оставалась бы навсегда и вода натекала снова
+    const resync = () => {
+      let w = 0, tl = 0;
+      for (const c of this.compartments) { w += c.water; tl += c.leak; }
+      this.water = w;
+      this.leakRate = tl;
+    };
+    {
+      let leaks = 0;
+      for (const c of this.compartments) {
+        if (c.leak > 0) { c.leak = Math.max(0, c.leak - 0.006 * dt); leaks++; }
+      }
+      if (this.water > 0.01) {
+        const pump = 0.05 + this.crew * 0.004;
+        let budget = pump * dt;
+        const order = [...this.compartments].sort((a, b) => b.water - a.water);
+        for (const c of order) {
+          if (budget <= 0) break;
+          const take = Math.min(c.water, budget);
+          c.water -= take;
+          budget -= take;
+        }
+        resync();
+        return this.water > 0.05 ? 'Откачка воды...'
+          : leaks > 0 ? 'Трюм осушён, затыкаем пробоины...' : 'Трюм осушён';
+      }
+      if (leaks > 0) {
+        resync();
+        return 'Затыкаем пробоины...';
+      }
     }
     if (this.hullHP < this.hullMax && this.planks > 0) {
       this.hullHP = Math.min(this.hullMax, this.hullHP + 0.9 * dt);

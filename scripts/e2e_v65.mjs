@@ -155,7 +155,7 @@ const sideGeo = jparse(await evR(`(() => {
   return JSON.stringify({
     nStrakes: ys.length, w, pitchMin: Math.min(...pitches), pitchMax: Math.max(...pitches),
     overlap: +(w - Math.max(...pitches)).toFixed(3),
-    tiltRad: tilt, lapTilt: ps.geomInfo().lapTilt, worstEndGap: worst, span,
+    tiltRad: tilt, lapTilt: ps.geomInfo().lapTilt, worstEndGap: worstEnd, span,
     zCover: [+(Math.min(...recs.map(r=>r.z-r.len/2))).toFixed(2), +(Math.max(...recs.map(r=>r.z+r.len/2))).toFixed(2)],
     L: g.player.preset.length,
   });
@@ -215,14 +215,21 @@ const sternHit = jparse(await evR(`(() => {
   const p = g.player;
   const T = window.__THREE.Vector3;
   const L = p.preset.length;
-  // 1) удар в стену транца НАД ватерлинией: только повреждение
+  // 1) удар в стену транца НАД ватерлинией: только повреждение.
+  // Task 51: считаем ТОЛЬКО НОВЫЕ повреждённости (дельту) — мир
+  // живёт, и за время прогона борт мог получить чужие пробоины
   const hitHi = new T(0, 1.2, -L * 0.462);
   const leak0 = p.damageInfo().leakRate;
+  const before = new Set();
+  for (let i = 0; i < p.plankHull.records.length; i++) {
+    if (p.plankHull.records[i].state > 0) before.add(i);
+  }
   p.hitHull(hitHi.clone(), 15, false, new T(0, 0, -1));
   g.stepDebugNR(0.3);
   const byClassHi = {};
-  for (const r of p.plankHull.records) {
-    if (r.state > 0) byClassHi[r.cls] = (byClassHi[r.cls] || 0) + 1;
+  for (let i = 0; i < p.plankHull.records.length; i++) {
+    const r = p.plankHull.records[i];
+    if (r.state > 0 && !before.has(i)) byClassHi[r.cls] = (byClassHi[r.cls] || 0) + 1;
   }
   const leakHi = p.damageInfo().leakRate;
   // 2) пять ударов ниже ВЛ в транец — СЛОМ + ТЕЧЬ (попадание в стык
@@ -334,6 +341,17 @@ const tabOk = jparse(await evR(`(() => {
   return 'opened';
 })()`));
 await sleep(800);
+// Task 51: ретрай — после смены корабля HUD-кнопка могла
+// перерисоваться между find и click; панель должна открыться
+await evR(`(() => {
+  const opened = [...document.querySelectorAll('button')].some(b => b.textContent.includes('Корабли'));
+  if (!opened) {
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.includes('Настройки'));
+    if (btn) btn.click();
+  }
+  return 1;
+})()`);
+await sleep(900);
 const tabUI = jparse(await evR(`(() => {
   const tabs = [...document.querySelectorAll('button')].filter(b => b.textContent.includes('Корабли'));
   if (!tabs.length) return JSON.stringify({ found: false });

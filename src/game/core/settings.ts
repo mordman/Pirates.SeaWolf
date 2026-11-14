@@ -197,6 +197,7 @@ export interface ControlsSettings {
   gunports: string;       // пушечные порты: открыть/закрыть (батареи)
   boat: string;           // шлюпка: спустить на воду / поднять на борт
   deckWalk: string;       // Task 40: прогуляться по палубе (капитан)
+  spyglass: string;       // Task 51: подзорная труба капитана (T)
   ammo: [string, string, string, string];
   mouseCapture: boolean;  // Task 50: перехват мыши (pointer lock) — клик по морю захватывает курсор, мышь крутит камеру
 }
@@ -336,6 +337,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     gunports: 'KeyP',
     boat: 'KeyB',
     deckWalk: 'KeyV',
+    spyglass: 'KeyT',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
     mouseCapture: true,   // Task 50: перехват мыши включён по умолчанию
   },
@@ -728,6 +730,7 @@ export function rollStartingAmmo(a: GameplaySettings['startingAmmo']):
  *  mouseCapture — НЕ клавиша, а тумблер (Task 50: перехват мыши) */
 export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   mouseCapture: 'Перехват мыши (клик по морю захватывает курсор)',
+  spyglass: 'Подзорная труба (вглядеться вдаль)',
   sailsUp: 'Паруса: поднять',
   sailsDown: 'Паруса: убрать / задний ход',
   steerLeft: 'Руль влево',
