@@ -1,0 +1,41 @@
+[agent-browser] launched browser
+OK   0: игра загрузилась
+
+===== A: палуба плашмя и ВДОЛЬ, без щелей =====
+{"n":143,"boxes":[{"dx":0.3849999999999998,"dy":0.1488074756906097,"dz":1.9827957677384713},{"dx":0.3849999999999998,"dy":0.13917937121469048,"dz":1.9824312514157607},{"dx":0.3849999999999998,"dy":0.12978552856350634,"dz":1.982075502246912},{"dx":0.3849999999999998,"dy":0.16345534894800018,"dz":1.9833500698679316},{"dx":0.3849999999999998,"dy":0.15351813230236466,"dz":1.9829740651046404}],"flat":true,"along":true,"colMax":0.36,"colMin":0.36,"worstEndGap":0}
+OK   A1: доски палубы лежат ПЛАШМЯ (толщина по вертикали dy < ширины dx) | {"dx":0.3849999999999998,"dy":0.1488074756906097,"dz":1.9827957677384713}
+OK   A2: доски палубы идут ВДОЛЬ корабля (dz — длина, вдоль нос-корма) | dz=1.98
+OK   A3: НЕТ щелей ПОПЕРЁК: шаг колонок ≤ ширины доски (нахлёст) | шаг колонок 0.36..0.36 м (доска 0.385)
+OK   A4: НЕТ щелей ВДОЛЬ: стыки с нахлёстом (разрыв ≤ 0) | макс. разрыв стыка 0 м
+
+===== B: обшивка внакрой — нахлёст поясов =====
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+✗ Evaluation error: ReferenceError: worst is not defined
+    at <anonymous>:1:1300
+    at <anonymous>:1:1472
+"ERR:  ✗ Evaluation error: ReferenceError: worst is not defined\n    at <anonymous>:1:1300\n    at <anonymous>:1:1472"
+FAIL B1: пояса ВНАКРОЙ: шаг поясов МЕНЬШЕ высоты доски (нахлёст ≥ 5 см) | доска undefined м, шаг undefined..undefined, нахлёст undefined м
+FAIL B2: пояс наклонён — МЯГКИЙ нахлёст (Task 49: lapTilt 0.09, было 0.20; «чешуя» ослаблена) | lapTilt=undefined (~0°), наклон доски у среза undefined рад (кривизна корпуса)
+FAIL B3: НЕТ щелей по длине: стыки с микронахлёстом | макс. разрыв undefined м
+file:///home/z/my-project/scripts/e2e_v65.mjs:172
+  sideGeo.zCover[0] < -sideGeo.L * 0.45 && sideGeo.zCover[1] > sideGeo.L * 0.45,
+                ^
+
+TypeError: Cannot read properties of undefined (reading '0')
+    at file:///home/z/my-project/scripts/e2e_v65.mjs:172:17
+
+Node.js v24.22.3

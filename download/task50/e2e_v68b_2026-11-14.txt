@@ -1,0 +1,41 @@
+[agent-browser] launched browser
+OK   0: игра загрузилась
+
+===== A: солдаты на военных, матросы на торговых, пираты на пиратских =====
+[{"name":"Флейт «Морская корова»","model":"fluyt","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":1,"straw":4,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":2},"total":10},{"name":"Пинасс «Морской пёс»","model":"pinnace","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":1,"straw":5,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":1},"total":10},{"name":"Каравелла «Нинья»","model":"caravel","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":2,"straw":4,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":5},"total":10},{"name":"Галеон «Золотая лань»","model":"galleon","flag":"navy","kind":"navy","ks":{"soldierCoats":21,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":1},"total":13},{"name":"Бриг «Ревнитель»","model":"brig","flag":"navy","kind":"navy","ks":{"soldierCoats":21,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":1},"total":11},{"name":"HMS Surprise","model":"surprise","flag":"navy","kind":"navy","ks":{"soldierCoats":34,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":3},"total":26},{"name":"Amsterdam","model":"amsterdam","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":2,"straw":5,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":3},"total":18},{"name":"Lady Washington","model":"ladyw","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":0,"straw":2,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":0},"total":10},{"name":"Чёрная жемчужина","model":"blackpearl","flag":"pirate","kind":"pirate","ks":{"soldierCoats":0,"aprons":0,"straw":6,"hooks":3,"pegs":6,"patches":13,"parrots":3,"bald":4},"total":20},{"name":"Шлюп «Бриз»","model":"sloop","flag":"pirate","kind":"pirate","ks":{"soldierCoats":0,"aprons":0,"straw":1,"hooks":5,"pegs":4,"patches":5,"parrots":3,"bald":3},"total":10},{"name":"Шлюп «Бриз»","model":"sloop","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":0,"straw":7,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":2},"total":10},{"name":"Бриг «Ревнитель»","model":"brig","flag":"navy","kind":"navy","ks":{"soldierCoats":21,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":1},"total":11},{"name":"Le Mystique","model":"mystique","flag":"pirate","kind":"pirate","ks":{"soldierCoats":0,"aprons":0,"straw":2,"hooks":9,"pegs":8,"patches":10,"parrots":8,"bald":2},"total":23},{"name":"Каравелла «Нинья»","model":"caravel","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":2,"straw":4,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":5},"total":10},{"name":"Когг «Ганзейский волк»","model":"cog","flag":"merchant","kind":"merchant","ks":{"soldierCoats":0,"aprons":1,"straw":4,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":4},"total":10},{"name":"Шлюп «Бриз»","model":"sloop","flag":"navy","kind":"navy","ks":{"soldierCoats":18,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":2},"total":10},{"name":"Бриг «Ревнитель»","model":"brig","flag":"navy","kind":"navy","ks":{"soldierCoats":21,"aprons":0,"straw":0,"hooks":0,"pegs":0,"patches":0,"parrots":0,"bald":1},"total":11},{"name":"ИГРОК","model":"sloop","flag":"pirate","kind":"pirate","ks":{"soldierCoats":0,"aprons":0,"straw":1,"hooks":5,"pegs":4,"patches":5,"parrots":3,"bald":3},"total":10}]
+OK   A1: военные суда есть и все — под ФЛОТСКИМ флагом (не пиратским) | navy: galleon,brig,surprise,brig,sloop,brig
+OK   A2: на военных — МУНДИРЫ (soldierCoat ≥ 1) и НИ ОДНОГО крюка/ноги/наглазника/попугая | galleon: мундиров 21, крюков 0 | brig: мундиров 21, крюков 0 | surprise: мундиров 34, крюков 0 | brig: мундиров 21, крюков 0 | sloop: мундиров 18, крюков 0 | brig: мундиров 21, крюков 0
+OK   A3: торговые суда есть — простые матросы (без пиратских протезов) | fluyt: солом.шляп 4 | pinnace: солом.шляп 5 | caravel: солом.шляп 4 | amsterdam: солом.шляп 5 | ladyw: солом.шляп 2 | sloop: солом.шляп 7 | caravel: солом.шляп 4 | cog: солом.шляп 4
+OK   A4: ПИРАТЫ только на пиратских судах (Чёрная жемчужина + Le Mystique + шлюп) | пиратов: blackpearl,sloop,mystique,sloop
+OK   A5: у пиратов ЕСТЬ пиратская вольница (крюки+наглазники+попугаи суммарно > 0) | у Чёрной жемчужины: крюков 3, наглазников 13
+OK   A6: игрок — пиратская команда (флаг шлюпа) | kind=pirate
+
+===== B: мундиры, лысина, соломенные шляпы =====
+{"navyCoats":136,"navyBald":9,"merchAprons":9,"merchStraw":35,"merchBald":22,"pirateStraw":10}
+OK   B1: мундиров у военных ≥ 3 (флот + патрули) | мундиров 136
+OK   B2: ЛЫСЫЕ ГОЛОВЫ есть (у военных строевых и матросов) | солдат 9, матросов 22
+OK   B3: у торговцев — фартуки и соломенные шляпы (новая одежда) | фартуков 9, соломенных 35
+
+===== C: мачты не падают от бортов; книппель рвёт рангоут =====
+{"afterHull":[-1,-1,-1],"anyHullBreak":false,"directBroke":true,"midFlight":{"inFlight":3,"visibleMeshes":3,"halves":6,"links":12},"afterChain":[-1,0.3243091115465845,-1],"chainInfo2":{"inFlight":3,"visibleMeshes":3,"halves":6,"links":12},"chainBrokeMast":true}
+OK   C1: 12 попаданий в БОРТ — все мачты ЦЕЛЫ (рикошет убран) | mastFall после бортов: [-1,-1,-1]
+OK   C2: прямое попадание в мачту ЛОМАЕТ её
+OK   C3: книппель В ПОЛЁТЕ: меш = 2 полусферы + 4 звена цепи | {"inFlight":3,"visibleMeshes":3,"halves":6,"links":12}
+OK   C4: залп книппелями по рангоуту ЛОМАЕТ мачту мишени | mastFall: [-1,0.3243091115465845,-1]
+
+===== D: деревья 3 уровня LOD + размер тайла =====
+{"vis":2200,"hiddenSlots":8,"hiddenIslands":1,"nearFull":232,"nearTiers":{"0":0,"1":0,"2":0,"3":0,"4":0,"5":0,"6":0,"7":0,"8":0,"9":0,"10":0,"11":0,"12":0,"13":0,"14":0,"15":0,"16":0,"17":0,"18":0,"19":0,"20":0,"21":0,"22":0,"23":0,"24":0,"25":0,"26":0,"27":0,"28":0,"29":0},"tightLod":0,"tightHidden":8,"tightVis":600,"tile0":480,"tiles0":192,"tile1":720,"tiles1":60}
+OK   D1: за дальностью деревьев (off 2600 > 2200) деревья СКРЫТЫ (tier 3) | скрыто слотов: 8, островов tier3: 1
+OK   D2: у своего острова — ПОЛНЫЕ модели (tier 0) | полных слотов: 232
+OK   D3: настройка «дальность деревьев 600 м» скрывает деревья за 800 м от берега | vis=600, скрыто 8, упрощённых 0
+OK   D4: размер тайла рельефа меняется настройкой (480 → 720) и рельеф пересобирается | тайл 480→720 м, тайлов после пересборки 60
+
+===== E: перехват мыши =====
+{"hasFlag":true,"captureOn":true,"lockedNow":false,"reqResult":"requested"}
+OK   E1: перехват мыши включён по умолчанию (controls.mouseCapture) | mouseCapture=true, флаг есть=true
+OK   E2: прицел ОСВОБОЖДАЕТ курсор (releaseLock при aim.active) | {"ok":true}
+
+===== F: регрессии =====
+OK   F1: 0 ошибок JS за весь прогон
+
+ALL OK
