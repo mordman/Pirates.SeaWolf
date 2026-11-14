@@ -19,7 +19,7 @@ import { textureUrls } from '../assets/textures';
 // (вкладка «Ресурсы»): пока грузится или при ошибке — зерно.
 // ============================================================
 
-const TILE = 480;            // сторона тайла, м
+const TILE_DEF = 480;        // сторона тайла по умолчанию, м (Task 50: настройка)
 const FAR_SEG = 20;          // дальний тайл: ячейка 24 м
 const NEAR_SEG = 60;         // ближний тайл: ячейка 8 м
 const NEAR_DIST = 900;       // радиус детальных тайлов вокруг игрока
@@ -171,6 +171,23 @@ export class TerrainStreamer {
   group = new THREE.Group();
   /** дальность стрима: тайлы острова строятся, если игрок ближе */
   streamDist = 9000;
+  /** Task 50: сторона тайла рельефа («размер чанка», м) — настройка
+   *  graphics.terrainTileSize; при смене — полная пересборка тайлов */
+  private tile = TILE_DEF;
+  get tileSize(): number { return this.tile; }
+  setTileSize(m: number) {
+    const v = Math.min(960, Math.max(240, Math.round(m / 60) * 60));
+    if (v === this.tile) return;
+    this.tile = v;
+    // сбросить построенные тайлы — next update пересоберёт сеткой
+    // нового размера (старая сетка не совпадает по ключам)
+    for (const t of this.tiles.values()) {
+      this.group.remove(t.mesh);
+      t.mesh.geometry.dispose();
+    }
+    this.tiles.clear();
+    this.queue.length = 0;
+  }
   private tiles = new Map<string, TileRec>();
   private queue: { key: string; cx: number; cz: number; near: boolean; d: number }[] = [];
   /** текущий материал рельефа (тип зависит от настройки шейдера) */
@@ -442,23 +459,23 @@ export class TerrainStreamer {
       const dIsl = Math.hypot(playerPos.x - isl.cx, playerPos.z - isl.cz);
       if (dIsl > this.streamDist + isl.r * 1.45) continue;
       const cover = isl.r * 1.5;
-      const x0 = Math.floor((isl.cx - cover) / TILE);
-      const x1 = Math.floor((isl.cx + cover) / TILE);
-      const z0 = Math.floor((isl.cz - cover) / TILE);
-      const z1 = Math.floor((isl.cz + cover) / TILE);
+      const x0 = Math.floor((isl.cx - cover) / this.tile);
+      const x1 = Math.floor((isl.cx + cover) / this.tile);
+      const z0 = Math.floor((isl.cz - cover) / this.tile);
+      const z1 = Math.floor((isl.cz + cover) / this.tile);
       for (let gx = x0; gx <= x1; gx++) {
         for (let gz = z0; gz <= z1; gz++) {
-          const cx = gx * TILE + TILE / 2;
-          const cz = gz * TILE + TILE / 2;
-          const dx = Math.max(Math.abs(cx - isl.cx) - TILE / 2, 0);
-          const dz = Math.max(Math.abs(cz - isl.cz) - TILE / 2, 0);
+          const cx = gx * this.tile + this.tile / 2;
+          const cz = gz * this.tile + this.tile / 2;
+          const dx = Math.max(Math.abs(cx - isl.cx) - this.tile / 2, 0);
+          const dz = Math.max(Math.abs(cz - isl.cz) - this.tile / 2, 0);
           if (dx * dx + dz * dz > cover * cover) continue;
           // в тайле есть суша? (вода непрозрачная: рельеф под
           // водой не нужен, кроме полосы у кромки)
           let land = false;
           for (let sx = -1; sx <= 1 && !land; sx++) {
             for (let sz = -1; sz <= 1 && !land; sz++) {
-              if (heightAt(cx + sx * TILE / 3, cz + sz * TILE / 3) > -1.2) land = true;
+              if (heightAt(cx + sx * this.tile / 3, cz + sz * this.tile / 3) > -1.2) land = true;
             }
           }
           if (!land) continue;
@@ -485,14 +502,14 @@ export class TerrainStreamer {
   /** Построить тайл: сетка, высоты, цвет, UV по миру, ЮБКА */
   private buildTile(cx: number, cz: number, near: boolean, key: string) {
     const seg = near ? NEAR_SEG : FAR_SEG;
-    const g = new THREE.PlaneGeometry(TILE, TILE, seg, seg);
+    const g = new THREE.PlaneGeometry(this.tile, this.tile, seg, seg);
     g.rotateX(-Math.PI / 2);
     g.translate(cx, 0, cz);
     const pos = g.getAttribute('position') as THREE.BufferAttribute;
     const n = pos.count;
     const colors = new Float32Array(n * 3);
     const uvs = new Float32Array(n * 2);
-    const step = TILE / seg;
+    const step = this.tile / seg;
     const e = Math.max(2, step);
     let islIdx = 0;
     let bestD = Infinity;
@@ -558,10 +575,10 @@ export class TerrainStreamer {
       if (flip) idx.push(b, a, a2, b, a2, b2);
       else idx.push(a, b, b2, a, b2, a2);
     };
-    for (let i = 0; i + 1 < side; i++) pushQuad(i, i + 1);                             // z=−TILE/2, наружу −Z
-    for (let i = 0; i + 1 < side; i++) pushQuad(side + i, side + i + 1, true);         // z=+TILE/2, наружу +Z
-    for (let j = 0; j + 1 < side; j++) pushQuad(2 * side + j, 2 * side + j + 1, true); // x=−TILE/2, наружу −X
-    for (let j = 0; j + 1 < side; j++) pushQuad(3 * side + j, 3 * side + j + 1);       // x=+TILE/2, наружу +X
+    for (let i = 0; i + 1 < side; i++) pushQuad(i, i + 1);                             // z=−this.tile/2, наружу −Z
+    for (let i = 0; i + 1 < side; i++) pushQuad(side + i, side + i + 1, true);         // z=+this.tile/2, наружу +Z
+    for (let j = 0; j + 1 < side; j++) pushQuad(2 * side + j, 2 * side + j + 1, true); // x=−this.tile/2, наружу −X
+    for (let j = 0; j + 1 < side; j++) pushQuad(3 * side + j, 3 * side + j + 1);       // x=+this.tile/2, наружу +X
     const merged = new THREE.BufferGeometry();
     const allPos = new Float32Array(n * 3 + nb * 3);
     allPos.set(pArr); allPos.set(skirtPos, n * 3);

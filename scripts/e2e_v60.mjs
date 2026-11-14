@@ -88,8 +88,12 @@ await sleep(600);
 log('\n===== A: LOD — дальние острова на упрощённых моделях =====');
 // телепорт корабля у берега «Пальмовой гавани» (islands[0]) В СТОРОНУ
 // «Кайманова ключа» — тот виден, но его берег далеко (off ~6000)
+// Task 50: дальность деревьев — теперь НАСТРОЙКА (2200 м): «дальний
+// остров» v60 (6 км) за пределами дальности скрыт ЦЕЛИКОМ; поднимаем
+// до 8 км, чтобы он был виден на дешёвом LOD как прежде
 const lodFar = jparse(await evR(`(() => {
   const g = window.__game;
+  window.__seaPatchSettings({ graphics: { treeVisDistance: 8000 } });
   const is = g.world.islands;
   const A = is[0];
   const B = is.find(i => i.name === 'Кайманов ключ') ?? is[20];
@@ -125,6 +129,7 @@ check('A3: экономия треугольников на LOD-острове �
 // подплыть вплотную к «Кайманову ключу» — он вернётся к полной модели
 const lodNear = jparse(await evR(`(() => {
   const g = window.__game;
+  window.__seaPatchSettings({ graphics: { treeVisDistance: 8000 } });
   const is = g.world.islands;
   const A = is[0];
   const B = is.find(i => i.name === 'Кайманов ключ') ?? is[20];

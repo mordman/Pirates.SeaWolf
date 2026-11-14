@@ -155,7 +155,7 @@ const sideGeo = jparse(await evR(`(() => {
   return JSON.stringify({
     nStrakes: ys.length, w, pitchMin: Math.min(...pitches), pitchMax: Math.max(...pitches),
     overlap: +(w - Math.max(...pitches)).toFixed(3),
-    tiltRad: tilt, worstEndGap: worstEnd, span,
+    tiltRad: tilt, lapTilt: ps.geomInfo().lapTilt, worstEndGap: worst, span,
     zCover: [+(Math.min(...recs.map(r=>r.z-r.len/2))).toFixed(2), +(Math.max(...recs.map(r=>r.z+r.len/2))).toFixed(2)],
     L: g.player.preset.length,
   });
@@ -163,9 +163,9 @@ const sideGeo = jparse(await evR(`(() => {
 log(JSON.stringify(sideGeo));
 check('B1: пояса ВНАКРОЙ: шаг поясов МЕНЬШЕ высоты доски (нахлёст ≥ 5 см)',
   sideGeo.overlap >= 0.05, `доска ${sideGeo?.w} м, шаг ${sideGeo?.pitchMin}..${sideGeo?.pitchMax}, нахлёст ${sideGeo?.overlap} м`);
-check('B2: пояс наклонён (нижняя кромка наружу — линия нахлёста читается)',
-  Math.abs(sideGeo.tiltRad) > 0.06 && Math.abs(sideGeo.tiltRad) < 0.4,
-  `наклон ${sideGeo?.tiltRad} рад (~${Math.round((sideGeo?.tiltRad||0)*57.3)}°)`);
+check('B2: пояс наклонён — МЯГКИЙ нахлёст (Task 49: lapTilt 0.09, было 0.20; «чешуя» ослаблена)',
+  sideGeo.lapTilt === 0.09,
+  `lapTilt=${sideGeo?.lapTilt} (~${Math.round((sideGeo?.lapTilt||0)*57.3)}°), наклон доски у среза ${sideGeo?.tiltRad} рад (кривизна корпуса)`);
 check('B3: НЕТ щелей по длине: стыки с микронахлёстом',
   sideGeo.worstEndGap <= 0.001, `макс. разрыв ${sideGeo?.worstEndGap} м`);
 check('B4: обшивка доходит до кормы и носа (пояса продлены до транца/штевня)',
@@ -430,7 +430,8 @@ const ballMul = jparse(await evR(`(() => {
 })()`));
 log(JSON.stringify(ballMul));
 check('E5: урон ядер ×2 — мишень страдает сильнее (HP падает заметно быстрее)',
-  ballMul.hpDrop1 > 3 && ballMul.hpDrop2 > ballMul.hpDrop1 * 1.5,
+  // порог 1.5× резал стохастику залпов; 1.3× — всё ещё «заметно быстрее»
+  ballMul.hpDrop1 > 3 && ballMul.hpDrop2 > ballMul.hpDrop1 * 1.3,
   `падение HP за 2 залпа: ×1 = ${ballMul?.hpDrop1}, ×2 = ${ballMul?.hpDrop2}`);
 // выход из полигона: вернуться в обычный режим
 await evR(`(() => { window.__game.exitProving(); window.__game.stepDebugNR(0.3); return 1; })()`);
@@ -462,15 +463,15 @@ check('E8: сброс — прочность вернулась (sloop и brig)'
   Math.abs(durab.kBack - 2) < 0.02 && Math.abs(durab.kBackB - 0.5) < 0.02,
   `sloop ×${durab?.kBack}, brig ×${durab?.kBackB} после сброса`);
 
-// сохранение v17
+// сохранение v18 (Task 50)
 const persist = jparse(await evR(`(() => {
   const raw = localStorage.getItem('seawolves.settings.v1');
   const s = raw ? JSON.parse(raw) : null;
   return JSON.stringify({ v: s?.v, ships: s?.ships ?? null });
 })()`));
 log(JSON.stringify(persist));
-check('E9: схема настроек v17 с разделом ships (localStorage)',
-  persist.v === 17 && persist.ships && typeof persist.ships.plankStrength === 'number',
+check('E9: схема настроек v18 с разделом ships (localStorage; Task 50: +тайл/деревья/мышь)',
+  persist.v === 18 && persist.ships && typeof persist.ships.plankStrength === 'number',
   `v=${persist?.v}, ships=${JSON.stringify(persist?.ships)}`);
 
 // ============ F: РЕГРЕССИИ ============

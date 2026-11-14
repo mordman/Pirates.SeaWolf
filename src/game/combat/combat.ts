@@ -441,13 +441,36 @@ export class CombatSystem {
   /** Залп ИИ ядрами по игроку (с упреждением и разбросом).
    *  Ядра летят ИЗ ДУЛ реальных орудий борта, обращённого к цели:
    *  берём стволы по локальной X цели — залп «веером» из портов */
-  aiBallVolley(shooter: Ship, target: Ship) {
+  /** Task 50: телеметрия КНИППЕЛЯ (e2e): сколько в полёте + устройство
+   *  меша — ДВЕ полусферы ядра, соединённые ЧЕТЫРЬМЯ звеньями цепи */
+  chainInfo(): { inFlight: number; visibleMeshes: number; halves: number; links: number } {
+    let visibleMeshes = 0, halves = 0, links = 0;
+    for (const g of this.chainMeshes) {
+      if (!g.visible) continue;
+      visibleMeshes++;
+      for (const c of g.children) {
+        if (c instanceof THREE.Group) halves++;
+        else if ((c as THREE.Mesh).geometry instanceof THREE.TorusGeometry) links++;
+      }
+    }
+    return {
+      inFlight: this.projectiles.filter(p => p.active && p.type === 'chain').length,
+      visibleMeshes, halves, links,
+    };
+  }
+
+  /** Залп ИИ/игрока по цели. Task 50: ammo — тип снаряда (e2e:
+   *  проверка КНИППЕЛЯ по рангоуту), aimY — высота точки прицела
+   *  (0 — ватерлиния, 25+ — мачты: книппель рвёт рангоут) */
+  aiBallVolley(shooter: Ship, target: Ship, ammo: AmmoType = 'ball', aimY = 0) {
     const to = new THREE.Vector3().subVectors(target.position, shooter.position);
     const dist = to.length();
     if (dist > 400) return;
     to.normalize();
     const flight = dist / 165;
-    const aim = target.position.clone().addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
+    const aimTarget = target.position.clone();
+    aimTarget.y += aimY;
+    const aim = aimTarget.addScaledVector(target.velocity, flight).sub(shooter.position).normalize();
     // размер залпа — от числа орудий борта (шлюп 5 → 3 ядра, бриг 14 → 5)
     const n = Math.max(2, Math.min(5, Math.round(shooter.preset.gunsPerSide * 0.55)));
     // какой борт смотрит на цель: локальная X цели в осях корабля
@@ -481,7 +504,7 @@ export class CombatSystem {
         pr.pos.y += 1.0;
       }
       pr.prev.copy(pr.pos);
-      pr.type = 'ball';
+      pr.type = ammo;
       pr.shooter = shooter;
       pr.age = 0;
       pr.trailT = 0;
@@ -886,7 +909,7 @@ export class CombatSystem {
       const dx = pr.vel.x / vl, dz = pr.vel.z / vl;
       spawnDebrisAt(pr.pos.x, pr.pos.y, pr.pos.z, 'plank', new THREE.Vector3(
         dx * 3.2 + (Math.random() - 0.5), 1.6 + Math.random() * 1.8,
-        dz * 3.2 + (Math.random() - 0.5)), 60 + Math.random() * 25);
+        dz * 3.2 + (Math.random() - 0.5)), 60 + Math.random() * 25, t.hullTint);
     }
     this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
   }
@@ -981,7 +1004,7 @@ export class CombatSystem {
           const dirW = this._vN.copy(hit.dir).applyQuaternion(t.quaternion);
           spawnDebrisAt(pr.pos.x, pr.pos.y, pr.pos.z, 'plank', new THREE.Vector3(
             dirW.x * 2.2 + (Math.random() - 0.5), 1.2 + Math.random() * 1.6,
-            dirW.z * 2.2 + (Math.random() - 0.5)), 55 + Math.random() * 30);
+            dirW.z * 2.2 + (Math.random() - 0.5)), 55 + Math.random() * 30, t.hullTint);
         }
       }
       // щепки и дым

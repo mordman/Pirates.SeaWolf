@@ -700,6 +700,49 @@ const VEG_LOD: Record<string, (() => THREE.BufferGeometry) | null> = {
  *  деревьев и перестройках не пересоздавать) */
 const VEG_LOD_CACHE: Record<string, THREE.BufferGeometry> = {};
 
+// ---------- Task 50: СРЕДНИЙ LOD-уровень — low-poly 3D ----------
+// «Чем дальше дерево, тем меньше полигонов»: 0 — полная модель
+// (100-400 трис), 1 — low-poly 3D (~25-45 трис: ствол-палка +
+// крона-конус/шар), 2 — плоский силуэт (4-12 трис, Task 45),
+// 3 — за пределами дальности видимости деревьев (настройка) — скрыто.
+function palmMidGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    paint(tf(new THREE.CylinderGeometry(0.14, 0.22, 8, 5), 0, 4, 0), 0x7a5a38),
+    paint(tf(new THREE.ConeGeometry(2.2, 1.3, 6), 0, 8.2, 0), 0x3f7d33),
+    paint(tf(new THREE.ConeGeometry(1.5, 0.9, 6), 0, 8.8, 0), 0x356d2c),
+  ])!;
+}
+function ficusMidGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    paint(tf(new THREE.CylinderGeometry(0.3, 0.42, 3.8, 5), 0, 1.9, 0), 0x6b4e2f),
+    paint(tf(new THREE.SphereGeometry(2.6, 6, 5), 0, 5.2, 0), 0x2f5e2b),
+  ])!;
+}
+function jungleMidGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    paint(tf(new THREE.CylinderGeometry(0.2, 0.3, 5, 5), 0, 2.5, 0), 0x6e5230),
+    paint(tf(new THREE.SphereGeometry(2.0, 6, 4), 0, 6.1, 0), 0x477a34),
+  ])!;
+}
+function bambooMidGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    paint(tf(new THREE.CylinderGeometry(0.09, 0.12, 5.2, 4), 0, 2.6, 0), 0x8a9a3a),
+    paint(tf(new THREE.CylinderGeometry(0.08, 0.11, 4.4, 4), 0.55, 2.2, 0.2), 0x7e9038),
+    paint(tf(new THREE.ConeGeometry(1.4, 0.8, 5), 0.2, 4.9, 0), 0x6f8a33),
+  ])!;
+}
+function bushMidGeo(): THREE.BufferGeometry {
+  return mergeGeometries([
+    paint(tf(new THREE.SphereGeometry(0.95, 6, 4), 0, 0.55, 0), 0x4a7032),
+  ])!;
+}
+const VEG_MID: Record<string, (() => THREE.BufferGeometry) | null> = {
+  palm: palmMidGeo, ficus: ficusMidGeo, jungle: jungleMidGeo,
+  bamboo: bambooMidGeo, bush: bushMidGeo,
+  rock: null, stump: null, boulder: null,   // камни дешёвые и так
+};
+const VEG_MID_CACHE: Record<string, THREE.BufferGeometry> = {};
+
 // ---------- животные ----------
 interface AnimalInst { mesh: THREE.InstancedMesh; count: number; }
 interface Wanderer {
@@ -778,18 +821,19 @@ export class World {
     breakable: boolean;
     kind: string;         // вид: palm/ficus/jungle/bamboo/bush/stump/boulder — рецепт разлома
     procGeo: THREE.BufferGeometry; // исходная процедурная геометрия (фолбэк GLB)
-    // Task 42: LOD ДАЛЬНИХ ОСТРОВОВ — упрощённая геометрия + остров
+    // Task 42→50: 3-уровневый LOD растительности по-островно
     islIdx: number;               // остров слота (LOD по-островно)
-    lodGeo: THREE.BufferGeometry; // упрощённая модель (дальние острова)
+    midGeo: THREE.BufferGeometry; // Task 50: СРЕДНИЙ уровень (low-poly 3D)
+    lodGeo: THREE.BufferGeometry; // ДАЛЬНИЙ уровень (плоский силуэт, Task 45)
     glbGeo: THREE.BufferGeometry | null; // GLB-замена (если включена)
-    lod: boolean;                 // сейчас на LOD-геометрии
+    tier: number;                 // текущий LOD-уровень: 0 полная / 1 mid / 2 flat / 3 скрыто
   }[] = [];
-  /** Task 42: флаги LOD по островам (гистерезис в update) */
-  private islLod: boolean[] = [];
-  /** Task 42: порог LOD от БЕРЕГА острова (м) — свой остров у
-   *  берега остаётся детальным, дальние рисуются упрощённо */
-  static readonly TREE_LOD_DIST = 700;
-  static readonly TREE_LOD_NEAR = 600;   // гистерезис возврата
+  /** Task 50: LOD-уровни по островам (0..3; гистерезис в update) */
+  private islLod: number[] = [];
+  /** Task 50: ДАЛЬНОСТЬ ВИДИМОСТИ ДЕРЕВЬЕВ (м, от БЕРЕГА; настройка
+   *  graphics.treeVisDistance). Пороги уровней — доли от неё:
+   *  0.30 → low-poly 3D, 0.65 → плоские силуэты, 1.0 → скрыто */
+  treeVis = 2200;
   /** счётчик поваленных деревьев (телеметрия) */
   treesBroken = 0;
 
@@ -1002,9 +1046,10 @@ export class World {
           kind,
           procGeo: geo,
           islIdx,
+          midGeo: VEG_MID_CACHE[kind] ??= VEG_MID[kind]?.() ?? geo,
           lodGeo: VEG_LOD_CACHE[kind] ??= VEG_LOD[kind]?.() ?? geo,
           glbGeo: null,
-          lod: false,
+          tier: 0,
         });
       }
     }
@@ -1038,7 +1083,7 @@ export class World {
     }
     this.vegGroups = [];
     this.vegSlots = [];
-    this.islLod = new Array(this.islands.length).fill(false);
+    this.islLod = new Array(this.islands.length).fill(0);
     this.vegGrid.clear();
     this.treesBroken = 0;
     this.buildVegetation();
@@ -1223,7 +1268,10 @@ export class World {
     for (const slot of this.vegSlots) {
       if (slot.kind !== kind) continue;
       slot.glbGeo = geo;
-      const next = slot.lod ? slot.lodGeo : (geo ?? slot.procGeo);
+      // Task 50: текущий LOD-уровень слота решает, что рисовать
+      const next = slot.tier === 2 ? slot.lodGeo
+        : slot.tier === 1 ? (geo ?? slot.midGeo)
+        : (geo ?? slot.procGeo);
       if (!next || next === slot.inst.geometry) continue;
       slot.inst.geometry = next;
       slot.inst.geometry.computeBoundingSphere();
@@ -1236,11 +1284,21 @@ export class World {
   /** Task 42: ДЕРЕВЬЯ ДАЛЬНИХ ОСТРОВОВ — УПРОЩЁННЫЕ (LOD).
    *  Порог — от БЕРЕГА острова (свой остров у берега остаётся
    *  детальным); гистерезис против дёрганья на границе */
-  private applyIslandLod(islIdx: number, far: boolean) {
+  /** Task 50: применить LOD-уровень (0..3) к растительности острова:
+   *  0 — полная модель (или GLB), 1 — low-poly 3D, 2 — плоский
+   *  силуэт, 3 — скрыто (за пределами дальности видимости деревьев) */
+  private applyIslandLod(islIdx: number, tier: number) {
     for (const slot of this.vegSlots) {
       if (slot.islIdx !== islIdx) continue;
-      slot.lod = far;
-      const next = far ? slot.lodGeo : (slot.glbGeo ?? slot.procGeo);
+      slot.tier = tier;
+      if (tier >= 3) {
+        slot.inst.visible = false;
+        continue;
+      }
+      slot.inst.visible = true;
+      const next = tier === 2 ? slot.lodGeo
+        : tier === 1 ? (slot.glbGeo ? slot.glbGeo : slot.midGeo)
+        : (slot.glbGeo ?? slot.procGeo);
       if (next && next !== slot.inst.geometry) {
         slot.inst.geometry = next;
       }
@@ -1248,28 +1306,39 @@ export class World {
   }
 
   /** Телеметрия LOD растительности (E2E): сколько островов на
-   *  упрощённых моделях + экономия треугольников на инстанс */
+   *  упрощённых моделях + экономия треугольников на инстанс.
+   *  Task 50: уровни 0..3 (полная/low-poly/плоская/скрыта) */
   treeLodInfo(): {
     farIslands: number; nearIslands: number; lodSlots: number; fullSlots: number;
+    hiddenSlots: number; midSlots: number;
     trisFull: number; trisLod: number; kinds: Record<string, { full: number; lod: number; far: boolean }>;
+    tiers: Record<string, number>; vis: number;
   } {
     const kinds: Record<string, { full: number; lod: number; far: boolean }> = {};
     const tris = (g: THREE.BufferGeometry) =>
       Math.round((g.index ? g.index.count : g.getAttribute('position')?.count ?? 0) / 3);
     for (const slot of this.vegSlots) {
-      const e = kinds[slot.kind] ?? { full: tris(slot.procGeo), lod: tris(slot.lodGeo), far: slot.lod };
-      e.far = slot.lod;
+      const e = kinds[slot.kind] ?? { full: tris(slot.procGeo), lod: tris(slot.lodGeo), far: slot.tier > 0 };
+      e.far = slot.tier > 0;
       kinds[slot.kind] = e;
     }
-    let lodSlots = 0, fullSlots = 0, trisFull = 0, trisLod = 0;
+    let lodSlots = 0, fullSlots = 0, trisFull = 0, trisLod = 0, hiddenSlots = 0, midSlots = 0;
+    const tiers: Record<string, number> = {};
     for (const slot of this.vegSlots) {
-      if (slot.lod) { lodSlots++; trisLod += tris(slot.lodGeo) * slot.inst.count; trisFull += tris(slot.procGeo) * slot.inst.count; }
-      else fullSlots++;
+      if (slot.tier === 3) hiddenSlots++;
+      else if (slot.tier > 0) {
+        lodSlots++;
+        if (slot.tier === 1) midSlots++;
+        trisLod += tris(slot.inst.geometry) * slot.inst.count;
+        trisFull += tris(slot.procGeo) * slot.inst.count;
+      } else fullSlots++;
     }
     return {
-      farIslands: this.islLod.filter(Boolean).length,
-      nearIslands: this.islLod.length - this.islLod.filter(Boolean).length,
-      lodSlots, fullSlots, trisFull, trisLod, kinds,
+      farIslands: this.islLod.filter(t => t > 0).length,
+      nearIslands: this.islLod.filter(t => t === 0).length,
+      lodSlots, fullSlots, hiddenSlots, midSlots, trisFull, trisLod, kinds,
+      tiers: this.islLod.reduce((a, t, i) => { a[i] = t; return a; }, {} as Record<string, number>),
+      vis: this.treeVis,
     };
   }
 
@@ -1278,8 +1347,10 @@ export class World {
     const out: Record<string, { n: number; verts: number; src: 'proc' | 'glb' | 'lod' }> = {};
     for (const slot of this.vegSlots) {
       const v = slot.inst.geometry.getAttribute('position')?.count ?? 0;
-      const src = slot.inst.geometry === slot.procGeo ? 'proc'
-        : slot.inst.geometry === slot.lodGeo ? 'lod' : 'glb';
+      const src = slot.tier >= 2 ? 'lod'
+        : slot.inst.geometry === slot.procGeo ? 'proc'
+        : slot.inst.geometry === slot.midGeo ? 'proc'
+        : 'glb';
       const e = out[slot.kind] ?? { n: 0, verts: v, src };
       e.n += slot.inst.count;
       e.verts = v;
@@ -2162,8 +2233,10 @@ export class World {
 
     // видимость ОСТРОВОВ: группа острова (растительность+порт+
     // деревни) рисуется только в пределах дальности прорисовки;
-    // Task 42: LOD ДЕРЕВЬЕВ — видимому, но ДАЛЬНЕМУ острову (за
-    // порогом от БЕРЕГА) растительность рисуется УПРОЩЁННО
+    // Task 50: LOD ДЕРЕВЬЕВ — 3 УРОВНЯ по дистанции от БЕРЕГА
+    // (полная → low-poly 3D → плоский силуэт → скрыто): чем дальше
+    // остров, тем меньше полигонов на дереве; пороги — доли от
+    // настройки treeVis (graphics.treeVisDistance), с гистерезисом
     for (let i = 0; i < this.islands.length; i++) {
       const isl = this.islands[i];
       const d = Math.hypot(playerPos.x - isl.cx, playerPos.z - isl.cz);
@@ -2172,10 +2245,20 @@ export class World {
       if (g && g.visible !== vis) g.visible = vis;
       if (vis && this.islLod.length === this.islands.length) {
         const off = d - isl.r;   // дистанция до БЕРЕГА
-        const far = this.islLod[i] ? off > World.TREE_LOD_NEAR : off > World.TREE_LOD_DIST;
-        if (far !== this.islLod[i]) {
-          this.islLod[i] = far;
-          this.applyIslandLod(i, far);
+        const t1 = this.treeVis * 0.30;   // → low-poly 3D
+        const t2 = this.treeVis * 0.65;   // → плоские силуэты
+        let tier = off > this.treeVis ? 3 : off > t2 ? 2 : off > t1 ? 1 : 0;
+        const cur = this.islLod[i];
+        if (tier > cur) {        // уходим дальше — переключаемся с запасом
+          const lim = tier === 3 ? this.treeVis : tier === 2 ? t2 : t1;
+          if (off < lim * 1.06) tier = cur;
+        } else if (tier < cur) { // приближаемся — тоже с запасом
+          const lim = cur === 3 ? this.treeVis : cur === 2 ? t2 : t1;
+          if (off > lim * 0.94) tier = cur;
+        }
+        if (tier !== cur) {
+          this.islLod[i] = tier;
+          this.applyIslandLod(i, tier);
         }
       }
     }

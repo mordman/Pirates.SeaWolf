@@ -29,6 +29,7 @@ export function appearanceToTraits(a: PlayerAppearance): Traits {
     pantsKind: a.pantsKind,
     height: 1,
     parrot: a.parrot,
+    bald: false,           // Task 50: у капитана игрока волосы всегда есть
   };
 }
 

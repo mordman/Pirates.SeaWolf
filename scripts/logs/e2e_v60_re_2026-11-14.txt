@@ -1,0 +1,46 @@
+GAME LOADED: true
+
+===== A: LOD — дальние острова на упрощённых моделях =====
+{"offB":6091,"farIslands":1,"lodSlots":0,"trisFull":0,"trisLod":0,"palm":{"full":136,"lod":12,"far":false},"bamboo":{"full":80,"lod":8,"far":false}}
+FAIL A1: дальний видимый остров (off>700 от берега) ПЕРЕКЛЮЧИЛСЯ на LOD | off=6091 м, островов far=1, слотов=0
+OK   A2: LOD-модель ДЕШЕВЛЕ полной минимум вдвое (palm/bamboo) | palm 136→12 трис, bamboo 80→8
+FAIL A3: экономия треугольников на LOD-острове ≥ 50% | 0 → 0 (0%)
+{"farIslands":1,"fullSlots":224,"palmSrc":"glb","ficusSrc":"proc"}
+OK   A4: у берега остров вернул ПОЛНУЮ модель (пальмы GLB/proc, не lod) | palm=glb, ficus=proc, far-островов=1
+OK   A5: сосед (дальний) остался на LOD — переключение по-островно | far-островов=1
+
+===== B: оружие в руке =====
+{"weapon":"saber","mounted":true,"amp":0}
+OK   B1: САБЛЯ В РУКЕ — родитель = маунт у кисти (не корень фигурки) | weapon=saber, mounted=true
+OK   B2: при ходьбе с саблей рука НЕ МАШЕТ (амплитуда ~0) | амплитуда=0
+{"weapon":"none","amp":0.984}
+OK   B3: без оружия рука при ходьбе МАШЕТ (амплитуда > 0.5) | weapon=none, амплитуда=0.984
+{"weapon":"pistol","mounted":true,"aiming":true,"fov":40,"wristAim":-1.391,"bullets":1}
+OK   B4: ПИСТОЛЕТ В РУКЕ — маунт у кисти | mounted=true
+OK   B5: ПРИЦЕЛ — рука с пистолетом вытянута (pose ≈ −π/2), FOV ≤ 45 | aiming=true, FOV=40, pose=-1.391
+OK   B6: ВЫСТРЕЛ с прицела работает (пуля в полёте) | пуль: 1
+
+===== C: гардероб — все виды встречаются =====
+{"n":240,"parrots":26,"parrotPct":10.8,"pegs":42,"hooks":53,"avgVerts":1743,"maxVerts":3096,"avgLegVerts":154,"torsoKinds":{"striped":40,"vest":29,"stripedV":11,"tshirt":31,"bare":26,"coat":18,"shirt":65,"sweater":20},"pantsKinds":{"long":147,"shorts":69,"torn":24},"hatKinds":{"top":17,"bandana":70,"none":47,"hat":29,"wide":29,"cap":22,"straw":26},"wristMounts":240}
+OK   C1: ВСЕ 8 видов торса встречаются (вкл. ГОЛЫЙ ТОРС и ПОЛОСЫ) | виды: striped,vest,stripedV,tshirt,bare,coat,shirt,sweater
+OK   C2: ВСЕ 3 кроя штанов (длинные/шорты/РВАНЫЕ) | виды: long,shorts,torn
+OK   C3: ВСЕ 7 головных уборов (вкл. широкополая/соломенная/вязаная/цилиндр) | виды: top,bandana,none,hat,wide,cap,straw
+OK   C4: МАУНТ у кисти у всех фигурок (оружие следует за рукой) | 240/240
+OK   C5: попугаи по-прежнему ~10% (5–16%) | 10.8%
+
+===== D: экран капитана — гардероб и схема v15 =====
+{"screen":true,"одежды":8,"уборы":7,"штаны":3}
+OK   D1: на экране капитана все 8 видов ОДЕЖДЫ | одежд=8
+OK   D2: все 3 вида ШТАНОВ (вкл. рваные шорты) | штанов=3
+OK   D3: все 7 ГОЛОВНЫХ УБОРОВ | уборов=7
+{"ok":true,"Голый торс":true,"Шорты":true,"Цилиндр":true} {"torso":"bare","pantsKind":"shorts","headwear":"top","v":18,"pTorso":"bare","pPants":"shorts","pHat":"top"}
+OK   D4: выбранный ГАРДЕРОБ применился к капитану (голый торс/шорты/цилиндр) | торс=bare, штаны=shorts, убор=top
+OK   D5: СХЕМА v15: гардероб сохранён в настройках | v=18, player.torso=bare, pantsKind=shorts, headwear=top
+{"v":18,"torso":"bare","pantsKind":"shorts","headwear":"top"}
+OK   D6: после перезагрузки схема v15 и ВНЕШНОСТЬ на месте | v=18, торс=bare, штаны=shorts, убор=top
+
+===== E: финал =====
+JS errors: 0
+OK   E1: 0 ошибок JS | ошибок: 0
+
+===== ИТОГ e2e_v60: FAILURES: 2 =====

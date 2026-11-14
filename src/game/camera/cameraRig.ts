@@ -86,7 +86,7 @@ export class CameraRig {
   freeElevSet(e: number) { this.freeElev = clamp(e, 0.10, 1.45); }
   distSet(d: number) { this.dist.free = clamp(d, 14, 70); this.dist.iso = clamp(d, 35, 420); }
 
-  update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean; arrowX?: number; arrowY?: number }) {
+  update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean; pointerLocked?: boolean; arrowX?: number; arrowY?: number }) {
     // зум
     const wheel = input.wheel;
     if (ctx.active) {
@@ -97,8 +97,9 @@ export class CameraRig {
     }
 
     // свободная камера — вращение мышью при зажатой ПКМ
+    // Task 50: или при ПЕРЕХВАТЕ курсора (pointer lock) — без кнопки
     if (this.mode === 'free' && !ctx.active) {
-      if (input.rmb) {
+      if (input.rmb || input.pointerLocked) {
         this.freeAzim -= input.mouseDX * 0.005;
         this.freeElev = clamp(this.freeElev + input.mouseDY * 0.004, 0.10, 1.45);
       }
@@ -114,6 +115,9 @@ export class CameraRig {
         this.freeElev = clamp(this.freeElev - ay * spd * 0.6, 0.10, 1.45);
       } else {
         this.userAzim -= ax * spd;
+        // Task 50: перехват мыши — в БОРТОВОЙ/кормовой камерах мышь
+        // отклоняет взгляд (как стрелки), с тем же возвратом за корму
+        if (input.pointerLocked) this.userAzim -= input.mouseDX * 0.0022;
       }
       // отклонение медленно возвращается за корму (полужизнь ~1.6 с)
       if (this.mode !== 'free') this.userAzim *= Math.exp(-dt * 0.45);

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile, hullHalfWidthAt, FlagKind } from './buildShip';
-import { buildCrew, CrewVisual, CREW_MAT } from './crew';
+import { buildCrew, CrewVisual, CREW_MAT, CrewKind } from './crew';
 import type { PlankSystem, PlankRec } from './plankHull';
 import { waterHeightAt } from '../water/waves';
 import { BUOYANCY_CONFIG, PHYSICS, CONTROLS } from '../water/buoyancy';
@@ -65,6 +65,10 @@ export interface ShipOpts {
   crewCats?: boolean;                  // экипаж из КОТОВ вместо матросов (только игрок)
   /** Task 46: ДОЩАТАЯ модель (обшивка из досок с 4 стадиями) */
   planking?: boolean;
+  /** Task 50: флаг судна ДО сборки — по нему ТИП ЭКИПАЖА
+   *  ('navy' → солдаты в мундирах, 'merchant' → простые матросы,
+   *  пиратские → пираты). Без опции — флаг пресета */
+  flag?: FlagKind;
 }
 
 const G = 9.81;
@@ -82,6 +86,13 @@ export class Ship {
   plankHull: PlankSystem | null = null;
   /** купленный флаг (переносится при пересборке визуала) */
   flagKind?: FlagKind;
+  /** Task 50: тип экипажа на палубе (по флагу судна) */
+  crewKind: CrewKind = 'pirate';
+
+  /** Task 49: цвет краски корпуса — обломки конструкции (доски/
+   *  щепы/панели/рангоут) летят под цвет своего корабля */
+  get hullTint(): number { return this.preset.colors.hull; }
+
   /** опции сборки (для rebuildVisual) */
   private boatCountOpt = 2;
   private crewCatsOpt = false;
@@ -274,6 +285,11 @@ export class Ship {
     this.wind = wind;
     this.terrainHeight = terrainHeight;
     this.particles = particles;
+    // Task 50: флаг известен ДО сборки — экипаж сразу правильного
+    // типа (военные → солдаты, торговцы → матросы, пиратские → пираты)
+    this.flagKind = opts?.flag ?? this.preset.flagKind;
+    this.crewKind = this.flagKind === 'navy' ? 'navy'
+      : this.flagKind === 'merchant' ? 'merchant' : 'pirate';
     this.visual = buildShip(this.preset, { boatCount: opts?.boatCount, planking: opts?.planking });
     this.plankHull = this.visual.planks ?? null;
     this.boatCountOpt = opts?.boatCount ?? 2;
@@ -383,8 +399,9 @@ export class Ship {
     this.applyDraftOffset(BUOYANCY_CONFIG.draftOffset);
 
     // экипаж на палубе: процедурные типажи, сид фиксирован по модели;
-    // у игрока может быть «экипаж из котов» (настройка, cats.ts)
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats);
+    // у игрока может быть «экипаж из котов» (настройка, cats.ts).
+    // Task 50: тип экипажа — по флагу судна
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -415,7 +432,7 @@ export class Ship {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats);
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind);
     this.visual.group.add(this.crew3d.group);
   }
 
@@ -1135,10 +1152,10 @@ export class Ship {
       case 'ball': {
         this.hullHP -= d.amount;
         // Task 45: течь — ТОЛЬКО через ПРОБОИНЫ (hitHull, стадия 3):
-        // попадание в борт без пробоины воду в трюм не пускает
-        // случайный «рикошет в рангоут» — редкий, основную работу делают
-        // прицельные попадания из CombatSystem (mast hits)
-        if (rng() < 0.10) this.breakMast();
+        // попадание в борт без пробоины воду в трюм не пускает.
+        // Task 50: «рикошет в рангоут» (10% при ЛЮБОМ попадании в
+        // корпус валил мачту) УБРАН — мачту ломает только прямое
+        // попадание (CombatSystem: hit.mast / книппель) и пожар
         break;
       }
       case 'chain': {
@@ -1313,7 +1330,7 @@ export class Ship {
           }
           // Task 45: глубокая вмятина — доски вздулись, сыплется щепа
           spawnSplinterBurst(wp.x, wp.y, wp.z,
-            shotDir ?? new THREE.Vector3(side, 0.2, 0), 5 + ((Math.random() * 3) | 0), 1);
+            shotDir ?? new THREE.Vector3(side, 0.2, 0), 5 + ((Math.random() * 3) | 0), 1, this.hullTint);
         }
         g.position.set(side * w * 0.985, hitY, localPos.z);
         g.scale.setScalar(k);
@@ -1371,7 +1388,7 @@ export class Ship {
 
         // ПРОБИТИЕ: большая щепа летит по ходу ядра + доски
         spawnSplinterBurst(wp.x, wp.y, wp.z,
-          shotDir ?? new THREE.Vector3(side, 0.2, 0), 12 + ((Math.random() * 5) | 0), 2 + ((Math.random() * 2) | 0));
+          shotDir ?? new THREE.Vector3(side, 0.2, 0), 12 + ((Math.random() * 5) | 0), 2 + ((Math.random() * 2) | 0), this.hullTint);
         // у воды — фонтан брызг
         if (belowWL) {
           this.particles.splash(wp.x, waterHeightAt(wp.x, wp.z, this.simT) + 0.2, wp.z, 1.1);
@@ -1388,9 +1405,9 @@ export class Ship {
           const near = this.hullHoles.filter(h => h.breached && h.side === side
             && Math.abs(h.z - localPos.z) < 4.5 && Math.abs(h.y - hitY) < 2.2);
           if (near.length >= 3) {
-            spawnHullPlate(wp.x, wp.y + 0.3, wp.z, new THREE.Vector3(side, 0.5, 0));
+            spawnHullPlate(wp.x, wp.y + 0.3, wp.z, new THREE.Vector3(side, 0.5, 0), this.hullTint);
             spawnSplinterBurst(wp.x, wp.y + 0.5, wp.z,
-              new THREE.Vector3(side, 0.4, (Math.random() - 0.5)), 14, 3);
+              new THREE.Vector3(side, 0.4, (Math.random() - 0.5)), 14, 3, this.hullTint);
             // пробоины сливаются: расширенная дыра в центре группы
             const zC = near.reduce((a, h) => a + h.z, 0) / near.length;
             const mid = near.reduce((a, h) => (Math.abs(h.z - zC) < Math.abs(a.z - zC) ? h : a), near[0]);
@@ -1405,7 +1422,7 @@ export class Ship {
       // попадание В существующую пробоину: расширяем, щепы
       rec.mesh.scale.multiplyScalar(1.0 + Math.min(0.2, damage * 0.004));
       spawnSplinterBurst(wp.x, wp.y, wp.z,
-        shotDir ?? new THREE.Vector3(side, 0.2, 0), 4 + ((Math.random() * 3) | 0), 1);
+        shotDir ?? new THREE.Vector3(side, 0.2, 0), 4 + ((Math.random() * 3) | 0), 1, this.hullTint);
       rec.dmg += damage * 0.4;
       // Task 45: накопленный урон зоны ≥60 — ПАНЕЛЬ ОБШИВКИ
       // ВЫРВАНО: дыра расширяется скачком, доски летят пачкой
@@ -1413,7 +1430,7 @@ export class Ship {
         rec.wide2 = true;
         rec.mesh.scale.multiplyScalar(1.25);
         spawnSplinterBurst(wp.x, wp.y + 0.2, wp.z,
-          shotDir ?? new THREE.Vector3(side, 0.2, 0), 10 + ((Math.random() * 4) | 0), 2);
+          shotDir ?? new THREE.Vector3(side, 0.2, 0), 10 + ((Math.random() * 4) | 0), 2, this.hullTint);
         if (rec.belowWL) this.addLeakAt(0.10, localPos);
       }
     }
@@ -1477,7 +1494,7 @@ export class Ship {
         .applyQuaternion(this.quaternion);
       outward.y = 0.4;
       spawnSplinterBurst(wp.x, wp.y, wp.z,
-        outward, 8 + ((Math.random() * 4) | 0), 1 + ((Math.random() * 2) | 0));
+        outward, 8 + ((Math.random() * 4) | 0), 1 + ((Math.random() * 2) | 0), this.hullTint);
       if (r.belowWL && this.particles) {
         // Task 48: разрыв ломает сразу несколько досок — течь на
         // доску уменьшена, чтобы дыра не открывала «фонтан»
@@ -1490,9 +1507,9 @@ export class Ship {
       const surf = Math.max(0.3, this.halfWidthAt(lp.z)) * (lp.x >= 0 ? 1 : -1);
       const wp = this.tmpV.set(surf, lp.y, lp.z).applyQuaternion(this.quaternion).add(this.position);
       spawnHullPlate(wp.x, wp.y + 0.2, wp.z,
-        new THREE.Vector3(lp.x >= 0 ? 1 : -1, 0.5, 0));
+        new THREE.Vector3(lp.x >= 0 ? 1 : -1, 0.5, 0), this.hullTint);
       spawnSplinterBurst(wp.x, wp.y + 0.3, wp.z,
-        shotDir ?? new THREE.Vector3(lp.x >= 0 ? 1 : -1, 0.3, 0), 14, 3);
+        shotDir ?? new THREE.Vector3(lp.x >= 0 ? 1 : -1, 0.3, 0), 14, 3, this.hullTint);
       if (belowWL) this.addLeakAt(0.12, lp);
     }
   }
@@ -1609,7 +1626,7 @@ export class Ship {
           const vel = this.tmpV.set(side, 0, 0).applyQuaternion(this.quaternion)
             .multiplyScalar(2.2 + Math.random() * 2.4)
             .add(this.velocity).add(new THREE.Vector3(0, 1.6 + Math.random() * 2.2, 0));
-          spawnSpar(wpx, wpy, wpz, this.quaternion, vel, sp.rTop, sp.rBot, sp.len);
+          spawnSpar(wpx, wpy, wpz, this.quaternion, vel, sp.rTop, sp.rBot, sp.len, this.hullTint);
           seg.parent.remove(seg);   // отстыкован (паруса/реи — дети — летят с ним)
         }
       }
@@ -1924,7 +1941,7 @@ export class Ship {
     spawnShipDebris({
       position: this.position, quaternion: this.quaternion,
       length: this.preset.length, beam: this.preset.beam,
-      freeboard: this.preset.freeboard,
+      freeboard: this.preset.freeboard, tint: this.hullTint,
     });
     // бочки выкатываются из трюма — всплывают рядом
     const nB = 2 + Math.floor(Math.random() * 3);
@@ -1935,7 +1952,8 @@ export class Ship {
         (Math.random() - 0.5) * this.preset.length * 0.6,
       ).applyQuaternion(this.quaternion).add(this.position);
       spawnDebrisAt(lp.x, Math.max(lp.y, 0.4), lp.z, 'barrel', new THREE.Vector3(
-        (Math.random() - 0.5) * 1.4, 0.8 + Math.random(), (Math.random() - 0.5) * 1.4));
+        (Math.random() - 0.5) * 1.4, 0.8 + Math.random(), (Math.random() - 0.5) * 1.4),
+      undefined, this.hullTint);   // бочка — груз: tint в debris.ts игнорируется
     }
     // обломок каждой мачты — длинный рангоут
     for (let i = 0; i < this.mastFall.length; i++) {
@@ -1945,7 +1963,7 @@ export class Ship {
         this.visual.masts[i].position.z,
       ).applyQuaternion(this.quaternion).add(this.position);
       spawnDebrisAt(lp.x, Math.max(lp.y, 0.4), lp.z, 'spar', new THREE.Vector3(
-        (Math.random() - 0.5) * 1.2, 0.5, (Math.random() - 0.5) * 1.2), 60 + Math.random() * 30);
+        (Math.random() - 0.5) * 1.2, 0.5, (Math.random() - 0.5) * 1.2), 60 + Math.random() * 30, this.hullTint);
     }
     // щепа от рушащихся надстроек
     const gibs = Ship.gibs;

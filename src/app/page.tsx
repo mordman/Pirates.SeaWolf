@@ -30,6 +30,42 @@ function Panel({ children, className = '' }: { children: React.ReactNode; classN
   );
 }
 
+// ============================================================
+// Task 49: СВОРАЧИВАЕМЫЕ ПАНЕЛИ HUD. Заголовок-полоска с кнопкой
+// ▾/▸ у 5 панелей (статус, ветер, управление, трюм, полигон);
+// свёрнутость хранится в localStorage и переживает перезагрузку.
+// data-hud / data-folded / data-hud-fold — крючки для e2e.
+// ============================================================
+const HUD_FOLD_KEY = 'piratesHUDFold_v1';
+
+function loadFold(): Record<string, boolean> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const v = JSON.parse(localStorage.getItem(HUD_FOLD_KEY) ?? '{}');
+    return (v && typeof v === 'object') ? v : {};
+  } catch { return {}; }
+}
+
+/** Полоска-заголовок панели: название + (опц. справа доп-текст) + стрелка */
+function FoldHeader({ id, title, extra, folded, onToggle }: {
+  id: string; title: string; extra?: React.ReactNode;
+  folded: boolean; onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[9px] font-bold uppercase tracking-wider text-amber-500/70">{title}</span>
+      <span className="flex items-center gap-1.5">
+        {extra}
+        <button data-hud-fold={id} onClick={() => onToggle(id)}
+          title={folded ? 'Развернуть панель' : 'Свернуть панель'}
+          className="rounded px-1 py-0.5 text-[10px] leading-none text-stone-500 transition hover:bg-stone-800 hover:text-amber-200">
+          {folded ? '▸' : '▾'}
+        </button>
+      </span>
+    </div>
+  );
+}
+
 function Bar({ pct, color, bg = 'bg-stone-800' }: { pct: number; color: string; bg?: string }) {
   return (
     <div className={`h-2 w-full overflow-hidden rounded-sm ${bg}`}>
@@ -337,6 +373,25 @@ export default function Home() {
     typeof window === 'undefined' ? structuredClone(DEFAULT_SETTINGS) : loadSettings());
   const [portMsg, setPortMsg] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  // Task 49: свёрнутость HUD-панелей (читаем после монтирования —
+  // localStorage на SSR недоступен, чтобы не было рассинхрона гидрации)
+  const [hudFold, setHudFold] = useState<Record<string, boolean>>({});
+  useEffect(() => { setHudFold(loadFold()); }, []);
+  const toggleFold = useCallback((id: string) => {
+    setHudFold(f => {
+      const nf = { ...f, [id]: !f[id] };
+      try { localStorage.setItem(HUD_FOLD_KEY, JSON.stringify(nf)); } catch { /* приватный режим */ }
+      return nf;
+    });
+  }, []);
+  // Task 50: панель поверх игры (карта/настройки/энциклопедия/порт) —
+  // вернуть захваченный курсор (pointer lock), иначе он невидим в UI
+  useEffect(() => {
+    if ((mapOpen || helpOpen || settingsOpen || encyOpen || charOpen || hud?.docked)
+      && document.pointerLockElement) {
+      try { document.exitPointerLock(); } catch { /* ignore */ }
+    }
+  }, [mapOpen, helpOpen, settingsOpen, encyOpen, charOpen, hud?.docked]);
 
   useEffect(() => {
     let disposed = false;
@@ -582,8 +637,10 @@ export default function Home() {
       {hud && hud.started && !hud.dead && (
         <div className="pointer-events-none absolute inset-0 z-10 font-sans text-stone-200">
           {/* ---- статус корабля (лево-верх) ---- */}
-          <div className="absolute left-3 top-3 w-60">
-            <Panel className="p-3">
+          <div className="absolute left-3 top-3 w-60" data-hud="status" data-folded={hudFold.status ? '1' : '0'}>
+            <Panel className="p-3 pt-1.5">
+              <FoldHeader id="status" title="Статус" folded={!!hudFold.status} onToggle={toggleFold} />
+              {!hudFold.status && (<>
               <div className="mb-2 flex items-baseline justify-between">
                 <span className="font-serif text-sm font-bold text-amber-200">Шлюп «Бриз»</span>
                 <span className="text-[10px] text-stone-500">{hud.fps} FPS</span>
@@ -615,12 +672,18 @@ export default function Home() {
                 )}
                 {hud.sinking && <div className="text-center text-[11px] font-bold text-red-400">МЫ ТОНЕМ!</div>}
               </div>
+              </>)}
             </Panel>
           </div>
 
           {/* ---- ветер/курс (право-верх) + настройки ---- */}
           <div className="absolute right-3 top-3 flex flex-col items-end gap-2">
-            <Panel><WindCompass hud={hud} /></Panel>
+            <div data-hud="wind" data-folded={hudFold.wind ? '1' : '0'}>
+              <Panel className="p-3 pt-1.5">
+                <FoldHeader id="wind" title="Ветер и курс" folded={!!hudFold.wind} onToggle={toggleFold} />
+                {!hudFold.wind && <WindCompass hud={hud} />}
+              </Panel>
+            </div>
             <button onClick={openSettings}
               className="pointer-events-auto rounded-lg border border-amber-900/60 bg-[#160f08]/80 px-3 py-1.5 text-xs font-semibold text-amber-200 shadow-lg backdrop-blur-sm transition hover:border-amber-500 hover:text-amber-100">
               ⚙ Настройки
@@ -637,8 +700,11 @@ export default function Home() {
           </div>
 
           {/* ---- нижняя центральная панель ---- */}
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
-            <Panel className="flex items-end gap-4 p-3">
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2" data-hud="bottom" data-folded={hudFold.bottom ? '1' : '0'}>
+            <Panel className="p-3 pt-1.5">
+              <FoldHeader id="bottom" title="Управление" folded={!!hudFold.bottom} onToggle={toggleFold} />
+              {!hudFold.bottom && (
+              <div className="flex items-end gap-4">
               {/* паруса */}
               <div className="text-center">
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-stone-400">
@@ -707,12 +773,16 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+              </div>
+              )}
             </Panel>
           </div>
 
           {/* ---- золото, груз и трюм (право-низ) ---- */}
-          <div className="absolute bottom-3 right-3">
-            <Panel className="p-3 text-right text-xs">
+          <div className="absolute bottom-3 right-3" data-hud="hold" data-folded={hudFold.hold ? '1' : '0'}>
+            <Panel className="p-3 pt-1.5 text-right text-xs">
+              <FoldHeader id="hold" title="Трюм" folded={!!hudFold.hold} onToggle={toggleFold} />
+              {!hudFold.hold && (<>
               <div className="font-serif text-lg font-bold text-amber-300">🪙 {hud.gold}</div>
               <div className="mt-1 text-stone-400">Трюм: {hud.cargoT} / {hud.cargoMaxT} т</div>
               <Bar pct={hud.cargoMaxT > 0 ? hud.cargoT / hud.cargoMaxT : 0} color="bg-amber-700" />
@@ -722,17 +792,18 @@ export default function Home() {
                 ))}
               </div>
               <div className="mt-1 text-[10px] text-stone-500">Доски: {hud.planks} · Камера: {hud.cameraLabel} (C)</div>
+              </>)}
             </Panel>
           </div>
 
           {/* ---- панель полигона (право, под компасом) ---- */}
           {hud.proving && hud.target && (
-            <div className="absolute right-3 top-40 w-64">
-              <Panel className="p-3">
-                <div className="mb-1.5 flex items-baseline justify-between">
-                  <span className="font-serif text-sm font-bold text-amber-200">🎯 Полигон</span>
-                  <span className="text-[10px] text-stone-500">{hud.target.dist} м</span>
-                </div>
+            <div className="absolute right-3 top-40 w-64" data-hud="polygon" data-folded={hudFold.polygon ? '1' : '0'}>
+              <Panel className="p-3 pt-1.5">
+                <FoldHeader id="polygon" title="🎯 Полигон"
+                  extra={<span className="text-[10px] text-stone-500">{hud.target.dist} м</span>}
+                  folded={!!hudFold.polygon} onToggle={toggleFold} />
+                {!hudFold.polygon && (<>
                 <div className="mb-1.5 space-y-1">
                   <div className="text-[10px] uppercase tracking-wide text-stone-500">Мишень (все 29 судов)</div>
                   <select
@@ -816,6 +887,7 @@ export default function Home() {
                     ✕ Выйти
                   </button>
                 </div>
+                </>)}
               </Panel>
             </div>
           )}

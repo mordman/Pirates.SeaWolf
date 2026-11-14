@@ -198,6 +198,18 @@ const VEST = [0x3a2c22, 0x26303a, 0x402a34, 0x2c3a2e];      // жилеты (п�
 const STRAW = 0xd9c06a;                                     // соломенная шляпа
 const CAPS = [0x8a2f2a, 0x2e4a6b, 0x3a5c38, 0x6b5a2e, 0x4a3a5c]; // вязаные шапки
 const BUTTON = 0xd8c27a;                                    // пуговицы жилета/камзола
+// Task 50: ТИПЫ ЭКИПАЖА — по судну. Пираты (крюки/деревянные
+// ноги/наглазники/попугаи/банданы) — ТОЛЬКО на пиратских кораблях;
+// на военных — СОЛДАТЫ в мундирах-камзолах с треуголками; на
+// торговых — ПРОСТЫЕ МАТРОСЫ (рубахи/тельняшки/соломенные шляпы).
+export type CrewKind = 'pirate' | 'navy' | 'merchant';
+/** мундирные цвета военных судов (красные мундиры морской пехоты,
+ *  синие — королевский флот, белые/зелёные — по эскадре) */
+const UNIFORM = [0x8a2222, 0x24365c, 0xd8d5cc, 0x2e4432];
+/** цвета отворотов/ланкутов мундира (контраст полкам) */
+const FACING = [0xe8e2d4, 0xb8912f, 0x8a2222, 0x24365c];
+/** фартуки торговцев/мастовых (кожа/парусина) */
+const APRON = [0x6b4e30, 0x8a8272, 0x5c4a33];
 export type { HeadwearKind, TorsoKind, PantsKind };
 
 export interface Traits {
@@ -207,10 +219,11 @@ export interface Traits {
   pegLeg: -1 | 0 | 1;      // нет / правая / левая нога
   eyePatch: boolean;
   headwear: HeadwearKind;   // 7 видов (Task 42)
-  torso: TorsoKind;         // 8 видов одежды торса (Task 42; было striped)
+  torso: TorsoKind;         // 10 видов одежды торса (Task 42/50)
   pantsKind: PantsKind;     // длинные / шорты / рваные шорты (Task 42)
   height: number;          // 0.92..1.08
   parrot: boolean;         // Task 39: попугай на плече (~10% фигур)
+  bald: boolean;           // Task 50: лысая голова (без волос под убором)
 }
 
 /** Вероятность попугая на плече у процедурной фигуры (ТЗ: 10%) */
@@ -218,9 +231,26 @@ export const PARROT_CHANCE = 0.10;
 
 /** ТЕЛО ТОРСА (Task 42): вероятности видов для процедурной
  *  фигуры — рубаха / тельняшка / вертикальные полосы / футболка /
- *  свитер / жилет / камзол / ГОЛЫЙ ТОРС. Взвешенный выбор. */
-function rollTorso(rnd: () => number, role: CrewRole): TorsoKind {
-  if (role === 'captain') return rnd() < 0.7 ? 'coat' : 'vest';
+ *  свитер / жилет / камзол / ГОЛЫЙ ТОРС. Взвешенный выбор.
+ *  Task 50: wardrobe по типу судна — солдатам мундиры,
+ *  торговцам — рубахи с фартуками, пиратам — прежний разбор. */
+function rollTorso(rnd: () => number, role: CrewRole, kind: CrewKind): TorsoKind {
+  if (role === 'captain') {
+    if (kind === 'navy') return 'soldierCoat';          // офицер — в мундире
+    return rnd() < 0.7 ? 'coat' : 'vest';
+  }
+  if (kind === 'navy') return rnd() < 0.85 ? 'soldierCoat' : 'coat';
+  if (kind === 'merchant') {
+    const w: [TorsoKind, number][] = [
+      ['shirt', 26], ['striped', 18], ['stripedV', 5], ['tshirt', 12],
+      ['sweater', 7], ['vest', 11], ['apron', 8], ['bare', 13],
+    ];
+    let sum = 0; for (const [, p] of w) sum += p;
+    let r = rnd() * sum;
+    for (const [k, p] of w) { r -= p; if (r <= 0) return k; }
+    return 'shirt';
+  }
+  // пиратский гардероб (как прежде)
   const w: [TorsoKind, number][] = [
     ['shirt', 28], ['striped', 17], ['stripedV', 6], ['tshirt', 14],
     ['sweater', 8], ['vest', 10], ['coat', 5], ['bare', 12],
@@ -231,12 +261,31 @@ function rollTorso(rnd: () => number, role: CrewRole): TorsoKind {
   return 'shirt';
 }
 
-export function rollTraits(rnd: () => number, role: CrewRole): Traits {
+/** Task 50: типаж по типу судна. 'pirate' — весь пиратский набор
+ *  (крюки/деревянные ноги/наглазники/попугаи/банданы); 'navy' —
+ *  солдаты: мундиры, треуголки, строевая короткая борода; 
+ *  'merchant' — простые матросы: рубахи, соломенные/широкие
+ *  шляпы, без пиратских протезов. */
+export function rollTraits(rnd: () => number, role: CrewRole, kind: CrewKind = 'pirate'): Traits {
   const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rnd() * arr.length)];
   // головной убор: 7 видов (капитану — офицерские)
   let headwear: HeadwearKind;
-  if (role === 'captain') headwear = rnd() < 0.7 ? 'hat' : 'top';
-  else {
+  if (kind === 'navy') {
+    // солдаты: строевая треуголка, изредка шапка/без убора
+    const r = rnd();
+    headwear = r < 0.84 ? 'hat' : r < 0.94 ? 'cap' : 'none';
+  } else if (kind === 'merchant') {
+    const r = rnd();
+    headwear = r < 0.18 ? 'none'
+      : r < 0.34 ? 'bandana'
+      : r < 0.44 ? 'hat'
+      : r < 0.64 ? 'wide'
+      : r < 0.86 ? 'straw'
+      : r < 0.95 ? 'cap'
+      : 'top';
+  } else if (role === 'captain') {
+    headwear = rnd() < 0.7 ? 'hat' : 'top';
+  } else {
     const r = rnd();
     headwear = r < 0.18 ? 'none'
       : r < 0.48 ? 'bandana'
@@ -246,19 +295,26 @@ export function rollTraits(rnd: () => number, role: CrewRole): Traits {
       : r < 0.92 ? 'cap'
       : 'top';
   }
+  // рубаха: у солдат это ЦВЕТ МУНДИРА (рукава/отвороты в тон)
+  const shirt = kind === 'navy' ? UNIFORM[Math.floor(rnd() * UNIFORM.length)] : pick(SHIRT);
+  const pirateBits = kind === 'pirate';
+  const bareOrNone = headwear === 'none';
   return {
     skin: pick(SKIN),
-    shirt: pick(SHIRT),
-    pants: pick(PANTS),
-    beard: rnd() < 0.55 ? (rnd() < 0.4 ? 2 : 1) : 0,
-    hook: rnd() < 0.22 ? (rnd() < 0.5 ? 1 : -1) : 0,
-    pegLeg: rnd() < 0.18 ? (rnd() < 0.5 ? 1 : -1) : 0,
-    eyePatch: rnd() < 0.25,
+    shirt,
+    pants: kind === 'navy' ? PANTS[1] : pick(PANTS),   // солдаты — форменные штаны
+    beard: pirateBits || kind === 'merchant'
+      ? (rnd() < 0.55 ? (rnd() < 0.4 ? 2 : 1) : 0)
+      : (rnd() < 0.12 ? 1 : 0),                        // солдаты почти гладко выбриты
+    hook: pirateBits && rnd() < 0.22 ? (rnd() < 0.5 ? 1 : -1) : 0,
+    pegLeg: pirateBits && rnd() < 0.18 ? (rnd() < 0.5 ? 1 : -1) : 0,
+    eyePatch: pirateBits && rnd() < 0.25,
     headwear,
-    torso: rollTorso(rnd, role),
-    pantsKind: rnd() < 0.58 ? 'long' : rnd() < 0.65 ? 'shorts' : 'torn',
+    torso: rollTorso(rnd, role, kind),
+    pantsKind: kind === 'navy' ? 'long' : rnd() < 0.58 ? 'long' : rnd() < 0.65 ? 'shorts' : 'torn',
     height: 0.92 + rnd() * 0.16,
-    parrot: rnd() < PARROT_CHANCE,
+    parrot: pirateBits && rnd() < PARROT_CHANCE,
+    bald: rnd() < (kind === 'navy' ? 0.06 : bareOrNone ? 0.34 : 0.05),
   };
 }
 
@@ -284,6 +340,20 @@ function bakeGeom(t: { pos: number[]; col: number[] }): THREE.BufferGeometry {
   g.setAttribute('color', new THREE.Float32BufferAttribute(t.col, 3));
   g.computeVertexNormals();
   return g;
+}
+
+/** Task 50: ПОЛЯ ШЛЯПЫ — кольцо (торец с отверстием под голову),
+ *  с толщиной и наклоном наружу-вниз; профиль через LatheGeometry.
+ *  Прежний сплошной CylinderGeometry-диск резал макушку насквозь */
+function brimRing(rIn: number, rOut: number): THREE.BufferGeometry {
+  const prof = [
+    new THREE.Vector2(rIn, 0.016),
+    new THREE.Vector2(rOut, 0.004),
+    new THREE.Vector2(rOut + 0.005, -0.012),
+    new THREE.Vector2(rIn + 0.004, -0.004),
+    new THREE.Vector2(rIn, 0.016),
+  ];
+  return new THREE.LatheGeometry(prof, 10);
 }
 
 /** Ориентированный «сегмент конечности»: бокс между точками a→b
@@ -374,6 +444,37 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       bake(t, new THREE.CylinderGeometry(0.012, 0.012, 0.012, 6), BUTTON, 0, torsoY + 0.08 - i * 0.12, 0.13,
         new THREE.Euler(Math.PI / 2, 0, 0));
     }
+  }
+  // Task 50: МУНДИР СОЛДАТА — цвета полка (traits.shirt = цвет
+  // мундира), контрастные отвороты на груди, белая перевязь,
+  // пуговицы в ряд, фалды до бёдер
+  if (traits.torso === 'soldierCoat') {
+    const uni = traits.shirt;
+    const facing = FACING[Math.floor(rnd() * FACING.length)];
+    // фалды/полы мундира (длиннее камзола, чуть шире)
+    bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.46, 0.26), uni, 0, hipY + 0.03, 0);
+    // отвороты (ланктуты) — две контрастные полы на груди
+    bake(t, new THREE.BoxGeometry(0.085, 0.22, 0.014), facing, -torsoW * 0.22, torsoY + 0.06, 0.132,
+      new THREE.Euler(0, 0, 0.1));
+    bake(t, new THREE.BoxGeometry(0.085, 0.22, 0.014), facing, torsoW * 0.22, torsoY + 0.06, 0.132,
+      new THREE.Euler(0, 0, -0.1));
+    // белая перевязь через плечо (портупея)
+    bake(t, new THREE.BoxGeometry(0.05, torsoH * 1.16, 0.016), 0xe8e2d4, -torsoW * 0.16, torsoY, 0.126,
+      new THREE.Euler(0, 0, 0.5));
+    // медные пуговицы между отворотами
+    for (let i = 0; i < 4; i++) {
+      bake(t, new THREE.CylinderGeometry(0.011, 0.011, 0.012, 6), 0xb8912f, 0, torsoY + 0.14 - i * 0.095, 0.134,
+        new THREE.Euler(Math.PI / 2, 0, 0));
+    }
+  }
+  // Task 50: РУБАХА С ФАРТУКОМ (торговцы/мастовые) — рабочая
+  // одежда: фартук спереди + нагрудник с лямкой через шею
+  if (traits.torso === 'apron') {
+    const ac = APRON[Math.floor(rnd() * APRON.length)];
+    bake(t, new THREE.BoxGeometry(torsoW * 0.8, torsoH * 0.92, 0.016), ac, 0, torsoY - 0.015, 0.118);
+    bake(t, new THREE.BoxGeometry(0.12, 0.1, 0.014), ac, 0, hipY + torsoH - 0.03, 0.118);
+    bake(t, new THREE.BoxGeometry(0.03, 0.12, 0.012), 0x3a2c1e, 0.05, hipY + torsoH + 0.01, 0.112,
+      new THREE.Euler(0, 0, 0.35));
   }
   // ГОЛЫЙ ТОРС: у половины — перевязь через плечо (кожух сабли)
   if (bare && rnd() < 0.5) {
@@ -503,9 +604,12 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
 
   // --- голова ---
   bake(t, new THREE.SphereGeometry(headR, 10, 8), traits.skin, 0, headY, 0);
-  // волосы (если нет головного убора или под ним)
-  bake(t, new THREE.SphereGeometry(headR * 1.04, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
-    BEARD[Math.floor(rnd() * BEARD.length)], 0, headY + 0.01, 0);
+  // волосы (если нет головного убора или под ним); Task 50: ЛЫСИНА —
+  // у части фигур головы гладкие (солдаты стригены, матросы лысеют)
+  if (!traits.bald) {
+    bake(t, new THREE.SphereGeometry(headR * 1.04, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+      BEARD[Math.floor(rnd() * BEARD.length)], 0, headY + 0.01, 0);
+  }
   // повязка на глаз: наглазник + ремешок через лоб
   if (traits.eyePatch) {
     const eyeX = rnd() < 0.5 ? -0.052 : 0.052;
@@ -536,15 +640,23 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       new THREE.Euler(0, 0.35, 0));
     if (role === 'captain') bake(t, new THREE.BoxGeometry(0.06, 0.02, 0.1), 0xb8912f, 0, headY + headR * 0.86, brim * 0.28);
   } else if (traits.headwear === 'wide') {
-    // Task 42: ШИРОКОПОЛАЯ — круглые поля + низкая тулья + лента
-    bake(t, new THREE.CylinderGeometry(0.3, 0.33, 0.022, 10), HAT, 0, headY + headR * 0.82, 0);
-    bake(t, new THREE.CylinderGeometry(0.125, 0.16, 0.13, 8), HAT, 0, headY + headR * 0.95, 0);
-    bake(t, new THREE.CylinderGeometry(0.162, 0.162, 0.032, 8), 0x6b4a2a, 0, headY + headR * 0.91, 0);
+    // Task 42→50: ШИРОКОПОЛАЯ — поля-КОЛЬЦО (с отверстием под
+    // голову) + низкая тулья НАД полями + лента. Прежний сплошной
+    // диск-цилиндр резал голову пополам, а тулья ныряла внутрь
+    const brimY = headY + headR * 0.82;
+    bake(t, brimRing(0.13, 0.31), HAT, 0, brimY, 0);
+    bake(t, new THREE.CylinderGeometry(0.125, 0.16, 0.13, 8), HAT, 0, brimY + 0.065, 0);
+    bake(t, new THREE.CylinderGeometry(0.162, 0.162, 0.032, 8), 0x6b4a2a, 0, brimY + 0.012, 0);
   } else if (traits.headwear === 'straw') {
-    // Task 42: СОЛОМЕННАЯ — жёлтые поля + конус + тёмная лента
-    bake(t, new THREE.CylinderGeometry(0.32, 0.36, 0.024, 10), STRAW, 0, headY + headR * 0.8, 0);
-    bake(t, new THREE.ConeGeometry(0.155, 0.17, 8), STRAW, 0, headY + headR * 0.96, 0);
-    bake(t, new THREE.CylinderGeometry(0.16, 0.16, 0.035, 8), 0x7a4a3a, 0, headY + headR * 0.9, 0);
+    // Task 42→50: СОЛОМЕННАЯ — жёлтые поля-КОЛЬЦО + конус-тулья
+    // НАД полями + тёмная лента. ФИКС: прежде поля были сплошным
+    // диском, а конус нырял основанием ВНУТРЬ головы до середины —
+    // «поля посередине головы»; теперь поля с отверстием лежат на
+    // макушке, тулья стоит сверху
+    const brimY = headY + headR * 0.8;
+    bake(t, brimRing(0.135, 0.34), STRAW, 0, brimY, 0);
+    bake(t, new THREE.ConeGeometry(0.15, 0.16, 8), STRAW, 0, brimY + 0.08, 0);
+    bake(t, new THREE.CylinderGeometry(0.152, 0.152, 0.035, 8), 0x7a4a3a, 0, brimY + 0.018, 0);
   } else if (traits.headwear === 'cap') {
     // Task 42: ВЯЗАНАЯ ШАПКА — колпак + отворот (+помпон у трети)
     const cc = CAPS[Math.floor(rnd() * CAPS.length)];
@@ -779,6 +891,15 @@ export interface CrewVisual {
   dead: number;           // потери (трупы + разорванные)
   /** режим «экипаж из котов»: все фигуры — коты (настройка) */
   isCats?: boolean;
+  /** Task 50: тип экипажа по судну + раскладка гардероба (e2e):
+   *  солдаты — мундиры/треуголки и НИ ОДНОГО крюка/наглазника/
+   *  попугая; торговцы — простые матросы; пираты — весь набор */
+  kind: CrewKind;
+  kindStats: {
+    soldierCoats: number; aprons: number; straw: number;
+    hooks: number; pegs: number; patches: number; parrots: number;
+    bald: number;
+  };
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
   /** Task 40: капитан РАЗДАЁТ УКАЗАНИЯ — машет рукой (2.2 с);
@@ -828,8 +949,26 @@ const _shipInvQ = new THREE.Quaternion();
  *  на линейном корабле.
  *  allCats — режим «заменить всех матросов на котов»: та же
  *  логика ролей/маршрутов, но фигуры — коты (cats.ts) */
-export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVisual {
+export function buildCrew(P: ShipPreset, seed: number, allCats = false,
+  kind: CrewKind = 'pirate'): CrewVisual {
   const group = new THREE.Group();
+  // Task 50: раскладка гардероба (телеметрия e2e — типы экипажа)
+  const ks = {
+    soldierCoats: 0, aprons: 0, straw: 0,
+    hooks: 0, pegs: 0, patches: 0, parrots: 0, bald: 0,
+  };
+  const rollKind = (role: CrewRole): Traits => {
+    const tr = rollTraits(rot, role, kind);
+    if (tr.torso === 'soldierCoat') ks.soldierCoats++;
+    if (tr.torso === 'apron') ks.aprons++;
+    if (tr.headwear === 'straw') ks.straw++;
+    if (tr.hook !== 0) ks.hooks++;
+    if (tr.pegLeg !== 0) ks.pegs++;
+    if (tr.eyePatch) ks.patches++;
+    if (tr.parrot) ks.parrots++;
+    if (tr.bald) ks.bald++;
+    return tr;
+  };
   const L = P.length;
   // палуба под ногами: на квартердеке — приподнята; корма судов
   // без квартердека — обычная палуба
@@ -881,7 +1020,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
   for (let i = 0; i < nSpares; i++) {
     const f = allCats
       ? buildCatCrewFigure('watch', nextSeed(), true)
-      : buildFigure('watch', rollTraits(rot, 'watch'), nextSeed(), true);
+      : buildFigure('watch', rollKind('watch'), nextSeed(), true);
     if (!allCats && f.wristMount) {
       f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
       f.gunCd = 1 + rot() * 2;
@@ -946,7 +1085,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
       || role === 'gunner' || role === 'watch';
     const f = allCats
       ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
-      : buildFigure(role, rollTraits(rot, role), nextSeed(), busy || role === 'walker');
+      : buildFigure(role, rollKind(role), nextSeed(), busy || role === 'walker');
     // Task 43: ВООРУЖЕНИЕ МАТРОСОВ — ружьё 70% (дальность 50 м),
     // пистолет 30% (20 м). Стрелки — роли с подвижными руками
     // (рулевой у штурвала, гребцы на банках, капитан на мостике —
@@ -1318,6 +1457,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false): CrewVis
 
   const vis: CrewVisual = {
     group, total: figures.length, shown: figures.length, dead: 0, isCats: allCats,
+    kind, kindStats: ks,
     setVisible(v: boolean) { group.visible = v; },
     waveCaptain() {
       // Task 40: найти ЖИВОГО капитана и поднять руку (2.2 с)

@@ -198,7 +198,7 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
           d.controls.ammo[binding.ammoIdx] = e.code;
         } else {
           const k = binding.key;
-          if (k !== 'ammo' && k !== 'invertRudder') d.controls[k] = e.code;
+          if (k !== 'ammo' && k !== 'invertRudder' && k !== 'mouseCapture') d.controls[k] = e.code;
         }
       });
       setBinding(null);
@@ -307,6 +307,16 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                 <Row label="Детализация вблизи" hint="дистанция показа мелких деталей кораблей: выбленки, якоря, порты">
                   <Slider value={g.detailLod} min={100} max={420} step={10}
                     onChange={v => update(d => { d.graphics.detailLod = v; })}
+                    format={v => `${v} м`} />
+                </Row>
+                <Row label="Дальность видимости деревьев" hint="чем дальше остров, тем меньше полигонов на дереве: 30% — упрощённые 3D, 65% — плоские силуэты, дальше — скрыты">
+                  <Slider value={g.treeVisDistance} min={600} max={3200} step={100}
+                    onChange={v => update(d => { d.graphics.treeVisDistance = v; })}
+                    format={v => `${(v / 1000).toFixed(1)} км`} />
+                </Row>
+                <Row label="Размер тайла рельефа" hint="сторона «чанка» суши: меньше — детальнее у берегов, больше — быстрее (смена пересобирает рельеф)">
+                  <Slider value={g.terrainTileSize} min={240} max={960} step={60}
+                    onChange={v => update(d => { d.graphics.terrainTileSize = v; })}
                     format={v => `${v} м`} />
                 </Row>
                 <div className="mt-1 rounded border border-stone-800 bg-stone-900/40 px-2 py-1.5 text-[10px] leading-relaxed text-stone-400">
@@ -996,6 +1006,10 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                     {k === 'invertRudder' ? (
                       <input type="checkbox" checked={s.controls.invertRudder}
                         onChange={e => update(d => { d.controls.invertRudder = e.target.checked; })}
+                        className="h-4 w-4 accent-amber-500" />
+                    ) : k === 'mouseCapture' ? (
+                      <input type="checkbox" checked={s.controls.mouseCapture}
+                        onChange={e => update(d => { d.controls.mouseCapture = e.target.checked; })}
                         className="h-4 w-4 accent-amber-500" />
                     ) : k === 'ammo' ? (
                       <div className="flex gap-1.5">

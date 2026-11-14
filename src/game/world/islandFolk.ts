@@ -445,7 +445,7 @@ export function buildVillageFolk(v: VillageDef, o: VillageFolkOpts): LandFolk {
   const folks: Folk[] = [];
   const mkFolk = (x: number, z: number, mode: 'walk' | 'idle', face: number) => {
     const role = mode === 'walk' ? 'walker' : rng() < 0.5 ? 'watch' : 'gunner';
-    const fig = buildFigure(role, rollTraits(rng, role), nextSeed());
+    const fig = buildFigure(role, rollTraits(rng, role, 'merchant'), nextSeed());
     fig.group.position.set(x, heightAt(x, z) - 0.06, z);
     fig.group.rotation.y = face;
     group.add(fig.group);

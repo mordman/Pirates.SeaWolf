@@ -294,6 +294,7 @@ export class Game {
 
     this.input = new InputManager(canvas);
     this.input.setPreventCodes(this.preventCodes());
+    this.input.setMouseCapture(this.settings.controls.mouseCapture);   // Task 50
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
     this.rig.camera.far = g.drawDistance * 2 + 4000;
     this.rig.camera.updateProjectionMatrix();
@@ -338,6 +339,9 @@ export class Game {
       textures: this.settings.assets,
       islands: this.settings.islands,   // Task 41: настройки островов
     });
+    // Task 50: дальность видимости деревьев + размер тайла рельефа
+    this.world.treeVis = g.treeVisDistance;
+    this.world.terrain.setTileSize(g.terrainTileSize);
     // стрим рельефа: тайлы держим с запасом за дальностью видимости
     this.world.terrain.streamDist = g.drawDistance + 2200;
     this.worldGroup.add(this.world.group);
@@ -517,6 +521,9 @@ export class Game {
     (this.scene.fog as THREE.FogExp2).density = this.fogBase();
     this.audio.setVolume(s.audio.volume);
     this.input.setPreventCodes(this.preventCodes());
+    if (prev.controls.mouseCapture !== s.controls.mouseCapture) {
+      this.input.setMouseCapture(s.controls.mouseCapture);   // Task 50
+    }
     this.combat.infiniteAmmo = s.gameplay.infiniteAmmo;
     this.applyFx(s.fx);
     // GLB-модели деталей: включение/выключение на лету
@@ -638,6 +645,15 @@ export class Game {
     if (prev.graphics.drawDistance !== g.drawDistance) {
       this.world.visDistance = g.drawDistance;
       this.world.terrain.streamDist = g.drawDistance + 2200;
+    }
+    // Task 50: дальность видимости деревьев (пороги LOD — доли от неё)
+    if (prev.graphics.treeVisDistance !== g.treeVisDistance) {
+      this.world.treeVis = g.treeVisDistance;
+    }
+    // Task 50: размер тайла рельефа («чанка») — пересборка сетки
+    if (prev.graphics.terrainTileSize !== g.terrainTileSize) {
+      this.world.terrain.setTileSize(g.terrainTileSize);
+      this.pushMessage(`Рельеф: тайл ${g.terrainTileSize} м — пересборка`);
     }
   }
 
@@ -922,39 +938,45 @@ export class Game {
       return p;
     };
     // [модель, угол°, дистанция от берега, yaw, экипаж, золото, груз]
-    const specs: [string, number, number, number, number, number, number[]][] = [
-      ['blackpearl', 180, 95, 0.1, 120, 2600, [12, 8, 10, 4, 3]],
-      ['sloop', 152, 55, 0.7, 20, 260, [3, 2, 4, 0, 0]],
-      ['sloop', 208, 55, -0.6, 20, 240, [2, 3, 3, 1, 0]],
-      ['brig', 122, 75, 1.1, 52, 720, [6, 4, 8, 2, 1]],
-      ['mystique', 252, 65, -1.2, 92, 820, [5, 6, 4, 3, 2]],
-      ['caravel', 92, 90, 2.0, 24, 420, [4, 3, 5, 1, 1]],
-      ['cog', 300, 85, -2.2, 26, 380, [7, 2, 9, 0, 0]],
+    // Task 50: [модель, угол°, дистанция, yaw, экипаж, золото, груз, ФЛАГ].
+    // Флот у острова теперь СМЕШАННЫЙ: «Чёрная жемчужина» и Le
+    // Mystique со шлюпом — пираты (чёрный флаг, пиратская вольница
+    // на палубе); бриг — ВОЕННЫЙ патруль (солдаты в мундирах);
+    // каравелла/когг/флейт-шлюп — ТОРГОВЦЫ (простые матросы).
+    const specs: [string, number, number, number, number, number, number[], FlagKind][] = [
+      ['blackpearl', 180, 95, 0.1, 120, 2600, [12, 8, 10, 4, 3], 'pirate'],
+      ['sloop', 152, 55, 0.7, 20, 260, [3, 2, 4, 0, 0], 'pirate'],
+      ['sloop', 208, 55, -0.6, 20, 240, [2, 3, 3, 1, 0], 'merchant'],
+      ['brig', 122, 75, 1.1, 52, 720, [6, 4, 8, 2, 1], 'navy'],
+      ['mystique', 252, 65, -1.2, 92, 820, [5, 6, 4, 3, 2], 'pirate'],
+      ['caravel', 92, 90, 2.0, 24, 420, [4, 3, 5, 1, 1], 'merchant'],
+      ['cog', 300, 85, -2.2, 26, 380, [7, 2, 9, 0, 0], 'merchant'],
     ];
-    for (const [model, a, dist, yaw, crew, gold, loot] of specs) {
-      const sh = new Ship(model, false, this.wind, terrain, this.particles, aiOpts);
+    for (const [model, a, dist, yaw, crew, gold, loot, flag] of specs) {
+      const sh = new Ship(model, false, this.wind, terrain, this.particles,
+        { ...aiOpts, flag });   // Task 50: флаг ДО сборки → тип экипажа
       sh.position.copy(ring(a, dist));
       sh.quaternion.setFromEuler(new THREE.Euler(0, yaw, 0));
       sh.crew = crew;
       sh.gold = gold;
       sh.cargo = { sugar: loot[0], rum: loot[1], timber: loot[2], spice: loot[3], silk: loot[4] };
-      setFlagKind(sh.visual, 'pirate'); // все — под чёрным флагом
-      sh.flagKind = 'pirate';            // Task 46: переносится при пересборке визуала
+      setFlagKind(sh.visual, flag);  // паруса/флаг соответствуют судну
       this.worldGroup.add(sh.visual.group);
       this.worldGroup.add(sh.foam.mesh);
       this.worldGroup.add(sh.wake.mesh);
       this.aiShips.push(new AIShip(sh, [], 'anchored'));
     }
-    // два патруля вокруг острова
+    // два ПАТРУЛЯ вокруг острова — ВОЕННЫЕ корветы с солдатами
+    // (Task 50: прежде ходили под чёрным флагом с пиратами на палубе)
     for (const [model, a0, crew, gold] of [
       ['sloop', 0, 18, 300], ['brig', 180, 48, 650],
     ] as [string, number, number, number][]) {
-      const sh = new Ship(model, false, this.wind, terrain, this.particles, aiOpts);
+      const sh = new Ship(model, false, this.wind, terrain, this.particles,
+        { ...aiOpts, flag: 'navy' });
       sh.position.copy(ring(a0, 280));
       sh.crew = crew;
       sh.gold = gold;
-      setFlagKind(sh.visual, 'pirate');
-      sh.flagKind = 'pirate';
+      setFlagKind(sh.visual, 'navy');
       this.worldGroup.add(sh.visual.group);
       this.worldGroup.add(sh.foam.mesh);
       this.worldGroup.add(sh.wake.mesh);
@@ -1874,6 +1896,9 @@ export class Game {
     const boardTarget = this.canBoard();
     const canDockHere = this.canDock();
     this.boardingTarget = boardTarget;
+    // Task 50: прицел требует ВИДИМЫЙ курсор (наведение по позиции
+    // мыши) — при активации прицела освобождаем перехват
+    if (this.combat.aim.active && this.input.pointerLocked) this.input.releaseLock();
     if (inp.pressed(c.aimPort)) {
       this.combat.toggleAim(-1);
     }
@@ -2324,7 +2349,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number> } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -2695,8 +2720,14 @@ export class Game {
     };
     // Task 46: СВЕЖИЕ данные обломков (телеметрия __sea.refreshes
     // только на рендер-кадрах; e2e зовёт эту функцию для точных
-    // замеров сразу после синхронных мутаций)
+    // замеров сразу после синхронных мутаций). Task 49: + tints/tinted
     dbg.__seaDebrisInfo = () => debrisInfo();
+    // Task 50: сборка процедурной фигурки для e2e/VLM (крупные планы
+    // одежды/уборов — на реальном рендере, не по константам)
+    {
+      const w = window as unknown as { __buildFigure?: typeof buildFigure };
+      w.__buildFigure ??= buildFigure;
+    }
 
     // действия команды (R)
     if (this.player.pumpAction && !this.docked) {

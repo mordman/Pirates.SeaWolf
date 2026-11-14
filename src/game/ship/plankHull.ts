@@ -80,11 +80,13 @@ export function plankCutY(P: ShipPreset): number {
 // ---------- геометрия поясов/досок (метры) ----------
 /** высота доски поясья обшивки */
 const STRAKE_W = 0.48;
-/** шаг поясов: МЕНЬШЕ высоты доски → нахлёст 8 см (внакрой) */
-const STRAKE_PITCH = 0.40;
+/** шаг поясов: МЕНЬШЕ высоты доски → нахлёст 6 см (внакрой, Task 49:
+ *  ослаблен с 8 см — сплошная «чешуя» на рельефе убавлена) */
+const STRAKE_PITCH = 0.42;
 /** наклон поясья вокруг оси длины: нижняя кромка НАРУЖУ —
- *  видимая линия нахлёста, как у настоящей клинкерной обшивки */
-const LAP_TILT = 0.20;
+ *  видимая линия нахлёста, как у настоящей клинкерной обшивки.
+ *  Task 49: 0.20 → 0.09 — рельеф «чешуёк» заметно мягче */
+const LAP_TILT = 0.09;
 /** ширина доски палубы */
 const DECK_W = 0.385;
 /** шаг колонок палубы: нахлёст 2.5 см поперёк */
@@ -273,6 +275,15 @@ export class PlankSystem {
 
   belowWLBroken(): PlankRec[] { return this.brokenBelowWL; }
 
+  /** Task 49: геометрия поясов (телеметрия e2e: нахлёст/наклон/тон) */
+  geomInfo() {
+    return {
+      strakeW: STRAKE_W, strakePitch: STRAKE_PITCH, lapTilt: LAP_TILT,
+      overlap: +(STRAKE_W - STRAKE_PITCH).toFixed(3),
+      deckStep: DECK_STEP,
+    };
+  }
+
   /** полный сброс (clearDamage): все доски целы */
   reset() {
     for (const r of this.records) {
@@ -347,7 +358,7 @@ export class PlankSystem {
           const center = new THREE.Vector3((x0 + x1) / 2, y, zm)
             .addScaledVector(X, -Math.cos(LAP_TILT) * thick / 2 + (j % 2) * EDGE_ALT)
             .addScaledVector(Yv, -Math.sin(LAP_TILT) * thick / 2);
-          const tone = 0.86 + rnd() * 0.28;
+          const tone = 0.93 + rnd() * 0.14;   // Task 49: ±7% (было ±14% — «шахматы»)
           const color = new THREE.Color(P.colors.hull);
           if (below) {
             const f = Math.min(1, (0.05 - y) / Math.max(0.8, P.draft * 0.45));
@@ -435,7 +446,7 @@ export class PlankSystem {
         // колонка существует там, где её кромка достаёт до борта
         // (край уходит под обшивку — щели между палубой и бортом НЕТ)
         if (lenK >= 0.5 && hw >= ax + edgeMargin) {
-          const tone = 0.88 + rnd() * 0.24;
+          const tone = 0.94 + rnd() * 0.12;   // Task 49: ±6% (было ±12%)
           // наклон по хорде седловатости (стык без ступени)
           const pitch = Math.atan2(yAt(z1) - yAt(z0), z1 - z0);
           const quat = qFlat.clone().multiply(
@@ -497,7 +508,7 @@ export class PlankSystem {
       const segLen = width / nSplit;
       const q = qBase.clone().multiply(qTilt);
       const thick = below ? 0.105 : 0.09;
-      const tone = 0.84 + rnd() * 0.26;
+      const tone = 0.93 + rnd() * 0.14;   // Task 49: ±7% (было ±13%)
       const color = new THREE.Color(P.colors.hull);
       if (below) {
         const f = Math.min(1, (0.05 - y) / Math.max(0.8, P.draft * 0.45));

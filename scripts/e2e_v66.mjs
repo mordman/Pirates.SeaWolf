@@ -87,10 +87,12 @@ const tear = jparse(await evR(`(() => {
   // картина разлома: сломанные доски порта
   const broken = p.plankHull.records.filter(r => r.cls === 0 && r.side === 1 && r.state === 3)
     .map(r => ({ y: +r.y.toFixed(2), z: +r.z.toFixed(2), len: +r.len.toFixed(2), w: r.w }));
-  // связность: у каждого сломанного есть сломанный сосед ≤0.8 м
+  // связность: у каждого сломанного есть сломанный сосед ≤0.9 м
+  // (Task 49: пояс 0.42 — соседний пояс на 0.42 м, сосед по диагонали
+  // до 0.84 м; порог 0.8 резал краевую доску разрыва)
   let isolated = 0;
   for (const a of broken) {
-    const near = broken.some(b => b !== a && Math.hypot(b.y - a.y, b.z - a.z) <= 0.8);
+    const near = broken.some(b => b !== a && Math.hypot(b.y - a.y, b.z - a.z) <= 0.9);
     if (!near) isolated++;
   }
   // пояса в разломе (разные высоты y)

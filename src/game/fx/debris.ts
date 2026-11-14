@@ -6,13 +6,16 @@ import { waterHeightAt } from '../water/waves';
 // качаются на волнах и дрейфуют по ветру, пока корабль уходит
 // на дно (требование ТЗ «затопление»); также осыпаются при
 // тяжёлых попаданиях в корпус/рангоут.
-// Пул фиксированного размера, меши шарят геометрии/материалы.
+// Пул фиксированного размера, меши шарят геометрии; материалы —
+// СВОИ у каждого куска (Task 49: окраска под цвет корпуса).
 // ============================================================
 
 type DebrisKind = 'plank' | 'barrel' | 'spar' | 'crate' | 'shard' | 'hullplate';
 
 interface Piece {
   mesh: THREE.Mesh;
+  kind: DebrisKind;
+  tinted: boolean;     // Task 49: покрашен в цвет корпуса корабля-родителя
   vel: THREE.Vector3;
   spin: THREE.Vector3;
   buoy: number;      // запас плавучести: скорость всплытия к поверхности
@@ -32,19 +35,52 @@ let geoSpar: THREE.CylinderGeometry;
 let geoCrate: THREE.BoxGeometry;
 let geoShard: THREE.BoxGeometry;
 let geoPlate: THREE.BoxGeometry;
-let matWood: THREE.MeshStandardMaterial;
-let matDark: THREE.MeshStandardMaterial;
-let matPlate: THREE.MeshStandardMaterial;
+
+// Task 49: у каждого куска пула СВОЙ материал — при спавне цвет
+// сбрасывается (пул переиспользуется) и по tint красится под цвет
+// корпуса корабля-родителя: обломки КОНСТРУКЦИИ (доски/щепы/панели/
+// рангоут) держат краску корпуса, груз (бочки/ящики) — натуральное
+// дерево. Раньше 3 общих материала делали все обломки одинаково
+// коричневыми рядом с кораблём любого цвета.
+const KIND_BASE: Record<DebrisKind, number> = {
+  plank: 0x7a5c38, barrel: 0x7a5c38, spar: 0x7a5c38,
+  crate: 0x4a3420, shard: 0x4a3420, hullplate: 0x6a4c2c,
+};
+const KIND_ROUGH: Record<DebrisKind, number> = {
+  plank: 0.9, barrel: 0.9, spar: 0.9,
+  crate: 0.92, shard: 0.92, hullplate: 0.88,
+};
+/** какие виды принимают окраску корпуса (обломки конструкции) */
+const TINTABLE: Record<DebrisKind, boolean> = {
+  plank: true, shard: true, hullplate: true, spar: true,
+  barrel: false, crate: false,
+};
+/** степень принятия цвета: 0 — базовое дерево, 1 — чистая краска */
+const TINT_LERP = 0.72;
+const _tintC = new THREE.Color();
+
+function geoOf(k: DebrisKind): THREE.BufferGeometry {
+  return k === 'plank' ? geoPlank : k === 'barrel' ? geoBarrel : k === 'spar' ? geoSpar
+    : k === 'shard' ? geoShard : k === 'hullplate' ? geoPlate : geoCrate;
+}
+
+/** Сброс/установка цвета куска при спавне (Task 49) */
+function applyTint(p: Piece, tint?: number) {
+  const m = p.mesh.material as THREE.MeshStandardMaterial;
+  if (tint !== undefined && TINTABLE[p.kind]) {
+    m.color.setHex(KIND_BASE[p.kind]).lerp(_tintC.setHex(tint), TINT_LERP);
+    p.tinted = true;
+  } else {
+    m.color.setHex(KIND_BASE[p.kind]);
+    p.tinted = false;
+  }
+}
 
 function makeMesh(kind: DebrisKind): THREE.Mesh {
-  switch (kind) {
-    case 'plank': return new THREE.Mesh(geoPlank, matWood);
-    case 'barrel': return new THREE.Mesh(geoBarrel, matWood);
-    case 'spar': return new THREE.Mesh(geoSpar, matWood);
-    case 'crate': return new THREE.Mesh(geoCrate, matDark);
-    case 'shard': return new THREE.Mesh(geoShard, matDark);
-    case 'hullplate': return new THREE.Mesh(geoPlate, matPlate);
-  }
+  return new THREE.Mesh(geoOf(kind), new THREE.MeshStandardMaterial({
+    color: KIND_BASE[kind], roughness: KIND_ROUGH[kind],
+    side: kind === 'hullplate' ? THREE.DoubleSide : THREE.FrontSide,
+  }));
 }
 
 /** Создать пул (один раз из game.ts) */
@@ -60,41 +96,52 @@ export function initDebris(parent: THREE.Object3D) {
   geoShard = new THREE.BoxGeometry(0.55, 0.07, 0.13);
   // секция обшивки при разломе борта (изогнутая полоса)
   geoPlate = new THREE.BoxGeometry(2.3, 0.12, 1.15);
-  matWood = new THREE.MeshStandardMaterial({ color: 0x7a5c38, roughness: 0.9 });
-  matDark = new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.92 });
-  matPlate = new THREE.MeshStandardMaterial({ color: 0x6a4c2c, roughness: 0.88, side: THREE.DoubleSide });
   const kinds: DebrisKind[] = [
     ...Array(20).fill('plank'), ...Array(10).fill('barrel'),
     ...Array(12).fill('spar'), ...Array(6).fill('crate'),
     ...Array(58).fill('shard'), ...Array(6).fill('hullplate'),
   ] as DebrisKind[];
   for (let i = 0; i < POOL_N; i++) {
-    const m = makeMesh(kinds[i]);
+    const k = kinds[i];
+    const m = makeMesh(k);
     m.visible = false;
     m.castShadow = false;
     root.add(m);
     pieces.push({
-      mesh: m, vel: new THREE.Vector3(), spin: new THREE.Vector3(),
+      mesh: m, kind: k, tinted: false,
+      vel: new THREE.Vector3(), spin: new THREE.Vector3(),
       buoy: 1, ttl: 0, bobPh: Math.random() * 6.28, active: false,
     });
   }
   parent.add(root);
 }
 
-/** Выбросить один обломок (мировые координаты). kind 'auto' — случайный. */
+/** Выбросить один обломок (мировые координаты). kind 'auto' — случайный.
+ *  tint — цвет корпуса корабля-родителя (Task 49: покрасить обломок) */
 export function spawnDebrisAt(x: number, y: number, z: number,
-  kind: DebrisKind | 'auto' = 'auto', vel?: THREE.Vector3, ttl = 30 + Math.random() * 30) {
+  kind: DebrisKind | 'auto' = 'auto', vel?: THREE.Vector3, ttl = 30 + Math.random() * 30,
+  tint?: number) {
   if (!root) return;
   const k: DebrisKind = kind === 'auto'
     ? (['plank', 'plank', 'spar', 'barrel', 'crate'] as DebrisKind[])[(Math.random() * 5) | 0]
     : kind;
-  // ищем свободный кусок нужного типа, иначе любой свободный
-  let p = pieces.find(q => !q.active && q.mesh.geometry === geoOf(k));
-  if (!p) p = pieces.find(q => !q.active);
+  // ищем свободный кусок нужного типа. Task 49: фолбэк для обломков
+  // КОНСТРУКЦИИ — только на тонируемые слоты: раньше осколок при
+  // переполнении пула мог занять слот БОЧКИ/ЯЩИКА — геометрия и цвет
+  // груза посреди щепы «своего» корпуса выглядели чужеродными
+  // («бежевые бублики» у синего борта). Лучше НЕ заспавнить кусок.
+  let p = pieces.find(q => !q.active && q.kind === k);
+  if (!p && TINTABLE[k]) {
+    p = pieces.find(q => !q.active && TINTABLE[q.kind]);
+  }
+  if (!p && !TINTABLE[k]) {
+    p = pieces.find(q => !q.active);   // груз тонировать нельзя — любой слот
+  }
   if (!p) return; // пул исчерпан — молча пропускаем
   p.active = true;
   p.ttl = ttl;
   p.buoy = 0.6 + Math.random() * 0.9;
+  applyTint(p, tint);                     // Task 49: цвет корпуса/сброс
   p.mesh.visible = true;
   p.mesh.position.set(x, y, z);
   p.mesh.scale.set(1, 1, 1);   // Task 46: сброс масштаба после spawnSpar
@@ -103,15 +150,10 @@ export function spawnDebrisAt(x: number, y: number, z: number,
   p.spin.set((Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.0, (Math.random() - 0.5) * 2.4);
 }
 
-function geoOf(k: DebrisKind): THREE.BufferGeometry {
-  return k === 'plank' ? geoPlank : k === 'barrel' ? geoBarrel : k === 'spar' ? geoSpar
-    : k === 'shard' ? geoShard : k === 'hullplate' ? geoPlate : geoCrate;
-}
-
 /** Task 43: РАЗЛЁТ ЩЕПЫ при пробоине/разломе — веером по ходу снаряда.
  *  n shard-щепок + доски, дир — мировое направление полёта ядра */
 export function spawnSplinterBurst(x: number, y: number, z: number,
-  dir: THREE.Vector3, n = 10, planks = 2) {
+  dir: THREE.Vector3, n = 10, planks = 2, tint?: number) {
   if (!root) return;
   const dl = dir.length() > 1e-4 ? dir.clone().normalize() : new THREE.Vector3(0, 0.4, 1).normalize();
   // разброс вокруг направления (конус ~55°)
@@ -123,7 +165,7 @@ export function spawnSplinterBurst(x: number, y: number, z: number,
       dl.y * 0.4 + 0.35 + Math.random() * 0.9,
       dl.z + Math.sin(a) * spread,
     ).normalize().multiplyScalar(3.5 + Math.random() * 7);
-    spawnDebrisAt(x, y, z, 'shard', v, 14 + Math.random() * 14);
+    spawnDebrisAt(x, y, z, 'shard', v, 14 + Math.random() * 14, tint);
   }
   // крупные доски — вылетают вдоль удара, кувыркаются
   for (let i = 0; i < planks; i++) {
@@ -131,19 +173,19 @@ export function spawnSplinterBurst(x: number, y: number, z: number,
       dl.x * (2.4 + Math.random() * 2.2) + (Math.random() - 0.5) * 1.6,
       1.4 + Math.random() * 2.6,
       dl.z * (2.4 + Math.random() * 2.2) + (Math.random() - 0.5) * 1.6);
-    spawnDebrisAt(x, y + 0.15, z, 'plank', v, 30 + Math.random() * 26);
+    spawnDebrisAt(x, y + 0.15, z, 'plank', v, 30 + Math.random() * 26, tint);
   }
 }
 
 /** Task 43: СЕКЦИЯ ОБШИВКИ ВЫЛОМАНА (3+ пробоины в ряд): панель
  *  борта отлетает наружу, вращаясь */
-export function spawnHullPlate(x: number, y: number, z: number, dir: THREE.Vector3) {
+export function spawnHullPlate(x: number, y: number, z: number, dir: THREE.Vector3, tint?: number) {
   if (!root) return;
   const v = new THREE.Vector3(
     dir.x * 2.6 + (Math.random() - 0.5),
     1.6 + Math.random() * 1.6,
     dir.z * 2.6 + (Math.random() - 0.5));
-  spawnDebrisAt(x, y, z, 'hullplate', v, 45 + Math.random() * 25);
+  spawnDebrisAt(x, y, z, 'hullplate', v, 45 + Math.random() * 25, tint);
 }
 
 /** Task 46: СЕГМЕНТ МАЧТЫ (стеньга/брам-стеньга) отстыкован при
@@ -151,14 +193,19 @@ export function spawnHullPlate(x: number, y: number, z: number, dir: THREE.Vecto
  *  длину сегмента, ориентация — мировая ориентация сегмента */
 export function spawnSpar(x: number, y: number, z: number,
   quat: THREE.Quaternion, vel: THREE.Vector3,
-  radTop: number, radBot: number, len: number) {
+  radTop: number, radBot: number, len: number, tint?: number) {
   if (!root) return;
-  let p = pieces.find(q => !q.active && q.mesh.geometry === geoSpar);
-  if (!p) p = pieces.find(q => !q.active);
+  let p = pieces.find(q => !q.active && q.kind === 'spar');
+  // Task 49: рей — обломок КОНСТРУКЦИИ: при нехватке своих слотов
+  // падаем на тонируемые; бочки/ящики — только если рей БЕЗ окраски.
+  // Лучше кусок не заспавнить, чем бочко-рей чужого цвета
+  if (!p && tint !== undefined) p = pieces.find(q => !q.active && TINTABLE[q.kind]);
+  if (!p && tint === undefined) p = pieces.find(q => !q.active);
   if (!p) return;
   p.active = true;
   p.ttl = 25 + Math.random() * 20;
   p.buoy = 0.8 + Math.random() * 0.4;   // дерево плавает: сегмент качается на волнах
+  applyTint(p, tint);                   // Task 49: мачта в цвет корпуса
   p.mesh.visible = true;
   p.mesh.position.set(x, y, z);
   p.mesh.quaternion.copy(quat);
@@ -169,7 +216,10 @@ export function spawnSpar(x: number, y: number, z: number,
 }
 
 /** Обломки с гибнущего корабля: россыпь с палубы и бортов */
-export function spawnShipDebris(P: { position: THREE.Vector3; quaternion: THREE.Quaternion; length: number; beam: number; freeboard: number }) {
+export function spawnShipDebris(P: {
+  position: THREE.Vector3; quaternion: THREE.Quaternion; length: number;
+  beam: number; freeboard: number; tint?: number;
+}) {
   if (!root) return;
   const n = 7 + ((Math.random() * 4) | 0);
   for (let i = 0; i < n; i++) {
@@ -178,7 +228,7 @@ export function spawnShipDebris(P: { position: THREE.Vector3; quaternion: THREE.
     const wp = new THREE.Vector3(lx, P.freeboard * 0.5, lz).applyQuaternion(P.quaternion).add(P.position);
     const outward = new THREE.Vector3(lx, 0, lz).normalize().multiplyScalar(1.2 + Math.random() * 1.8);
     outward.y = 0.8 + Math.random() * 1.6;
-    spawnDebrisAt(wp.x, Math.max(wp.y, 0.4), wp.z, 'auto', outward);
+    spawnDebrisAt(wp.x, Math.max(wp.y, 0.4), wp.z, 'auto', outward, undefined, P.tint);
   }
 }
 
@@ -233,21 +283,28 @@ export function debrisAlive(): number {
   return n;
 }
 
-/** Task 46: телеметрия по видам (e2e: падение сегментов мачт) */
-export function debrisInfo(): { alive: number; byKind: Record<string, number> } {
+/** Task 46: телеметрия по видам (e2e: падение сегментов мачт).
+ *  Task 49: + tints — раскладка ЦВЕТОВ покрашенных обломков
+ *  (обломки конструкции в цвет корпуса) и их счётчик */
+export function debrisInfo(): {
+  alive: number; byKind: Record<string, number>;
+  tints: Record<string, number>; tinted: number;
+} {
   const byKind: Record<string, number> = {
     plank: 0, barrel: 0, spar: 0, crate: 0, shard: 0, hullplate: 0,
   };
+  const tints: Record<string, number> = {};
+  let tinted = 0;
   for (const p of pieces) {
     if (!p.active) continue;
-    if (p.mesh.geometry === geoSpar) byKind.spar++;
-    else if (p.mesh.geometry === geoShard) byKind.shard++;
-    else if (p.mesh.geometry === geoPlate) byKind.hullplate++;
-    else if (p.mesh.geometry === geoPlank) byKind.plank++;
-    else if (p.mesh.geometry === geoBarrel) byKind.barrel++;
-    else byKind.crate++;
+    byKind[p.kind]++;
+    if (p.tinted) {
+      tinted++;
+      const hex = '#' + (p.mesh.material as THREE.MeshStandardMaterial).color.getHexString();
+      tints[hex] = (tints[hex] ?? 0) + 1;
+    }
   }
-  return { alive: debrisAlive(), byKind };
+  return { alive: debrisAlive(), byKind, tints, tinted };
 }
 
 /** Убрать все обломки (сброс мишени полигона / выход) */

@@ -351,7 +351,7 @@ export function buildFishingVillage(port: PortDef, rng: RNG, heightAt: (x: numbe
   const frnd = mulberry32((port.island.cx * 31 + port.island.cz * 17 + 99) | 0);
   for (let i = 0; i < 2; i++) {
     const role = 'watch';
-    const fig = buildFigure(role, rollTraits(frnd, role), Math.floor(frnd() * 99999));
+    const fig = buildFigure(role, rollTraits(frnd, role, 'merchant'), Math.floor(frnd() * 99999));
     const p = shore.clone().addScaledVector(dir, dockLen * (0.34 + i * 0.3))
       .addScaledVector(perp, i === 0 ? 1.55 : -1.55);
     fig.group.position.set(p.x, 1.31, p.z);
@@ -477,7 +477,7 @@ function getCoastVariants(): { geo: THREE.BufferGeometry; rodTips: THREE.Vector3
       const side = f === 0 ? 1 : -1;
       const z = v % 2 === 0 ? 0.65 : -0.75;          // носовая или кормовая банка
       // рыбак: та же процедурная фигурка, что экипаж — сидит на банке
-      const fig = buildFigure('rower', rollTraits(rnd, 'rower'), Math.floor(rnd() * 99999), true);
+      const fig = buildFigure('rower', rollTraits(rnd, 'rower', 'merchant'), Math.floor(rnd() * 99999), true);
       fig.group.scale.set(0.92, 0.78, 0.92);
       fig.group.position.set(side * 0.2, 0.12, z);
       // лицом к борту с удочкой (чуть от кормы)

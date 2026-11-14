@@ -58,7 +58,9 @@ export interface AssetsSettings {
 // жилет/камзол/голый торс) и штаны (длинные/шорты/рваные шорты).
 // ============================================================
 export type HeadwearKind = 'none' | 'bandana' | 'hat' | 'wide' | 'straw' | 'cap' | 'top';
-export type TorsoKind = 'shirt' | 'striped' | 'stripedV' | 'tshirt' | 'sweater' | 'vest' | 'coat' | 'bare';
+// Task 50: +soldierCoat (мундир солдат военных судов), +apron
+// (фартук торговцев/мастовых) — экипаж различается по типу судна
+export type TorsoKind = 'shirt' | 'striped' | 'stripedV' | 'tshirt' | 'sweater' | 'vest' | 'coat' | 'bare' | 'soldierCoat' | 'apron';
 export type PantsKind = 'long' | 'shorts' | 'torn';
 
 export const APPEARANCE_SKIN = [0xd9a184, 0xc98d68, 0xb3765a, 0xa06a4f, 0x8a5a42, 0xe0b294] as const;
@@ -73,6 +75,7 @@ export const HEADWEAR_LABELS: Record<HeadwearKind, string> = {
 export const TORSO_LABELS: Record<TorsoKind, string> = {
   shirt: 'Рубаха', striped: 'Тельняшка', stripedV: 'Полосы (вертик.)',
   tshirt: 'Футболка', sweater: 'Свитер', vest: 'Жилет', coat: 'Камзол', bare: 'Голый торс',
+  soldierCoat: 'Мундир солдата', apron: 'Рубаха с фартуком',
 };
 export const PANTS_LABELS: Record<PantsKind, string> = {
   long: 'Длинные', shorts: 'Шорты', torn: 'Рваные шорты',
@@ -169,6 +172,9 @@ export interface GraphicsSettings {
   pixelRatio: number;     // ограничение devicePixelRatio (1..2)
   detailLod: number;      // м: дальность показа мелких деталей кораблей (100..420)
   useGLBModels: boolean;  // GLB-модели вместо процедурных деталей (фолбэк — процедурные)
+  // Task 50 (v18): рельеф и растительность
+  terrainTileSize: number;  // м: сторона ТАЙЛА рельефа (240..960) — «размер чанка»
+  treeVisDistance: number;  // м: дальность видимости деревьев (600..3200); LOD-пороги — доли от неё
   wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
   // ТЕКСТУРЫ/ШЕЙДЕРЫ РЕЛЬЕФА ПЕРЕЕХАЛИ в раздел assets (вкладка «Ресурсы», Task 37)
 }
@@ -192,6 +198,7 @@ export interface ControlsSettings {
   boat: string;           // шлюпка: спустить на воду / поднять на борт
   deckWalk: string;       // Task 40: прогуляться по палубе (капитан)
   ammo: [string, string, string, string];
+  mouseCapture: boolean;  // Task 50: перехват мыши (pointer lock) — клик по морю захватывает курсор, мышь крутит камеру
 }
 
 export interface AudioSettings {
@@ -290,10 +297,10 @@ export interface PhysicsSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  detailLod: 340, useGLBModels: true },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true, terrainTileSize: 600, treeVisDistance: 1400 },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 1800 },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 2200 },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  detailLod: 340, useGLBModels: true, terrainTileSize: 400, treeVisDistance: 2800 },
 };
 
 export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };
@@ -330,6 +337,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     boat: 'KeyB',
     deckWalk: 'KeyV',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
+    mouseCapture: true,   // Task 50: перехват мыши включён по умолчанию
   },
   audio: { volume: 0.55 },
   gameplay: {
@@ -448,7 +456,12 @@ const STORAGE_KEY = 'seawolves.settings.v1';
 //     живучесть КАЖДОГО корабля по отдельности (durability:
 //     id пресета → множитель; отсутствующие — ×1). Старые
 //     сохранения — дефолты 1/1/{}.
-const SCHEMA_VER = 17;
+// v18 (Task 50): graphics.terrainTileSize (м, 240..960 — сторона
+//     тайла рельефа), graphics.treeVisDistance (м, 600..3200 —
+//     дальность видимости деревьев, LOD-пороги = доли),
+//     controls.mouseCapture (перехват мыши pointer lock). Старые
+//     сохранения — дефолты пресета качества / true.
+const SCHEMA_VER = 18;
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null;
@@ -473,6 +486,9 @@ export function loadSettings(): GameSettings {
       if (typeof g.pixelRatio === 'number') s.graphics.pixelRatio = Math.min(2, Math.max(1, g.pixelRatio));
       if (typeof g.detailLod === 'number') s.graphics.detailLod = Math.min(420, Math.max(100, Math.round(g.detailLod)));
       if (typeof g.useGLBModels === 'boolean') s.graphics.useGLBModels = g.useGLBModels;
+      // v18 (Task 50): тайл рельефа + дальность видимости деревьев
+      if (typeof g.terrainTileSize === 'number') s.graphics.terrainTileSize = Math.min(960, Math.max(240, Math.round(g.terrainTileSize / 60) * 60));
+      if (typeof g.treeVisDistance === 'number') s.graphics.treeVisDistance = Math.min(3200, Math.max(600, Math.round(g.treeVisDistance / 100) * 100));
       // v10: graphics.islandTextures (boolean) переехал в assets.islandTextures (режим)
       if (typeof g.islandTextures === 'boolean') {
         s.assets.islandTextures = g.islandTextures ? 'grain' : 'off';
@@ -491,6 +507,10 @@ export function loadSettings(): GameSettings {
         if (k === 'ammo') continue;
         if (k === 'invertRudder') {
           if (typeof c.invertRudder === 'boolean') s.controls.invertRudder = c.invertRudder;
+          continue;
+        }
+        if (k === 'mouseCapture') {   // v18 (Task 50): перехват мыши
+          if (typeof c.mouseCapture === 'boolean') s.controls.mouseCapture = c.mouseCapture;
           continue;
         }
         const v = c[k];
@@ -704,8 +724,10 @@ export function rollStartingAmmo(a: GameplaySettings['startingAmmo']):
   return { ammo, cut };
 }
 
-/** Русские подписи действий для экрана управления */
+/** Русские подписи действий для экрана управления.
+ *  mouseCapture — НЕ клавиша, а тумблер (Task 50: перехват мыши) */
 export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
+  mouseCapture: 'Перехват мыши (клик по морю захватывает курсор)',
   sailsUp: 'Паруса: поднять',
   sailsDown: 'Паруса: убрать / задний ход',
   steerLeft: 'Руль влево',
