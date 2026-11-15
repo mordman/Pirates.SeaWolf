@@ -314,6 +314,13 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                     onChange={v => update(d => { d.graphics.treeVisDistance = v; })}
                     format={v => `${(v / 1000).toFixed(1)} км`} />
                 </Row>
+                <Row label="Модель экипажа" hint="Task 52: детальные матросы — скелет с суставами, лица (глаза/брови/нос/уши), кисти с пальцами, обувь со шнурками, одежда с карманами и складками (у дальних кораблей — прежние простые фигурки для скорости)">
+                  <select value={g.crewDetail} onChange={e => update(d => { d.graphics.crewDetail = e.target.value as 'classic' | 'detailed'; })}
+                    className={inputCls}>
+                    <option value="classic">Простые (быстрые)</option>
+                    <option value="detailed">Детальные (новые)</option>
+                  </select>
+                </Row>
                 <Row label="Размер тайла рельефа" hint="сторона «чанка» суши: меньше — детальнее у берегов, больше — быстрее (смена пересобирает рельеф)">
                   <Slider value={g.terrainTileSize} min={240} max={960} step={60}
                     onChange={v => update(d => { d.graphics.terrainTileSize = v; })}

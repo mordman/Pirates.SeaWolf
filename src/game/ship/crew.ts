@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { animateCrewDetail, buildDetailedFigure, detailTris } from './crewDetailed';
+import type { CrewDetailState } from './crewDetailed';
 import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './buildShip';
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
@@ -72,12 +74,14 @@ export type KillMode = 'grape' | 'ball';
 export interface CrewFigure {
   group: THREE.Group;
   role: CrewRole;
-  legL?: THREE.Mesh;          // у ходоков и «работяг» (анимация шага)
-  legR?: THREE.Mesh;
+  // Task 52: конечности — Object3D (у простой модели Mesh, у
+  // детальной — Group-суставы; пивоты те же: бедро/плечо)
+  legL?: THREE.Object3D;
+  legR?: THREE.Object3D;
   /** Task 40: руки отдельными мешами (пивот — плечо) — махи при
    *  ходьбе, поднятая рука капитана «раздавать указания» */
-  armL?: THREE.Mesh;
-  armR?: THREE.Mesh;
+  armL?: THREE.Object3D;
+  armR?: THREE.Object3D;
   /** Task 42: МАУНТ У КИСТИ (рука БЕЗ крюка — правая или левая):
    *  сюда lander вешает саблю/пистолет — оружие следует за рукой
    *  во ВСЕХ анимациях (нет «третьей руки») */
@@ -113,7 +117,7 @@ export interface CrewFigure {
   /** фаза прижатия к борту на колено (0..1, нарастает/спадает) */
   crouchT?: number;
   /** Task 43: рука-стрелок (к ней прикреплено оружие) */
-  gunArm?: THREE.Mesh | null;
+  gunArm?: THREE.Object3D | null;
   // --- Task 45: БОЕВЫЕ ПОСТА ВДОЛЬ БОРТА + ПОДМЕНА ПОГИБШИХ ---
   /** пост стрелка: z вдоль борта (назначается при атаке) */
   stZ?: number;
@@ -147,6 +151,9 @@ export interface CrewFigure {
   hitLo?: number;   // низ капсулы над палубой (человек 0.12, кот 0.03)
   hitH?: number;    // верх капсулы (человек 1.62, кот 0.40)
   midY?: number;    // центр тела для гибов/смыва (человек 0.75, кот 0.22)
+  /** Task 52: детальная модель — суставы оживления (дыхание/
+   *  моргание/покачивание); undefined у классических фигурок */
+  detail?: CrewDetailState;
 }
 
 /** Маршрут полезной работы фигуры (локальные координаты корабля):
@@ -1003,7 +1010,7 @@ const _shipInvQ = new THREE.Quaternion();
  *  allCats — режим «заменить всех матросов на котов»: та же
  *  логика ролей/маршрутов, но фигуры — коты (cats.ts) */
 export function buildCrew(P: ShipPreset, seed: number, allCats = false,
-  kind: CrewKind = 'pirate'): CrewVisual {
+  kind: CrewKind = 'pirate', detailed = false): CrewVisual {
   const group = new THREE.Group();
   // Task 50: раскладка гардероба (телеметрия e2e — типы экипажа)
   const ks = {
@@ -1076,6 +1083,8 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   for (let i = 0; i < nSpares; i++) {
     const f = allCats
       ? buildCatCrewFigure('watch', nextSeed(), true)
+      : detailed
+      ? (() => { const df = buildDetailedFigure('watch', rollKind('watch'), nextSeed(), true); df.verts = detailTris(df.group); return df; })()
       : buildFigure('watch', rollKind('watch'), nextSeed(), true);
     if (!allCats && f.wristMount) {
       f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
@@ -1141,6 +1150,8 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
       || role === 'gunner' || role === 'watch';
     const f = allCats
       ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
+      : detailed
+      ? (() => { const df = buildDetailedFigure(role, rollKind(role), nextSeed(), busy || role === 'walker'); df.verts = detailTris(df.group); return df; })()
       : buildFigure(role, rollKind(role), nextSeed(), busy || role === 'walker');
     // Task 43: ВООРУЖЕНИЕ МАТРОСОВ — ружьё 70% (дальность 50 м),
     // пистолет 30% (20 м). Стрелки — роли с подвижными руками
@@ -1792,6 +1803,14 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
           f.group.scale.setScalar(Math.max(0.01, fade));
           if (fade <= 0) f.group.visible = false;
         }
+      }
+
+      // --- Task 52: ДЕТАЛЬНЫЕ ФИГУРЫ — «оживление» по ТЗ: дыхание
+      // грудной клетки, моргание век, покачивание предплечий,
+      // медленный осмотр по сторонам (у живых и видимых)
+      for (const f of figures) {
+        if (f.dead || f.swim || !f.group.visible || !f.detail) continue;
+        animateCrewDetail(f.detail, time + f.phase, dt);
       }
 
       // --- потери команды: Task 45 — палуба держит полный строй

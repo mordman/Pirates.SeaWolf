@@ -63,6 +63,8 @@ export interface ShipOpts {
   ammo?: Record<string, number>;       // стартовый боезапас (игрок)
   boatCount?: number;                  // СКОЛЬКО шлюпок на шлюпбалках (0..2)
   crewCats?: boolean;                  // экипаж из КОТОВ вместо матросов (только игрок)
+  /** Task 52: ДЕТАЛЬНЫЕ фигурки экипажа (graphics.crewDetail) */
+  crewDetailed?: boolean;
   /** Task 46: ДОЩАТАЯ модель (обшивка из досок с 4 стадиями) */
   planking?: boolean;
   /** Task 50: флаг судна ДО сборки — по нему ТИП ЭКИПАЖА
@@ -96,6 +98,12 @@ export class Ship {
   /** опции сборки (для rebuildVisual) */
   private boatCountOpt = 2;
   private crewCatsOpt = false;
+  /** Task 52: текущая модель экипажа (детальные фигурки или
+   *  классические) — для LOD-пересборки по дистанции */
+  crewDetailedOpt = false;
+  /** Task 52: LOD-зона экипажа (1 близко/0 далеко/-1 неизвестно):
+   *  при смене зоны game.ts пересобирает фигуры этого корабля */
+  crewDetailZone = -1;
 
   // --- физика ---
   position = new THREE.Vector3();
@@ -411,7 +419,8 @@ export class Ship {
     // экипаж на палубе: процедурные типажи, сид фиксирован по модели;
     // у игрока может быть «экипаж из котов» (настройка, cats.ts).
     // Task 50: тип экипажа — по флагу судна
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind);
+    this.crewDetailedOpt = !!opts?.crewDetailed;
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind, !!opts?.crewDetailed);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -433,16 +442,19 @@ export class Ship {
   }
 
   /** ПЕРЕСОБРАТЬ экипаж на лету: матросы ↔ коты (настройка
-   *  «заменить всех матросов на котов», только корабль игрока).
+   *  «заменить всех матросов на котов», только корабль игрока),
+   *  Task 52: классические ↔ ДЕТАЛЬНЫЕ фигурки (настройка
+   *  graphics.crewDetail + LOD-пересборка по дистанции).
    *  Потери не сохраняются — палуба заново укомплектована */
-  rebuildCrew(allCats: boolean) {
+  rebuildCrew(allCats: boolean, detailed = false) {
     this.crewCatsOpt = allCats;
+    this.crewDetailedOpt = detailed;
     this.visual.group.remove(this.crew3d.group);
     this.crew3d.group.traverse(o => {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind);
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind, detailed);
     this.visual.group.add(this.crew3d.group);
   }
 
@@ -2157,66 +2169,15 @@ export class Ship {
   private _floodVisQ = new THREE.Quaternion();
 
   private updateFloodWater(time: number) {
-    // суммарная вода: нет — все боксы скрыть (и не собирать зря)
-    let total = 0;
-    for (const c of this.compartments) total += c.water;
+    // Task 52 (просьба игрока): видимые блоки воды в трюме УБРАНЫ —
+    // на фоне непрозрачного океана полупрозрачные боксы читались
+    // как отладочные «плиты подтопления» у борта. Вся ФИЗИКА
+    // затопления (отсеки, течь, крен/дифферент, Торричелли,
+    // откачка) ОСТАЛАСЬ — вода видна через крен корабля и осадку,
+    // уровень — в HUD повреждений
+    void time;
     if (this.floodWater) {
       for (const m of this.floodWater) m.visible = false;
-    }
-    if (total < 0.02 || this.sunk) return;
-    if (!this.floodWater) {
-      // первая вода в трюме — собрать 8 боксов (общий материал)
-      const parent = this.visual.group.parent;
-      if (!parent) return;
-      this.floodWaterMat = new THREE.MeshStandardMaterial({
-        color: 0x2e7d8f, transparent: true, opacity: 0.55,
-        roughness: 0.12, metalness: 0.05,
-        side: THREE.DoubleSide, depthWrite: false,
-      });
-      this.floodWater = [];
-      const geo = new THREE.BoxGeometry(1, 1, 1);
-      for (let i = 0; i < 8; i++) {
-        const m = new THREE.Mesh(geo, this.floodWaterMat);
-        m.visible = false;
-        m.renderOrder = 2;
-        m.name = 'Hold_Water_' + i;
-        parent.add(m);
-        this.floodWater.push(m);
-      }
-    }
-    const P = this.preset;
-    const L = P.length, B = P.beam;
-    const seaY = waterHeightAt(this.position.x, this.position.z, time);
-    const vq = this._floodVisQ;   // корабль с учётом крена от воды
-    const v = this.tmpV;
-    for (let row = 0; row < 4; row++) {
-      for (let s = 0; s < 2; s++) {
-        const c = this.compartments[row * 2 + s];
-        const ratio = c.water / Math.max(0.01, c.cap);
-        if (ratio < 0.02) continue;
-        // геометрия отсека в координатах корабля: центр ряда и борт
-        const z = -L * 0.375 + row * L * 0.25;
-        const x = (s === 1 ? 1 : -1) * Math.max(0.5, B * 0.27);
-        const t = (z + L / 2) / L;
-        const yBot = -P.draft * 0.55;                       // дно трюма
-        const yTop = hullProfile(t, P).bulwark - 1.0;       // уровень палубы
-        // дно и верх заполнения — в МИР (с креном от затопления):
-        // уровень горизонтален, верх не выше моря
-        const botW = v.set(x, yBot, z).applyQuaternion(vq).add(this.position);
-        const botY = botW.y;
-        const topW = v.set(x, yBot + ratio * (yTop - yBot), z)
-          .applyQuaternion(vq).add(this.position);
-        const topY = Math.min(topW.y, seaY - 0.03);
-        const h = topY - botY;
-        if (h < 0.05) continue;
-        // центр бокса: XZ от корабля, Y — середина уровня
-        const cen = v.set(x, 0, z).applyQuaternion(vq).add(this.position);
-        const m = this.floodWater[row * 2 + s];
-        m.visible = true;
-        m.position.set(cen.x, botY + h / 2, cen.z);
-        m.scale.set(Math.max(0.5, B * 0.42), h, Math.max(0.6, L * 0.23));
-        m.rotation.set(0, 0, 0);
-      }
     }
   }
 

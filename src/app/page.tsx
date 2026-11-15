@@ -1351,8 +1351,8 @@ export default function Home() {
           style={{ background: 'radial-gradient(circle at 50% 50%, transparent 27%, rgba(8,6,4,0.96) 42%)' }}>
           <div className="absolute inset-0"
             style={{ boxShadow: 'inset 0 0 120px 40px rgba(0,0,0,0.55)' }} />
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 text-[11px] tracking-wide text-amber-200/70">
-            🔭 Подзорная труба капитана — {keyLabel(settings.controls.spyglass)} — опустить
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 text-center text-[11px] leading-relaxed tracking-wide text-amber-200/70">
+            🔭 Подзорная труба капитана ×{(hud?.spyZoom ?? 4).toFixed(0)} — колесо мыши: зум · {keyLabel(settings.controls.spyglass)}: опустить
           </div>
         </div>
       )}

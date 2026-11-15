@@ -69,8 +69,10 @@ export interface HudState {
   waterPct: number;
   onFire: boolean;
   firePct: number;        // сила пожара 0..1
-  /** Task 51: подзорная труба поднята (виньетка + FOV 13°) */
+  /** Task 51: подзорная труба поднята (виньетка + суженый FOV) */
   spyglass: boolean;
+  /** Task 52: кратность трубы (2..8, колесо мыши) */
+  spyZoom: number;
   anchored: boolean;
   grounded: boolean;
   sinking: boolean;
@@ -221,6 +223,8 @@ export class Game {
   wind = { from: 0.7, speed: 7.5 };
   /** Task 51: таймер спавна дыма из труб (раз в 0.8 с на трубу) */
   private chimneyT = 0;
+  /** Task 52: таймер LOD-пересборки экипажей AI по дистанции */
+  private crewLodT = 0;
   /** Task 51: суда, с которых лут уже рассыпан (Set ссылок) */
   private looted = new Set<Ship>();
   /** Task 51: ПОДЗОРНАЯ ТРУБА поднята (FOV ×4) */
@@ -231,7 +235,9 @@ export class Game {
     if (this.combat.aim.active || this.docked) return this.spyglassOn;
     this.spyglassOn = !this.spyglassOn;
     this.rig.spyglass = this.spyglassOn;
-    this.pushMessage(this.spyglassOn ? 'Подзорная труба поднята' : 'Труба опущена');
+    this.pushMessage(this.spyglassOn
+      ? `Подзорная труба поднята (×${this.rig.spyZoom.toFixed(0)}, колесо мыши — зум)`
+      : 'Труба опущена');
     return this.spyglassOn;
   }
 
@@ -357,8 +363,10 @@ export class Game {
       textures: this.settings.assets,
       islands: this.settings.islands,   // Task 41: настройки островов
     });
-    // Task 50: дальность видимости деревьев + размер тайла рельефа
-    this.world.treeVis = g.treeVisDistance;
+    // Task 50/52: дальность видимости деревьев (сразу верные LOD-tier'ы:
+    // гистерезис в update стартует от реального состояния, а не от 0,
+    // иначе дальние острова «застревали» на полных моделях) + тайл рельефа
+    this.world.setTreeVis(g.treeVisDistance);
     this.world.terrain.setTileSize(g.terrainTileSize);
     // стрим рельефа: тайлы держим с запасом за дальностью видимости
     this.world.terrain.streamDist = g.drawDistance + 2200;
@@ -579,6 +587,18 @@ export class Game {
       this.changeShip(this.player.preset.id, true, true);
       this.pushMessage(`Шлюпок на борту: ${s.gameplay.boatCount}`);
     }
+    // Task 52: МОДЕЛЬ ЭКИПАЖА — классические ↔ детальные фигурки
+    // (пересборка на лету; у AI детальные только в ближней зоне)
+    if (prev.graphics.crewDetail !== g.crewDetail) {
+      this.player.rebuildCrew(s.gameplay.catsInsteadOfCrew, g.crewDetail === 'detailed');
+      for (const a of this.aiShips) {
+        a.ship.crewDetailZone = -1;   // сброс LOD-зоны: пересчитается
+      }
+      this.crewLodT = 0;              // и сразу проверить дистанции
+      this.pushMessage(g.crewDetail === 'detailed'
+        ? 'Экипаж: ДЕТАЛЬНЫЕ фигурки (скелет, лица, кисти, обувь)'
+        : 'Экипаж: классические фигурки');
+    }
     // экипаж из котов — пересобрать фигуры на палубе игрока
     // (NPC-корабли остаются с матросами: коты — только у игрока)
     if (prev.gameplay.catsInsteadOfCrew !== s.gameplay.catsInsteadOfCrew) {
@@ -665,9 +685,11 @@ export class Game {
       this.world.visDistance = g.drawDistance;
       this.world.terrain.streamDist = g.drawDistance + 2200;
     }
-    // Task 50: дальность видимости деревьев (пороги LOD — доли от неё)
+    // Task 50/52: дальность видимости деревьев (пороги LOD — доли от
+    // неё); смена настройки пересчитывает уровни НЕМЕДЛЕННО (без
+    // гистерезисного застревания на старом уровне)
     if (prev.graphics.treeVisDistance !== g.treeVisDistance) {
-      this.world.treeVis = g.treeVisDistance;
+      this.world.setTreeVis(g.treeVisDistance, this.player.position.x, this.player.position.z);
     }
     // Task 50: размер тайла рельефа («чанка») — пересборка сетки
     if (prev.graphics.terrainTileSize !== g.terrainTileSize) {
@@ -784,7 +806,10 @@ export class Game {
       ? rollStartingAmmo(gp.startingAmmo).ammo
       : { ...gp.startingAmmo };
     const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo, boatCount: gp.boatCount,
-      crewCats: gp.catsInsteadOfCrew, planking: gp.hullModel === 'planks' };
+      crewCats: gp.catsInsteadOfCrew, planking: gp.hullModel === 'planks',
+      crewDetailed: this.settings.graphics.crewDetail === 'detailed' };
+    // Task 52: AI-экипажи — ДЕТАЛЬНЫЕ только у БЛИЖНИХ кораблей (LOD
+    // по дистанции, как у деревьев): дальние остаются классикой
     const aiOpts = { durabilityMul: gp.hullDurability, boatCount: gp.boatCount,
       planking: gp.hullModel === 'planks' };
     // игрок: шлюп в глубокой воде за пирсом
@@ -1268,7 +1293,8 @@ export class Game {
     const np = new Ship(presetId, true, this.wind, (x, z) => heightAt(x, z), this.particles,
       { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo }, boatCount: gp.boatCount,
         planking: gp.hullModel === 'planks',
-        crewCats: gp.catsInsteadOfCrew });
+        crewCats: gp.catsInsteadOfCrew,
+        crewDetailed: this.settings.graphics.crewDetail === 'detailed' });
     // не отнимать боезапас при смене (берём максимум из текущего и стартового)
     (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
       np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
@@ -2014,6 +2040,7 @@ export class Game {
       sailLevel: 0, rudder: 0, hullPct: 1, sailPct: 1, crew: 0, maxCrew: 0, waterPct: 0,
       onFire: false, firePct: 0, anchored: false, grounded: false, sinking: false,
       spyglass: false,
+      spyZoom: 4,
       ammoType: 'ball', ammoCounts: {}, planks: 0, gold: 0, cats: 0, cargo: {},
       cargoT: 0, cargoMaxT: 0,
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
@@ -2068,6 +2095,7 @@ export class Game {
     h.cats = this.catCount;
     h.cargo = { ...p.cargo };
     h.spyglass = this.spyglassOn;          // Task 51: труба капитана
+    h.spyZoom = +this.rig.spyZoom.toFixed(1);   // Task 52: кратность
     h.aiming = this.combat.aim.active;
     h.aimSide = this.combat.aim.side === 1 ? 'правый борт' : 'левый борт';
     h.aimRange = Math.round(this.combat.aim.range);
@@ -2462,7 +2490,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -2843,6 +2871,27 @@ export class Game {
     }
     // Task 51: лут на воде + трубы/форт (телеметрия e2e)
     dbg.__flotsamInfo = () => flotsamInfo();
+    // Task 52: модель экипажа — кто на какой модели (e2e/VLM)
+    dbg.__crewModelInfo = () => {
+      const one = (sh: Ship) => ({
+        detailed: sh.crewDetailedOpt,
+        figures: sh.crew3d.total,
+        tris: sh.crew3d.group.children.length
+          ? Math.round(sh.crew3d.group.children.reduce((a, g) => a + (g as THREE.Group).children!.length, 0))
+          : 0,
+        detailJoints: (() => {
+          let n = 0;
+          sh.crew3d.group.traverse(() => { n++; });
+          return n;
+        })(),
+      });
+      return {
+        setting: this.settings.graphics.crewDetail,
+        player: one(this.player),
+        near: this.aiShips.filter(a => !a.ship.sunk && a.ship.crewDetailedOpt).length,
+        far: this.aiShips.filter(a => !a.ship.sunk && !a.ship.crewDetailedOpt).length,
+      };
+    };
     dbg.__chimneyInfo = () => ({
       pipes: this.world.chimneys.length,
       near: this.world.chimneys.filter(ch =>
@@ -3008,6 +3057,31 @@ export class Game {
     if (this.collideSmallCraft() && this.player.speed() > 2.5 && Math.random() < dt * 2) {
       this.pushMessage('Корпус задел препятствие!');
     }
+
+    // Task 52: LOD ЭКИПАЖА AI-КОРАБЛЕЙ (как у деревьев): ближние —
+    // ДЕТАЛЬНЫЕ фигурки, дальние — классические. Порог — доля от
+    // «детализации вблизи» (detailLod); гистерезис ±25%, проверка
+    // раз в 0.8 с, пересборка ТОЛЬКО при смене зоны (без дёрганья)
+    this.crewLodT -= dt;
+    if (this.crewLodT <= 0) {
+      this.crewLodT = 0.8;
+      const near = this.settings.graphics.detailLod * 2.5;
+      const gD = this.settings.graphics.crewDetail === 'detailed';
+      for (const a of this.aiShips) {
+        const sh = a.ship;
+        if (sh.sunk || sh.sinking) continue;
+        const d = Math.hypot(sh.position.x - this.player.position.x,
+          sh.position.z - this.player.position.z);
+        let zone = d < near ? 1 : 0;
+        if (sh.crewDetailZone === 1 && d < near * 1.25) zone = 1;      // гистерезис
+        else if (sh.crewDetailZone === 0 && d > near * 0.75) zone = 0;
+        if (zone !== sh.crewDetailZone) {
+          sh.crewDetailZone = zone;
+          const want = gD && zone === 1;
+          if (want !== sh.crewDetailedOpt) sh.rebuildCrew(false, want);
+        }
+      }
+    }
     this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
 
   // небо и свет (+ погода: облачность, приглушение, вспышки молний)
@@ -3156,13 +3230,18 @@ export class Game {
       if (fig.hasHook) hooks++;
       // Task 40: руки — ОТДЕЛЬНЫЕ меши: считаем вершины тела+рук
       let v = fig.verts ?? 0;
-      if (fig.armL) v += (fig.armL.geometry.attributes.position as THREE.BufferAttribute).count;
-      if (fig.armR) v += (fig.armR.geometry.attributes.position as THREE.BufferAttribute).count;
+      // Task 52: у детальной модели руки — ГРУППЫ (треугольники
+      // уже посчитаны в verts); geometry есть только у простой
+      const armLM = fig.armL as THREE.Mesh | undefined;
+      const armRM = fig.armR as THREE.Mesh | undefined;
+      if (armLM?.geometry) v += (armLM.geometry.attributes.position as THREE.BufferAttribute).count;
+      if (armRM?.geometry) v += (armRM.geometry.attributes.position as THREE.BufferAttribute).count;
       verts += v;
       maxVerts = Math.max(maxVerts, v);
       // ноги: бедро+КОЛЕНО+голень+ботинок — у новой модели ≥ 4 боксов
-      if (fig.legL) {
-        legVerts += (fig.legL.geometry.attributes.position as THREE.BufferAttribute).count;
+      const legLM = fig.legL as THREE.Mesh | undefined;
+      if (legLM?.geometry) {
+        legVerts += (legLM.geometry.attributes.position as THREE.BufferAttribute).count;
         legN++;
       }
       fig.group.traverse(o => {

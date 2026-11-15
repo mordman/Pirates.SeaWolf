@@ -837,6 +837,26 @@ export class World {
    *  graphics.treeVisDistance). Пороги уровней — доли от неё:
    *  0.30 → low-poly 3D, 0.65 → плоские силуэты, 1.0 → скрыто */
   treeVis = 2200;
+
+  /** Task 52 ФИКС «не работает дальность прорисовки деревьев»:
+   *  при смене настройки пороги LOD двигаются, а гистерезис в
+   *  update() держал острова на старых уровнях (уменьшил дальность
+   *  — деревья оставались полными до запаса ±6%). Теперь смена
+   *  настройки НЕМЕДЛЕННО пересчитывает уровни всех островов без
+   *  гистерезиса — слайдер отвечает мгновенно */
+  setTreeVis(v: number, playerX = 0, playerZ = 0) {
+    this.treeVis = v;
+    if (this.islLod.length !== this.islands.length) return;
+    for (let i = 0; i < this.islands.length; i++) {
+      const isl = this.islands[i];
+      // дистанция от ИГРОКА до БЕРЕГА (как в update)
+      const off = Math.max(0, Math.hypot(playerX - isl.cx, playerZ - isl.cz) - isl.r);
+      const t1 = v * 0.30, t2 = v * 0.65;
+      const tier = off > v ? 3 : off > t2 ? 2 : off > t1 ? 1 : 0;
+      this.islLod[i] = tier;
+      this.applyIslandLod(i, tier);
+    }
+  }
   /** счётчик поваленных деревьев (телеметрия) */
   treesBroken = 0;
 
@@ -1299,8 +1319,12 @@ export class World {
         continue;
       }
       slot.inst.visible = true;
+      // Task 52 ФИКС «не работает упрощение»: на среднем уровне при
+      // включённых GLB бралась ПОЛНАЯ glb-модель — «чем дальше, тем
+      // проще» не работало (0-й и 1-й уровни были одинаковыми).
+      // Теперь: 0 = GLB/полная, 1 = low-poly 3D (midGeo), 2 = силуэт
       const next = tier === 2 ? slot.lodGeo
-        : tier === 1 ? (slot.glbGeo ? slot.glbGeo : slot.midGeo)
+        : tier === 1 ? slot.midGeo
         : (slot.glbGeo ?? slot.procGeo);
       if (next && next !== slot.inst.geometry) {
         slot.inst.geometry = next;

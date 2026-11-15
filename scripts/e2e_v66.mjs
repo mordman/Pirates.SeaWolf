@@ -185,15 +185,17 @@ const flood = jparse(await evR(`(() => {
   const leakPort = p.compartments.reduce((a, c, i) => a + (i % 2 === 1 ? c.leak : 0), 0);
   const leakStar = p.compartments.reduce((a, c, i) => a + (i % 2 === 0 ? c.leak : 0), 0);
   const w0 = p.compartments[5].water;
-  // фаза 1: 6 с — ранняя скорость + ВИДИМАЯ вода на порт-стороне
+  // фаза 1: 6 с — ранняя скорость + вода в порт-отсеках
   g.stepDebugNR(6);
   const w6 = p.compartments[5].water;
   const rateEarly = (w6 - w0) / 6;
+  const w6Port = p.compartments.reduce((a, c, i) => a + (i % 2 === 1 ? c.water : 0), 0);
+  const w6Star = p.compartments.reduce((a, c, i) => a + (i % 2 === 0 ? c.water : 0), 0);
+  // Task 52: блоки подтопления СКРЫТЫ — боксов Hold_Water нет вовсе
   const hold = p.visual.group.parent.children
-    .filter(o => /^Hold_Water_/.test(o.name))
-    .map(o => ({ i: +o.name.split('_')[2], vis: o.visible }));
-  const visPortEarly = hold.filter(h => h.vis && h.i % 2 === 1).length;
-  const visStarEarly = hold.filter(h => h.vis && h.i % 2 === 0).length;
+    .filter(o => /^Hold_Water_/.test(o.name) && o.visible);
+  const visPortEarly = p.compartments.filter((c, i) => i % 2 === 1 && c.water > 0.05).length;
+  const visStarEarly = p.compartments.filter((c, i) => i % 2 === 0 && c.water > 0.05).length;
   // фаза 2: ещё 60 с — заполнение, крен, Торричелли
   g.stepDebugNR(60);
   const w66 = p.compartments[5].water;
@@ -209,7 +211,7 @@ const flood = jparse(await evR(`(() => {
     w6: +w6.toFixed(2), w66: +w66.toFixed(2), cap: +p.compartments[5].cap.toFixed(1),
     rateEarly: +rateEarly.toFixed(4), rateLate: +rateLate.toFixed(4),
     portW: +portW.toFixed(2), starW: +starW.toFixed(2),
-    holdTotal: hold.length, visPortEarly, visStarEarly,
+    holdVisible: hold.length, visPortEarly, visStarEarly, w6Port: +w6Port.toFixed(2), w6Star: +w6Star.toFixed(2),
     roll, rollDeg: +(p.euler.z * 57.3).toFixed(1), leakBias, floodRoll,
     sinking: p.sinking, brokenBelowWL: p.plankHull.belowWLBroken().length,
   });
@@ -221,9 +223,10 @@ check('C1: течь ТОЛЬКО в порт-отсеки (борт пробои
 check('C2: вода пришла в порт-отсеки, штирборт почти сухой',
   flood.portW > 1 && flood.starW < flood.portW * 0.45,
   `порт=${flood?.portW} м³, штирборт=${flood?.starW} м³ (щели в переборках)`);
-check('C3: в трюме ВИДИМАЯ вода — на порт-стороне (Hold_Water)',
-  flood.holdTotal === 8 && flood.visPortEarly >= 1 && flood.visStarEarly === 0,
-  `боксов 8, видно порт=${flood?.visPortEarly}, штирборт=${flood?.visStarEarly}`);
+check('C3: блоки подтопления СКРЫТЫ (Hold_Water не рисуется), вода — физически в порт-отсеках',
+  flood.holdVisible === 0 && flood.visPortEarly >= 1 && flood.visStarEarly === 0
+  && flood.w6Port > flood.w6Star,
+  `видимых боксов=${flood?.holdVisible}, мокрых порт-отсеков=${flood?.visPortEarly}, штирборт=${flood?.visStarEarly}, вода порт=${flood?.w6Port} > штирборт=${flood?.w6Star}`);
 check('C4: крен НА затопленный борт (порт: floodRoll<0 при leakBias>0)',
   flood.leakBias > 0.1 && flood.floodRoll < -0.02 && !flood.sinking,
   `leakBias=${flood?.leakBias}, крен от воды=${flood?.floodRoll} рад (${((flood?.floodRoll || 0) * 57.3).toFixed(1)}°)`);

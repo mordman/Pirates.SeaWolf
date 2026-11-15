@@ -41,6 +41,8 @@ export class CameraRig {
    *  (×4 приближение): вдаль видны острова и паруса, не различимые
    *  невооружённым глазом */
   spyglass = false;
+  /** Task 52: КРАТНОСТЬ ТРУБЫ (2×..8×, колесо мыши; FOV = 55/zoom) */
+  spyZoom = 4;
   private spyFov = 55;
   mode: CameraMode = 'iso';
   // параметры по режимам
@@ -94,7 +96,13 @@ export class CameraRig {
   update(dt: number, ctx: AimCameraState, ship: { scenePos: THREE.Vector3; heading: number; roll: number; pitch: number; speedFrac: number }, input: { mouseDX: number; mouseDY: number; wheel: number; rmb: boolean; pointerLocked?: boolean; arrowX?: number; arrowY?: number }) {
     // зум
     const wheel = input.wheel;
-    if (ctx.active) {
+    // Task 52: ПОДЗОРНАЯ ТРУБА С ЗУМОМ — подняв трубу, колесо мыши
+    // меняет КРАТНОСТЬ (2×..8×, шаг ×1.2), а не дистанцию камеры
+    if (this.spyglass) {
+      if (wheel) {
+        this.spyZoom = clamp(this.spyZoom * (wheel > 0 ? 1 / 1.2 : 1.2), 2, 8);
+      }
+    } else if (ctx.active) {
       this.dist.free = clamp(this.dist.free + wheel * 0.03, 14, 70);
     } else {
       this.dist[this.mode] = clamp(this.dist[this.mode] + wheel * 0.08,
@@ -229,10 +237,11 @@ export class CameraRig {
     // лёгкий крен камеры от качки (снижается стабилизацией)
     const stabRoll = ship.roll * (1 - this.stabilization) * 0.6;
     this.camera.rotateZ(stabRoll);
-    // Task 51: ПОДЗОРНАЯ ТРУБА — FOV плавно сужается к 13° (×4):
-    // вдалеке проступают острова/паруса, которых глазом не разглядеть
+    // Task 51/52: ПОДЗОРНАЯ ТРУБА — FOV плавно сужается к 55/кратность
+    // (2×..8×, меняется колесом мыши): вдалеке проступают острова и
+    // паруса, которых глазом не разглядеть
     {
-      const wantFov = this.spyglass ? 13 : 55;
+      const wantFov = this.spyglass ? 55 / this.spyZoom : 55;
       this.spyFov += (wantFov - this.spyFov) * Math.min(1, dt * 7);
       if (Math.abs(this.camera.fov - this.spyFov) > 0.05) {
         this.camera.fov = this.spyFov;
