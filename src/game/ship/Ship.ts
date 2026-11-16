@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile, hullHalfWidthAt, FlagKind } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT, CrewKind } from './crew';
+import type { Traits } from './crew';
 import type { PlankSystem, PlankRec } from './plankHull';
 import { waterHeightAt, SEA } from '../water/waves';
 import { BUOYANCY_CONFIG, PHYSICS, CONTROLS } from '../water/buoyancy';
@@ -74,6 +75,11 @@ export interface ShipOpts {
   /** Task 55/56: ПРОКЛЯТАЯ команда — мертвецы (облезлая кожа,
    *  глазницы, рёбра, рваное тряпьё); у игрока — «Чёрная жемчужина» */
   crewUndead?: boolean;
+  /** Task 76: ВНЕШНОСТЬ КАПИТАНА-ИГРОКА (выбор на старте игры):
+   *  капитан на палубе собирается из этих признаков, а не «наугад»;
+   *  вместе с crewUndead («Чёрная жемчужина») модель игрока
+   *  становится МЕРТВЕЦОМ. Только корабль игрока */
+  captainTraits?: Traits | null;
 }
 
 const G = 9.81;
@@ -95,6 +101,9 @@ export class Ship {
   crewKind: CrewKind = 'pirate';
   /** Task 55/56: проклятая команда-мертвецы (сохраняется при пересборке) */
   crewUndeadOpt = false;
+  /** Task 76: внешность КАПИТАНА-ИГРОКА (сохраняется при пересборке
+   *  экипажа; null — обычный процедурный капитан у AI-судов) */
+  crewCaptainTraits: Traits | null = null;
 
   /** Task 49: цвет краски корпуса — обломки конструкции (доски/
    *  щепы/панели/рангоут) летят под цвет своего корабля */
@@ -423,10 +432,13 @@ export class Ship {
 
     // экипаж на палубе: процедурные типажи, сид фиксирован по модели;
     // у игрока может быть «экипаж из котов» (настройка, cats.ts).
-    // Task 50: тип экипажа — по флагу судна
+    // Task 50: тип экипажа — по флагу судна.
+    // Task 76: капитан игрока — из ВНЕШНОСТИ, выбранной на старте
     this.crewDetailedOpt = !!opts?.crewDetailed;
     this.crewUndeadOpt = !!opts?.crewUndead;
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind, !!opts?.crewDetailed, this.crewUndeadOpt);
+    this.crewCaptainTraits = opts?.captainTraits ?? null;
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind,
+      !!opts?.crewDetailed, this.crewUndeadOpt, this.crewCaptainTraits);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -451,6 +463,8 @@ export class Ship {
    *  «заменить всех матросов на котов», только корабль игрока),
    *  Task 52: классические ↔ ДЕТАЛЬНЫЕ фигурки (настройка
    *  graphics.crewDetail + LOD-пересборка по дистанции).
+   *  Task 76: капитан-игрок пересобирается из crewCaptainTraits
+   *  (обновляется через setCaptainTraits при смене внешности).
    *  Потери не сохраняются — палуба заново укомплектована */
   rebuildCrew(allCats: boolean, detailed = false) {
     this.crewCatsOpt = allCats;
@@ -460,8 +474,16 @@ export class Ship {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind, detailed, this.crewUndeadOpt);
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind,
+      detailed, this.crewUndeadOpt, this.crewCaptainTraits);
     this.visual.group.add(this.crew3d.group);
+  }
+
+  /** Task 76: сменить внешность КАПИТАНА-ИГРОКА (экран создания
+   *  персонажа / настройки) и пересобрать экипаж с новым капитаном */
+  setCaptainTraits(tr: Traits | null) {
+    this.crewCaptainTraits = tr;
+    this.rebuildCrew(this.crewCatsOpt, this.crewDetailedOpt);
   }
 
   /** ============================================================

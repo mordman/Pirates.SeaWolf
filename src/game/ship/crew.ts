@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { animateCrewDetail, buildDetailedFigure, detailTris } from './crewDetailed';
-import type { CrewDetailState } from './crewDetailed';
+import { animateCrewDetail, buildDetailedFigure, detailTris, professionFor } from './crewDetailed';
+import type { CrewDetailState, DetailEnv } from './crewDetailed';
 import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './buildShip';
 import type { GibPool } from '../fx/gibs';
 import type { Particles } from '../fx/particles';
 import { buildCatCrewFigure } from './cats';
-import { waterHeightAt } from '../water/waves';
+import { waterHeightAt, SEA } from '../water/waves';
 import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS, APPEARANCE_BANDANA,
   type HeadwearKind, type TorsoKind, type PantsKind } from '../core/settings';
 
@@ -1087,10 +1087,16 @@ export interface CrewVisual {
   armedInfo(): { musket: number; pistol: number };
   /** Task 43: фигуры в позе «на колене у борта» (обстрел) */
   crouchedCount(): number;
-  /** Task 45: резерв экипажа: below — живых в трюме (можно поднять
+  /** Task 43: резерв экипажа: below — живых в трюме (можно поднять
    *  на палубу), spares — запасных фигур «ниже палубы», pending —
    *  заявок на подмену в очереди */
   reservesInfo(): { below: number; spares: number; pending: number };
+  /** Task 76: капитан на борту — ИГРОК, выбравший внешность в
+   *  начале игры (captainTraits). isPlayer=true — фигура капитана
+   *  собрана из настроек игрока; undead — «Чёрная жемчужина»
+   *  (модель игрока-мертвеца); profession — гардероб детальной */
+  captainInfo(): { isPlayer: boolean; skin: number; shirt: number; pants: number;
+    undead: boolean; profession: string; role: CrewRole } | null;
 }
 
 // temporaries для стрельбы (не аллоцировать в кадре)
@@ -1099,15 +1105,22 @@ const _tmpB = new THREE.Vector3();
 const _tmpC = new THREE.Vector3();
 const _tmpD = new THREE.Vector3();
 const _shipInvQ = new THREE.Quaternion();
+// Task 76: крен/дифферент из кватерниона корабля (равновесие фигур)
+const _crewEuler = new THREE.Euler();
 
 /** Собрать экипаж для корабля (local coords: +Z нос, +X порт).
  *  Число фигур = deckCrewFor(maxCrew): 1 фигура = 1 человек;
  *  500-экипаж → 50 фигур, минимум 10 — от 10 на шлюпе до ~73
  *  на линейном корабле.
  *  allCats — режим «заменить всех матросов на котов»: та же
- *  логика ролей/маршрутов, но фигуры — коты (cats.ts) */
+ *  логика ролей/маршрутов, но фигуры — коты (cats.ts)
+ *  Task 76: captainTraits — ВНЕШНОСТЬ ИГРОКА (выбор на старте):
+ *  капитан на палубе собирается из неё, а не «наугад». На
+ *  «Чёрной жемчужине» (undead) модель игрока становится
+ *  МЕРТВЕЦОМ (детальная — даже при проклятой команде). */
 export function buildCrew(P: ShipPreset, seed: number, allCats = false,
-  kind: CrewKind = 'pirate', detailed = false, undead = false): CrewVisual {
+  kind: CrewKind = 'pirate', detailed = false, undead = false,
+  captainTraits?: Traits | null): CrewVisual {
   const group = new THREE.Group();
   // Task 50: раскладка гардероба (телеметрия e2e — типы экипажа)
   const ks = {
@@ -1181,7 +1194,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     const f = allCats
       ? buildCatCrewFigure('watch', nextSeed(), true)
       : detailed && !undead
-      ? (() => { const df = buildDetailedFigure('watch', rollKind('watch'), nextSeed(), true); df.verts = detailTris(df.group); return df; })()
+      ? (() => { const df = buildDetailedFigure('watch', rollKind('watch'), nextSeed(), true, false, professionFor('watch', kind, rot)); df.verts = detailTris(df.group); return df; })()
       : buildFigure('watch', rollKind('watch'), nextSeed(), true, undead && !allCats);
     if (!allCats && f.wristMount) {
       f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
@@ -1211,6 +1224,9 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   for (let i = 0; i < nWalk; i++) plan.push('walker');
 
   let gi = 0, wi = 0, ki = 0, ri = 0;
+  // Task 76: капитан-ИГРОК (captainTraits) — телеметрия captainInfo
+  let capFig: CrewFigure | null = null;
+  let capIsPlayer = false;
   // банки гребцов: позиции вёсел (z от buildOars) — гребцы сидят
   // лицом к корме (как на галерах), по двое на банку с обоих бортов
   const oarN = P.oars ?? 0;
@@ -1245,11 +1261,25 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     // ноги (шагают), маршруты задаются ниже
     const busy = role === 'captain' || role === 'boatswain'
       || role === 'gunner' || role === 'watch';
-    const f = allCats
-      ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
-      : detailed && !undead
-      ? (() => { const df = buildDetailedFigure(role, rollKind(role), nextSeed(), busy || role === 'walker'); df.verts = detailTris(df.group); return df; })()
-      : (() => { const f = buildFigure(role, rollKind(role), nextSeed(), busy || role === 'walker', undead && !allCats); if (undead && !allCats) ks.undead++; return f; })();
+    // Task 76: КАПИТАН НА БОРТУ — ИГРОК, выбравший внешность в
+    // начале игры; «Чёрная жемчужина» (undead) делает модель
+    // игрока МЕРТВЕЦОМ (детальный капитан — даже при проклятой
+    // команде, остальная команда остаётся классикой)
+    const isPlayerCap = role === 'captain' && !!captainTraits;
+    const tr = isPlayerCap ? captainTraits! : rollKind(role);
+    const prof = professionFor(role, kind, rot);
+    let f: CrewFigure;
+    if (allCats) {
+      f = buildCatCrewFigure(role, nextSeed(), busy || role === 'walker');
+    } else if (detailed && (!undead || isPlayerCap)) {
+      f = buildDetailedFigure(role, tr, nextSeed(), busy || role === 'walker', undead, prof);
+      f.verts = detailTris(f.group);
+      if (undead) ks.undead++;
+    } else {
+      f = buildFigure(role, tr, nextSeed(), busy || role === 'walker', undead && !allCats);
+      if (undead && !allCats) ks.undead++;
+    }
+    if (role === 'captain') { capFig = f; capIsPlayer = isPlayerCap; }
     // Task 43: ВООРУЖЕНИЕ МАТРОСОВ — ружьё 70% (дальность 50 м),
     // пистолет 30% (20 м). Стрелки — роли с подвижными руками
     // (рулевой у штурвала, гребцы на банках, капитан на мостике —
@@ -1792,6 +1822,16 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
         pending: replQueue.length,
       };
     },
+    captainInfo() {
+      if (!capFig) return null;
+      return {
+        isPlayer: capIsPlayer,
+        skin: capFig.skin, shirt: capFig.shirt, pants: capFig.pants,
+        undead: !!capFig.group.userData.undead,
+        profession: capFig.detail ? capFig.detail.profession : 'classic',
+        role: capFig.role,
+      };
+    },
     update(dt, time, ship) {
       // ==========================================================
       // Task 43: ПЛОВЦЫ живут в МИРОВЫХ координатах — обновляются
@@ -1905,12 +1945,20 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
         }
       }
 
-      // --- Task 52: ДЕТАЛЬНЫЕ ФИГУРЫ — «оживление» по ТЗ: дыхание
-      // грудной клетки, моргание век, покачивание предплечий,
-      // медленный осмотр по сторонам (у живых и видимых)
-      for (const f of figures) {
-        if (f.dead || f.swim || !f.group.visible || !f.detail) continue;
-        animateCrewDetail(f.detail, time + f.phase, dt);
+      // --- Task 52/76: ДЕТАЛЬНЫЕ ФИГУРЫ — «оживление» по ТЗ: дыхание
+      // грудной клетки, равновесие при качке (компенсация наклона
+      // корпусом/коленями), осмотр горизонта, моргание век,
+      // вершинный ветер (полы кафтана/платок/перо)
+      {
+        _crewEuler.setFromQuaternion(ship.quaternion);
+        const dEnv: DetailEnv = {
+          roll: _crewEuler.z, pitch: _crewEuler.x,
+          wind: Math.min(1.6, SEA.windSpeed / 11),
+        };
+        for (const f of figures) {
+          if (f.dead || f.swim || !f.group.visible || !f.detail) continue;
+          animateCrewDetail(f.detail, time + f.phase, dt, dEnv);
+        }
       }
 
       // --- потери команды: Task 45 — палуба держит полный строй

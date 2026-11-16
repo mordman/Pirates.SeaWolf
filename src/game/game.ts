@@ -13,6 +13,7 @@ import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType, setHullDamageMul } from './combat/combat';
 import { World, heightAt, VILLAGES, type PortDef } from './world/world';
 import { Lander } from './player/lander';
+import { appearanceToTraits } from './player/appearance';
 import { GLBPartSystem } from './glb/glbParts';
 import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
 import { Particles } from './fx/particles';
@@ -612,6 +613,12 @@ export class Game {
         ? '🐱 Экипаж заменён котами: капитан-кот у штурвала, боцман-кот у шпиля, канониры-коты таскают ядра'
         : 'Экипаж снова из матросов');
     }
+    // ===== Task 76: КАПИТАН НА БОРТУ — ИГРОК =====
+    // смена внешности (экран создания персонажа) пересобирает
+    // капитана на палубе из НОВОГО выбора игрока
+    if (JSON.stringify(prev.player) !== JSON.stringify(s.player)) {
+      this.player.setCaptainTraits(appearanceToTraits(s.player));
+    }
     // ===== Task 46: МОДЕЛЬ КОРПУСА — дощатая ↔ обычная =====
     if (prev.gameplay.hullModel !== s.gameplay.hullModel) {
       this.rebuildAllVisuals(s.gameplay.hullModel === 'planks');
@@ -816,7 +823,9 @@ export class Game {
       : { ...gp.startingAmmo };
     const playerOpts = { durabilityMul: gp.hullDurability, ammo: startAmmo, boatCount: gp.boatCount,
       crewCats: gp.catsInsteadOfCrew, planking: gp.hullModel === 'planks',
-      crewDetailed: this.settings.graphics.crewDetail === 'detailed' };
+      crewDetailed: this.settings.graphics.crewDetail === 'detailed',
+      // Task 76: капитан на борту — ИГРОК (внешность со старта игры)
+      captainTraits: appearanceToTraits(this.settings.player) };
     // Task 52: AI-экипажи — ДЕТАЛЬНЫЕ только у БЛИЖНИХ кораблей (LOD
     // по дистанции, как у деревьев): дальние остаются классикой
     const aiOpts = { durabilityMul: gp.hullDurability, boatCount: gp.boatCount,
@@ -1410,8 +1419,10 @@ export class Game {
         crewCats: gp.catsInsteadOfCrew,
         crewDetailed: this.settings.graphics.crewDetail === 'detailed',
         // Task 57: «Чёрная жемчужина» несёт ПРОКЛЯТУЮ команду —
-        // мертвецы и при выборе на полигоне, и при покупке на верфи
-        crewUndead: presetId === 'blackpearl' });
+        // мертвецы и при выборе на полигоне, и при покупке на верфи.
+        // Task 76: капитан нового корабля — по-прежнему ИГРОК
+        crewUndead: presetId === 'blackpearl',
+        captainTraits: appearanceToTraits(this.settings.player) });
     // не отнимать боезапас при смене (берём максимум из текущего и стартового)
     (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
       np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
@@ -3028,6 +3039,10 @@ export class Game {
       return {
         setting: this.settings.graphics.crewDetail,
         player: one(this.player),
+        // Task 76: капитан на борту — ИГРОК (внешность со старта);
+        // на «Чёрной жемчужине» его модель — МЕРТВЕЦ
+        captain: this.player.crew3d.captainInfo(),
+        playerAppearance: { ...this.settings.player },
         near: this.aiShips.filter(a => !a.ship.sunk && a.ship.crewDetailedOpt).length,
         far: this.aiShips.filter(a => !a.ship.sunk && !a.ship.crewDetailedOpt).length,
       };
