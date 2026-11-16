@@ -110,6 +110,8 @@ export class Lander {
   private walkPhase = 0;
   private moving = false;
   private swingT = -1;
+  /** Task 57: вариант замаха сабли — 0 косой / 1 сверху / 2 укол */
+  private swingKind = 0;
   private shotCd = 0;
   private recoil = 0;
   private stepDustCd = 0;
@@ -283,6 +285,18 @@ export class Lander {
         ? +(this.fig.hasHook ? this.fig.armL!.rotation.x : this.fig.armR!.rotation.x).toFixed(3)
         : null,
       holding: this.weapon !== 'none',
+      // Task 57: куда СМОТРИТ ствол и куда ЛЕТИТ пуля (e2e:
+      // «направлен и стреляет в одну и ту же сторону»)
+      barrelDir: (() => {
+        if (!this.pistolG || this.weapon !== 'pistol') return null;
+        const q = new THREE.Quaternion();
+        this.pistolG.getWorldQuaternion(q);
+        return new THREE.Vector3(0, 0, 1).applyQuaternion(q).toArray().map(v => +v.toFixed(3));
+      })(),
+      bulletDir: this.bullets.length
+        ? this.bullets[0].vel.clone().normalize().toArray().map(v => +v.toFixed(3))
+        : null,
+      swingKind: this.swingKind,
     };
   }
 
@@ -406,6 +420,8 @@ export class Lander {
     if (inp.lmbJust) {
       if (this.weapon === 'saber' && this.swingT < 0) {
         this.swingT = 0;
+        // Task 57: КАЖДЫЙ удар — случайный из трёх замахов
+        this.swingKind = Math.floor(Math.random() * 3);
         this.deps.audio.saber();
       } else if (this.weapon === 'pistol') {
         // Task 40: стрелять можно ТОЛЬКО ПРИЦЕЛИВШИСЬ (ПКМ)
@@ -423,11 +439,16 @@ export class Lander {
     this.recoil = 1;
     this.deps.audio.shot();
     const cam = this.deps.camera;
-    const dir = new THREE.Vector3();
-    cam.getWorldDirection(dir);
-    // дуло: мировая позиция ствола (сцена → мир: минус shift)
-    this.pistolG!.getWorldPosition(this._v);
-    const mp = this._v.sub(this.shift).clone();
+    const camDir = new THREE.Vector3();
+    cam.getWorldDirection(camDir);
+    // Task 57: дуло — КОНЕЦ СТВОЛА (не рукоять), пуля летит ОТ ДУЛА
+    // к точке прицела (луч камеры, 40 м): ствол смотрит и стреляет
+    // в одну и ту же сторону (скрин игрока «пистолет в сторону»)
+    const tipLocal = new THREE.Vector3(0, 0.035, 0.33);
+    this.pistolG!.localToWorld(tipLocal);
+    const mp = tipLocal.sub(this.shift).clone();
+    const aimPt = cam.position.clone().addScaledVector(camDir, 40).sub(this.shift);
+    const dir = aimPt.sub(mp).normalize();
     // ДЫМ ВЫСТРЕЛА: облако из трёх клубов у дула + вспышка вперёд
     this.deps.particles.smoke(mp.x, mp.y, mp.z, dir.x * 1.6, 0.55, dir.z * 1.6, 0.55, 0.85);
     this.deps.particles.smoke(mp.x + dir.x * 0.25, mp.y + 0.05, mp.z + dir.z * 0.25, dir.x * 0.7, 0.9, dir.z * 0.7, 0.38, 1.15);
@@ -582,16 +603,31 @@ export class Lander {
         const wz = hookSide ? 0.16 : -0.16;   // отвод от бедра
         if (this.aiming && this.weapon === 'pistol') {
           // прицел: рука с пистолетом вытянута вперёд, дуло вперёд
-          wrist.rotation.set(-(Math.PI / 2 - this.camPitch * 0.6), 0, wz * 0.4);
+          // Task 57: ствол ТОЧНО по тангажу камеры (прежде отставал
+          // на 40% и был наклонён вбок — пистолет «смотрел» мимо)
+          wrist.rotation.set(-(Math.PI / 2 - this.camPitch), 0, 0);
           freeArm.rotation.set(0.25, 0, hookSide ? -0.18 : 0.18);
         } else if (this.weapon === 'saber' && this.swingT >= 0) {
-          // рубящий замах рукой с саблей
+          // Task 57: ТРИ ЗАМАХА — рука по варианту удара
           const t = this.swingT;
           const sw = t < 0.35 ? -t / 0.35 * 1.5
             : t < 0.65 ? -1.5 + (t - 0.35) / 0.3 * 2.6
             : 1.1 - (t - 0.65) / 0.35 * 1.1;
-          wrist.rotation.set(-1.15 - sw * 0.35, 0, wz);
-          freeArm.rotation.set(0.3 + sw * 0.2, 0, hookSide ? -0.3 : 0.3);
+          if (this.swingKind === 1) {
+            // «СВЕРХУ»: рука высоко над головой → рубящий удар вниз
+            const raise = t < 0.35 ? t / 0.35 : t < 0.65 ? 1 : Math.max(0, 1 - (t - 0.65) / 0.35);
+            wrist.rotation.set(-1.15 - raise * 1.25, 0, wz * (1 - raise * 0.6));
+            freeArm.rotation.set(0.3 + raise * 0.3, 0, hookSide ? -0.35 : 0.35);
+          } else if (this.swingKind === 2) {
+            // «УКОЛ»: рука выбрасывается прямо вперёд
+            const push = t < 0.45 ? t / 0.45 : Math.max(0, 1 - (t - 0.45) / 0.4);
+            wrist.rotation.set(-(Math.PI / 2 - 0.06 - push * 0.1), 0, wz * 0.25);
+            freeArm.rotation.set(0.25, 0, hookSide ? -0.25 : 0.25);
+          } else {
+            // «КОСОЙ» (классический): замах в сторону → взмах
+            wrist.rotation.set(-1.15 - sw * 0.35, 0, wz);
+            freeArm.rotation.set(0.3 + sw * 0.2, 0, hookSide ? -0.3 : 0.3);
+          }
         } else if (this.weapon !== 'none') {
           // ОРУЖИЕ В РУКЕ: рука держит его у бедра — НЕ машет;
           // свободная рука живёт обычной жизнью
@@ -634,9 +670,19 @@ export class Lander {
         const swing = t < 0.35 ? -t / 0.35 * 1.5
           : t < 0.65 ? -1.5 + (t - 0.35) / 0.3 * 2.6
           : 1.1 - (t - 0.65) / 0.35 * 1.1;
-        // Task 42: базовая поза сабли — В РУКЕ (маунт у кисти)
-        this.saberG.rotation.z = -0.3 + swing * 0.9;
-        this.saberG.rotation.x = 0.25 - swing * 0.5;
+        // Task 57: три анимации клинка — косой / сверху / укол
+        if (this.swingKind === 1) {
+          const raise = t < 0.35 ? t / 0.35 : t < 0.65 ? 1 : Math.max(0, 1 - (t - 0.65) / 0.35);
+          this.saberG.rotation.z = -0.3;
+          this.saberG.rotation.x = 0.25 + raise * 1.35 - (t < 0.65 ? 0 : (t - 0.65) / 0.35 * 2.1);
+        } else if (this.swingKind === 2) {
+          const push = t < 0.45 ? t / 0.45 : Math.max(0, 1 - (t - 0.45) / 0.4);
+          this.saberG.rotation.set(0.25 + 1.28, 0, -0.3);
+          this.saberG.position.set(0.01, 0.02, 0.02 + push * 0.3);
+        } else {
+          this.saberG.rotation.z = -0.3 + swing * 0.9;
+          this.saberG.rotation.x = 0.25 - swing * 0.5;
+        }
       }
       if (t >= 0.45 && t - dt / 0.55 < 0.45) {
         const ax = p.x + Math.sin(this.yaw) * 1.1;
@@ -649,7 +695,14 @@ export class Lander {
           if (killed > 0) this.deps.msg(`Сабля нашла цель: ${killed}`);
         }
       }
-      if (t >= 1) this.swingT = -1;
+      if (t >= 1) {
+        this.swingT = -1;
+        // базовая поза сабли у бедра (после «укола» — вернуть и позицию)
+        if (this.saberG) {
+          this.saberG.rotation.set(0.25, 0, -0.3);
+          this.saberG.position.set(0.01, 0.02, 0.02);
+        }
+      }
     }
     this.recoil = Math.max(0, this.recoil - dt * 5);
     if (this.pistolG) {

@@ -138,18 +138,23 @@ const lodNear = jparse(await evR(`(() => {
   g.player.position.set(B.cx + dx / len * (B.r + 300), 0, B.cz + dz / len * (B.r + 300));
   g.player.velocity.set(0, 0, 0);
   g.rig.snap();
-  g.stepDebugNR(0.5);
+  g.stepDebugNR(2);
   const info = g.world.treeLodInfo();
   const veg = g.world.vegStats();
   return JSON.stringify({
     farIslands: info.farIslands, fullSlots: info.fullSlots,
+    bTier: info.tiers[is.indexOf(B)],
     palmSrc: veg.palm.src, ficusSrc: veg.ficus.src,
   });
 })()`));
 log(JSON.stringify(lodNear));
-check('A4: у берега остров вернул ПОЛНУЮ модель (пальмы GLB/proc, не lod)',
-  lodNear && lodNear.palmSrc !== 'lod' && lodNear.ficusSrc !== 'lod',
-  `palm=${lodNear?.palmSrc}, ficus=${lodNear?.ficusSrc}, far-островов=${lodNear?.farIslands}`);
+// Task 57: palmSrc/ficusSrc — статистика ПОСЛЕДНЕГО слота (дальний
+// остров) и после переработки LOD Task 52 законно показывает lod;
+// надёжный призыв «остров вернулся к полной модели» — тир 0 и
+// полные слоты (то же условие, что в поздних прогонах Task 53+)
+check('A4: у берега остров вернул ПОЛНУЮ модель (tier 0, полные слоты)',
+  lodNear && lodNear.bTier === 0 && lodNear.fullSlots >= 1,
+  `tier=${lodNear?.bTier}, полных слотов=${lodNear?.fullSlots}, far-островов=${lodNear?.farIslands}`);
 check('A5: сосед (дальний) остался на LOD — переключение по-островно',
   lodNear && lodNear.farIslands >= 1,
   `far-островов=${lodNear?.farIslands}`);

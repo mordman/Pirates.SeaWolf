@@ -15,6 +15,10 @@ import { clamp, mod2pi } from '../core/rng';
 export type AIState = 'route' | 'flee' | 'surrender' | 'derelict' | 'patrol' | 'combat' | 'anchored';
 
 export class AIShip {
+  /** Task 56: ЭСКАДРА — ведомый следует за этим кораблём (кильватер) */
+  leader?: AIShip;
+  /** Task 56: корабль редкой эскадры (деспавн за горизонтом) */
+  squadron = false;
   ship: Ship;
   state: AIState;
   waypoints: THREE.Vector3[] = [];
@@ -126,9 +130,25 @@ export class AIShip {
     let target: THREE.Vector3;
     let desiredSail = 2;
     if (this.state === 'route') {
-      target = this.waypoints[this.wpIndex];
-      if (s.position.distanceTo(target) < 70) {
-        this.wpIndex = (this.wpIndex + 1) % this.waypoints.length;
+      // Task 56: ЭСКАДРА — ведомые идут КИЛЬВАТЕРОМ за ведущим:
+      // цель — точка за кормой впереди идущего; ход регулируется
+      // дистанцией (ближе — паруса убрать, дальше — полный)
+      const lead = this.leader;
+      if (lead && lead !== this && !lead.ship.sunk && !lead.ship.sinking) {
+        const gap = (lead.ship.preset.length + s.preset.length) * 0.5 + 55;
+        target = lead.ship.position.clone().addScaledVector(lead.ship.forward, -gap);
+        const d = s.position.distanceTo(target);
+        // плавное регулирование хода: минимальный ход 1 держит
+        // управляемость и станцию (стоп-режим раскачивает колонну);
+        // полный стоп — только анти-столкновение
+        desiredSail = d > gap * 1.5 ? 3 : d > gap * 0.95 ? 2 : 1;
+        if (d < gap * 0.4) desiredSail = 0;
+      } else {
+        // ведущий погиб — маршрут остаётся своим (штурман не спит)
+        target = this.waypoints[this.wpIndex];
+        if (s.position.distanceTo(target) < 70) {
+          this.wpIndex = (this.wpIndex + 1) % this.waypoints.length;
+        }
       }
     } else if (this.state === 'flee') {
       // от игрока + по ветру (уходить выгоднее фордевиндом)

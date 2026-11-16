@@ -56,10 +56,16 @@ export function setCrewFx(gibs: GibPool, particles: Particles) {
 //  replacement — поднимать замену погибшим из трюма;
 //  marksmen — стрелковый огонь экипажа (ружья/пистолеты)
 // ============================================================
-export const CREW_RULES = { replacement: true, marksmen: true };
-export function setCrewRules(r: { replacement?: boolean; marksmen?: boolean }) {
+export const CREW_RULES = {
+  replacement: true,
+  marksmen: true,
+  /** Task 56: задержка выхода подмены из люка, с (настройка игрока) */
+  emergenceDelay: 2,
+};
+export function setCrewRules(r: { replacement?: boolean; marksmen?: boolean; emergenceDelay?: number }) {
   if (typeof r.replacement === 'boolean') CREW_RULES.replacement = r.replacement;
   if (typeof r.marksmen === 'boolean') CREW_RULES.marksmen = r.marksmen;
+  if (typeof r.emergenceDelay === 'number') CREW_RULES.emergenceDelay = Math.max(0.5, Math.min(15, r.emergenceDelay));
 }
 /** Task 43: мир для пловцов (вызывается из game.ts) */
 export function setCrewWorldRoot(root: THREE.Group) { FX.worldRoot = root; }
@@ -197,6 +203,12 @@ const PANTS = APPEARANCE_PANTS;
 const BANDANA = APPEARANCE_BANDANA;
 const HAT = 0x2b2018;
 const COAT = [0x2e2a3a, 0x3a2620, 0x1f3038, 0x40222a];
+// Task 55/56 (восстановлено): МЕРТВЕЦЫ — трупная палитра и лохмотья
+const UNDEAD_SKIN = [0x9fae9a, 0xa8b39b, 0x93a08e, 0xa9b4a4];
+const UNDEAD_SHIRT = [0x2a2d2a, 0x242824, 0x2e2a24];
+const UNDEAD_PANTS = [0x1e211f, 0x232623];
+// Task 56: гнилой кафтан капитана-мертвеца — выцветший тёмный
+const COAT_UNDEAD = [0x232028, 0x1e2522, 0x28222a];
 const BEARD = [0x2c2118, 0x4a3524, 0x6b5136, 0x8a8a86, 0x1d1712];
 const WOOD = 0x8a6a42;
 const METAL = 0x3a3f46;
@@ -408,9 +420,20 @@ export const CREW_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, rou
  *  плюс детали: кисти, ботинки, ремень с пряжкой, шея, а у ~10%
  *  фигур — ПОПУГАЙ на плече (тело/голова/клюв/крыло/хвост). */
 export function buildFigure(role: CrewRole, traits: Traits, seed: number,
-  movable = role === 'walker'): CrewFigure {
+  movable = role === 'walker', undead = false): CrewFigure {
   const rnd = mulberry32(seed);
   const group = new THREE.Group();
+  // Task 55/56 (восстановлено): ВОССТАВШИЙ МЕРТВЕЦ — трупная кожа
+  // (бледно-зеленоватая), рваное тёмное тряпьё; маркер для e2e/VLM
+  if (undead) {
+    traits = {
+      ...traits,
+      skin: UNDEAD_SKIN[Math.floor(rnd() * UNDEAD_SKIN.length)],
+      shirt: UNDEAD_SHIRT[Math.floor(rnd() * UNDEAD_SHIRT.length)],
+      pants: UNDEAD_PANTS[Math.floor(rnd() * UNDEAD_PANTS.length)],
+    };
+    group.userData.undead = true;
+  }
   const t: { pos: number[]; col: number[] } = { pos: [], col: [] };
   const h = traits.height;
   // размеры (м): фигура ~1.6 м
@@ -463,7 +486,8 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   }
   // КАМЗОЛ: длинный, до бёдер, с золотыми пуговицами
   if (traits.torso === 'coat') {
-    bake(t, new THREE.BoxGeometry(torsoW + 0.05, 0.4, 0.25), COAT[Math.floor(rnd() * COAT.length)], 0, hipY + 0.05, 0);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.05, 0.4, 0.25),
+      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : COAT[Math.floor(rnd() * COAT.length)], 0, hipY + 0.05, 0);
     for (let i = 0; i < 3; i++) {
       bake(t, new THREE.CylinderGeometry(0.012, 0.012, 0.012, 6), BUTTON, 0, torsoY + 0.08 - i * 0.12, 0.13,
         new THREE.Euler(Math.PI / 2, 0, 0));
@@ -509,7 +533,8 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   }
   // капитан: длинный кафтан + золотой кант
   if (role === 'captain') {
-    bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.42, 0.26), rnd() < 0.5 ? COAT[0] : COAT[1], 0, hipY + 0.05, 0);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.42, 0.26),
+      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : (rnd() < 0.5 ? COAT[0] : COAT[1]), 0, hipY + 0.05, 0);
     bake(t, new THREE.BoxGeometry(0.05, torsoH * 0.9, 0.015), 0xb8912f, 0, torsoY, 0.135);
   }
   // РЕМЕНЬ с пряжкой (Task 39: детализация) — на бёдрах, у всех
@@ -537,7 +562,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   const bakeArmInto = (target: { pos: number[]; col: number[] }, side: -1 | 1) => {
     const isHook = traits.hook === side;
     const sx = side * (torsoW / 2 + 0.05);
-    const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
+    const sleeve = role === 'captain' ? (undead ? COAT_UNDEAD[0] : COAT[0]) : traits.shirt;
     const upperSleeve = traits.torso === 'bare' ? traits.skin : sleeve;
     const foreSleeve = traits.torso === 'bare' || traits.torso === 'tshirt' ? traits.skin : sleeve;
     if (role === 'helmsman') {
@@ -586,7 +611,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const at: { pos: number[]; col: number[] } = { pos: [], col: [] };
     const isHook = traits.hook === side;
     const sx = side * (torsoW / 2 + 0.05);
-    const sleeve = role === 'captain' ? COAT[0] : traits.shirt;
+    const sleeve = role === 'captain' ? (undead ? COAT_UNDEAD[0] : COAT[0]) : traits.shirt;
     const upperSleeve = traits.torso === 'bare' ? traits.skin : sleeve;
     const foreSleeve = traits.torso === 'bare' || traits.torso === 'tshirt' ? traits.skin : sleeve;
     const E = new THREE.Vector3(sx * 0.16, -upA, 0.04);
@@ -628,6 +653,22 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
 
   // --- голова ---
   bake(t, new THREE.SphereGeometry(headR, 10, 8), traits.skin, 0, headY, 0);
+  // Task 55/56 (восстановлено): ЧЕРЕП мертвеца — провалы глазниц,
+  // тёмная ноздря, оскал зубов; РЁБРА проступают сквозь тряпьё
+  if (undead) {
+    for (const ex of [-0.048, 0.048]) {
+      bake(t, new THREE.SphereGeometry(0.03, 6, 5), 0x0c0f0a, ex, headY + 0.018, headR - 0.008);
+    }
+    bake(t, new THREE.BoxGeometry(0.022, 0.032, 0.02), 0x0c0f0a, 0, headY - 0.022, headR - 0.004);
+    bake(t, new THREE.BoxGeometry(0.072, 0.02, 0.018), 0xd8d4c0, 0, headY - 0.062, headR - 0.024);
+    bake(t, new THREE.BoxGeometry(0.06, 0.008, 0.012), 0x0c0f0a, 0, headY - 0.052, headR - 0.02);
+    if (traits.torso !== 'coat' && traits.torso !== 'sweater') {
+      for (let ri = 0; ri < 3; ri++) {
+        bake(t, new THREE.BoxGeometry(torsoW - 0.05, 0.016, 0.014), 0xc9cfc0,
+          0, hipY + torsoH * 0.62 - ri * 0.075, 0.115);
+      }
+    }
+  }
   // ВОЛОСЫ (если нет головного убора или под ним); Task 50: ЛЫСИНА —
   // у части фигур головы гладкие (солдаты стригены, матросы лысеют).
   // Task 51: 4 ПРИЧЁСКИ — короткая/длинная до плеч/ХВОСТИК-пучок
@@ -765,6 +806,60 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     // свисток боцмана на груди
     bake(t, new THREE.CylinderGeometry(0.018, 0.018, 0.1, 5), 0xb8912f, 0.07, torsoY + 0.04, 0.125,
       new THREE.Euler(1.57, 0, 0.2));
+  }
+  // Task 57: ПРОКЛЯТЫЙ КЛИНОК капитана-мертвеца — зелёный
+  // полупрозрачный, светится, вдоль лезвия МЕРЦАЕТ ДЫМКА.
+  // Материал анимируется в onBeforeRender — живёт и на палубе,
+  // и в превью верфи, без правки циклов обновления
+  if (role === 'captain' && undead) {
+    const bladeG = new THREE.Group();
+    const bladeMat = new THREE.MeshPhysicalMaterial({
+      color: 0x39d65a, transparent: true, opacity: 0.55,
+      emissive: 0x1e8f3e, emissiveIntensity: 1.1,
+      roughness: 0.15, metalness: 0.3, side: THREE.DoubleSide,
+      // VLM: без depthWrite сегменты клинка просвечивали «лесенкой»
+      depthWrite: true,
+    });
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.62, 0.012), bladeMat);
+    blade.position.y = 0.34;
+    bladeG.add(blade);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.021, 0.1, 4), bladeMat);
+    tip.position.y = 0.7;
+    bladeG.add(tip);
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.045),
+      new THREE.MeshStandardMaterial({ color: 0x2a3a2e, roughness: 0.5, metalness: 0.7 }));
+    guard.position.y = 0.03;
+    bladeG.add(guard);
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 0.16, 6),
+      new THREE.MeshStandardMaterial({ color: 0x1c2320, roughness: 0.9 }));
+    grip.position.y = -0.05;
+    bladeG.add(grip);
+    // ДЫМКА: три клуба вдоль лезвия — дрейфуют, дышат, мерцают
+    const puffs: THREE.Mesh[] = [];
+    for (let mi = 0; mi < 3; mi++) {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(0.05 + mi * 0.012, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0x52e07a, transparent: true, opacity: 0.3, depthWrite: false }));
+      puff.position.set(0, 0.2 + mi * 0.19, 0.01);
+      bladeG.add(puff);
+      puffs.push(puff);
+    }
+    const t0 = (seed % 100) * 0.37;
+    bladeMat.onBeforeRender = () => {
+      const t = performance.now() * 0.001 + t0;
+      bladeMat.opacity = 0.48 + 0.14 * Math.sin(t * 2.3);
+      bladeMat.emissiveIntensity = 0.9 + 0.55 * Math.sin(t * 3.1 + 1.3);
+      for (let mi = 0; mi < puffs.length; mi++) {
+        const pm = puffs[mi].material as THREE.MeshBasicMaterial;
+        const ph = t * (1.1 + mi * 0.35) + mi * 2.1;
+        pm.opacity = 0.14 + 0.13 * (0.5 + 0.5 * Math.sin(ph));
+        puffs[mi].position.x = Math.sin(ph * 0.7) * 0.03;
+        puffs[mi].scale.setScalar(0.85 + 0.3 * (0.5 + 0.5 * Math.sin(ph * 0.5 + 1)));
+      }
+    };
+    // в левой руке (правая занята подзорной трубой), клинок вверх-вперёд
+    bladeG.position.set(-(torsoW / 2 + 0.16), hipY + 0.34, 0.12);
+    bladeG.rotation.set(0.35, 0, 0.22);
+    group.add(bladeG);
   }
 
   const body = new THREE.Mesh(bakeGeom(t), CREW_MAT);
@@ -951,6 +1046,8 @@ export interface CrewVisual {
   dead: number;           // потери (трупы + разорванные)
   /** режим «экипаж из котов»: все фигуры — коты (настройка) */
   isCats?: boolean;
+  /** Task 55/56: сколько фигур — ВОССТАВШИЕ МЕРТВЕЦЫ (e2e/VLM) */
+  undeadFigures: number;
   /** Task 50: тип экипажа по судну + раскладка гардероба (e2e):
    *  солдаты — мундиры/треуголки и НИ ОДНОГО крюка/наглазника/
    *  попугая; торговцы — простые матросы; пираты — весь набор */
@@ -958,7 +1055,7 @@ export interface CrewVisual {
   kindStats: {
     soldierCoats: number; aprons: number; straw: number;
     hooks: number; pegs: number; patches: number; parrots: number;
-    bald: number; ponytails: number; glasses: number;
+    bald: number; ponytails: number; glasses: number; undead: number;
   };
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
@@ -1010,13 +1107,13 @@ const _shipInvQ = new THREE.Quaternion();
  *  allCats — режим «заменить всех матросов на котов»: та же
  *  логика ролей/маршрутов, но фигуры — коты (cats.ts) */
 export function buildCrew(P: ShipPreset, seed: number, allCats = false,
-  kind: CrewKind = 'pirate', detailed = false): CrewVisual {
+  kind: CrewKind = 'pirate', detailed = false, undead = false): CrewVisual {
   const group = new THREE.Group();
   // Task 50: раскладка гардероба (телеметрия e2e — типы экипажа)
   const ks = {
     soldierCoats: 0, aprons: 0, straw: 0,
     hooks: 0, pegs: 0, patches: 0, parrots: 0, bald: 0,
-    ponytails: 0, glasses: 0,
+    ponytails: 0, glasses: 0, undead: 0,
   };
   const rollKind = (role: CrewRole): Traits => {
     const tr = rollTraits(rot, role, kind);
@@ -1083,9 +1180,9 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   for (let i = 0; i < nSpares; i++) {
     const f = allCats
       ? buildCatCrewFigure('watch', nextSeed(), true)
-      : detailed
+      : detailed && !undead
       ? (() => { const df = buildDetailedFigure('watch', rollKind('watch'), nextSeed(), true); df.verts = detailTris(df.group); return df; })()
-      : buildFigure('watch', rollKind('watch'), nextSeed(), true);
+      : buildFigure('watch', rollKind('watch'), nextSeed(), true, undead && !allCats);
     if (!allCats && f.wristMount) {
       f.weapon = rot() < 0.7 ? 'musket' : 'pistol';
       f.gunCd = 1 + rot() * 2;
@@ -1150,9 +1247,9 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
       || role === 'gunner' || role === 'watch';
     const f = allCats
       ? buildCatCrewFigure(role, nextSeed(), busy || role === 'walker')
-      : detailed
+      : detailed && !undead
       ? (() => { const df = buildDetailedFigure(role, rollKind(role), nextSeed(), busy || role === 'walker'); df.verts = detailTris(df.group); return df; })()
-      : buildFigure(role, rollKind(role), nextSeed(), busy || role === 'walker');
+      : (() => { const f = buildFigure(role, rollKind(role), nextSeed(), busy || role === 'walker', undead && !allCats); if (undead && !allCats) ks.undead++; return f; })();
     // Task 43: ВООРУЖЕНИЕ МАТРОСОВ — ружьё 70% (дальность 50 м),
     // пистолет 30% (20 м). Стрелки — роли с подвижными руками
     // (рулевой у штурвала, гребцы на банках, капитан на мостике —
@@ -1525,6 +1622,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   const vis: CrewVisual = {
     group, total: figures.length, shown: figures.length, dead: 0, isCats: allCats,
     kind, kindStats: ks,
+    undeadFigures: ks.undead,
     setVisible(v: boolean) { group.visible = v; },
     waveCaptain() {
       // Task 40: найти ЖИВОГО капитана и поднять руку (2.2 с)
@@ -1735,7 +1833,9 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
           for (const f of figures) {
             if (f.dead && !f.replQueued) {
               f.replQueued = true;
-              replQueue.push(time + 2 + Math.random() * 2.5);
+              // Task 56: скорость выхода на палубу — настройка игрока
+              const d = CREW_RULES.emergenceDelay;
+              replQueue.push(time + d + Math.random() * d * 1.25);
             }
           }
         }

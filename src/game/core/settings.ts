@@ -226,6 +226,8 @@ export interface GameplaySettings {
   crewReplacement: boolean;
   /** Task 46: стрелковый огонь экипажа (ружья/пистолеты у борта) */
   crewMarksmen: boolean;
+  /** Task 56: задержка выхода подмены на палубу, с (меньше — быстрее) */
+  crewEmergenceDelay: number;
 }
 
 // ============================================================
@@ -362,6 +364,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     hullModel: 'planks',
     crewReplacement: true,     // погибшие подменяются живыми из трюма
     crewMarksmen: true,        // ружья/пистолеты у борта
+    crewEmergenceDelay: 2,     // подмена выходит из люка через ~2-4.5 с
   },
   islands: {
     treesMul: 1,      // обычный лес
@@ -551,6 +554,7 @@ export function loadSettings(): GameSettings {
       }
       if (typeof data.gameplay.crewReplacement === 'boolean') s.gameplay.crewReplacement = data.gameplay.crewReplacement;
       if (typeof data.gameplay.crewMarksmen === 'boolean') s.gameplay.crewMarksmen = data.gameplay.crewMarksmen;
+      if (typeof data.gameplay.crewEmergenceDelay === 'number') s.gameplay.crewEmergenceDelay = Math.max(0.5, Math.min(15, data.gameplay.crewEmergenceDelay));
     }
     // Task 41: ОСТРОВА — деревья/деревни/жители/лодки (глобально +
     // переопределения по островам). v13-миграция: gameplay.vegDensity → treesMul

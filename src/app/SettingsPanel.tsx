@@ -743,6 +743,11 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                     onChange={e => update(d => { d.gameplay.crewReplacement = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                <Row label="⏱️ Выход матросов на палубу" hint="через сколько секунд после гибели матроса из люка поднимается подмена (меньше — быстрее; разброс ±80%)">
+                  <Slider value={s.gameplay.crewEmergenceDelay} min={0.5} max={15} step={0.5}
+                    onChange={v => update(d => { d.gameplay.crewEmergenceDelay = v; })}
+                    format={v => `${v.toFixed(1)} с`} />
+                </Row>
                 <Row label="🔫 Стрелки экипажа" hint="мушкеты (50 м) и пистолеты (20 м) с постов у борта при атаке; выключено — только артиллерия, но поза укрытия у борта остаётся">
                   <input type="checkbox" checked={s.gameplay.crewMarksmen}
                     onChange={e => update(d => { d.gameplay.crewMarksmen = e.target.checked; })}

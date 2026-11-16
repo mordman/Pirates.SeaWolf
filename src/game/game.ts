@@ -6,7 +6,7 @@ import { Water } from './water/Water';
 import { SEA, waterHeightAt, waveEnvelope, windFactor } from './water/waves';
 import { applyBuoyancyConfig, PHYSICS, CONTROLS, BUOYANCY_CONFIG } from './water/buoyancy';
 import { Ship } from './ship/Ship';
-import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, deckPlan, type FlagKind } from './ship/buildShip';
+import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, deckPlan, sailAuditAll, type FlagKind } from './ship/buildShip';
 import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
@@ -19,7 +19,7 @@ import { Particles } from './fx/particles';
 import { GibPool } from './fx/gibs';
 import { initDebris, updateDebris, clearDebris, debrisAlive, debrisInfo } from './fx/debris';
 import { initFlotsam, spawnFlotsam, updateFlotsam, pickFlotsam, flotsamInfo, clearFlotsam } from './world/flotsam';
-import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits, setCrewRules } from './ship/crew';
+import { setCrewFx, setCrewWorldRoot, deckCrewFor, buildFigure, rollTraits, setCrewRules, CREW_RULES } from './ship/crew';
 import { setPlankRules } from './ship/plankHull';
 import { setShipDurabilityMap } from './ship/Ship';
 import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from './ship/cats';
@@ -212,6 +212,10 @@ export class Game {
 
   player!: Ship;
   aiShips: AIShip[] = [];
+  // Task 56: редкая эскадра — таймер появления и уборки ушедших
+  private sqnT = 75;
+  private sqnDespawnT = 10;
+  private sqnSpawnedTotal = 0;
   combat!: CombatSystem;
   /** спуск/подъём шлюпки и управление ею на воде (клавиша B) */
   boatLaunch: BoatLaunch | null = null;
@@ -346,6 +350,7 @@ export class Game {
     setCrewRules({
       replacement: this.settings.gameplay.crewReplacement,
       marksmen: this.settings.gameplay.crewMarksmen,
+      emergenceDelay: this.settings.gameplay.crewEmergenceDelay,
     });
     // Task 47: КОРАБЛИ — прочность досок, урон ядер, живучесть
     // по каждому кораблю (до создания судов — карта множителей)
@@ -611,8 +616,12 @@ export class Game {
     if (prev.gameplay.hullModel !== s.gameplay.hullModel) {
       this.rebuildAllVisuals(s.gameplay.hullModel === 'planks');
     }
-    // ===== Task 46: правила экипажа =====
-    setCrewRules({ replacement: s.gameplay.crewReplacement, marksmen: s.gameplay.crewMarksmen });
+    // ===== Task 46/56: правила экипажа =====
+    setCrewRules({ replacement: s.gameplay.crewReplacement, marksmen: s.gameplay.crewMarksmen,
+      emergenceDelay: s.gameplay.crewEmergenceDelay });
+    if (prev.gameplay.crewEmergenceDelay !== s.gameplay.crewEmergenceDelay) {
+      this.pushMessage(`Подмена выходит на палубу через ~${s.gameplay.crewEmergenceDelay.toFixed(1)}-${(s.gameplay.crewEmergenceDelay * 2.25).toFixed(1)} с`);
+    }
     if (prev.gameplay.crewReplacement !== s.gameplay.crewReplacement) {
       this.pushMessage(s.gameplay.crewReplacement
         ? 'Подмена экипажа: погибшие поднимаются заменой из трюма (люк у мачты)'
@@ -951,6 +960,109 @@ export class Game {
     this.combat.infiniteAmmo = gp.infiniteAmmo;
   }
 
+  /** ============================================================
+   *  Task 56: РЕДКАЯ ЭСКАДРА — 3-4 корабля КИЛЬВАТЕРНОЙ КОЛОННОЙ
+   *  пересекают горизонт: торговый конвой (флейт/каравелла/когг с
+   *  конвоиром) или военный отряд (бриг/фрегат). Ведущий идёт по
+   *  маршруту, ведомые держат точку за кормой впереди идущего
+   *  (AIShip.leader). Появление редкое: проверка раз в 60 с,
+   *  шанс 14% — в среднем эскадра раз в ~7 минут. Ушедшие за
+   *  горизонт (>5.2 км) снимаются с карты — флот не плодится */
+  spawnSquadron(): { ships: string[]; theme: string; n: number } | null {
+    const terrain = (x: number, z: number) => heightAt(x, z);
+    // точка спавна: за горизонтом, случайная сторона от игрока,
+    // на глубокой воде; маршрут — прямая через район игрока
+    let base: THREE.Vector3 | null = null;
+    let dir = new THREE.Vector3(1, 0, 0);
+    for (let t = 0; t < 12 && !base; t++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 900 + Math.random() * 250;
+      const p = new THREE.Vector3(this.player.position.x + Math.sin(a) * d, 0,
+        this.player.position.z + Math.cos(a) * d);
+      // курс эскадры — ПО ВЕТРУ (бейдевинд колонне ни к чему:
+      // против ветра корабли еле ползут и строй рассыпается)
+      const fair = this.wind.from + Math.PI + (Math.random() - 0.5) * 1.4;
+      const dd = new THREE.Vector3(Math.sin(fair), 0, Math.cos(fair)).normalize();
+      if (heightAt(p.x, p.z) < -6 && heightAt(p.x + dd.x * 1200, p.z + dd.z * 1200) < -6) {
+        base = p;
+        dir = dd;
+      }
+    }
+    if (!base) return null;
+    // состав: военный отряд или торговый конвой
+    const war = Math.random() < 0.45;
+    const n = 3 + (Math.random() < 0.55 ? 1 : 0);
+    const pool = war ? ['brig', 'frigate', 'cog', 'fluyt'] : ['fluyt', 'caravel', 'cog', 'amsterdam'];
+    const models: string[] = [];
+    for (let i = 0; i < n; i++) models.push(pool[Math.floor(Math.random() * pool.length)]);
+    // медленнейший — ведущий (остальные за ним поспевают)
+    const stats = models.map(m => ({ m, v: PRESETS[m].maxSpeed, L: PRESETS[m].length }));
+    stats.sort((a, b) => a.v - b.v);
+    const gpS = this.settings.gameplay;
+    const heading = Math.atan2(dir.x, dir.z);
+    const waypoints = [0, 1300, 2600, 3900].map(k =>
+      base!.clone().addScaledVector(dir, k));
+    let prevAI: AIShip | null = null;
+    let back = 0;   // накопленное расстояние позади ведущего
+    for (const st of stats) {
+      const flag: FlagKind = war ? 'navy' : 'merchant';
+      const sh = new Ship(st.m, false, this.wind, terrain, this.particles,
+        { durabilityMul: gpS.hullDurability, boatCount: gpS.boatCount, flag });
+      const gap = prevAI ? (prevAI.ship.preset.length + st.L) * 0.5 + 55 : 0;
+      back += gap;
+      sh.position.copy(base!).addScaledVector(dir, -back);
+      sh.quaternion.setFromEuler(new THREE.Euler(0, heading, 0));
+      sh.crew = Math.round(sh.preset.maxCrew * 0.8);
+      sh.gold = Math.round(200 + Math.random() * 500);
+      sh.cargo = { sugar: 4, rum: 3, timber: 6, spice: 1, silk: Math.random() < 0.4 ? 1 : 0 };
+      sh.sailTarget = 3;
+      setFlagKind(sh.visual, flag);
+      this.worldGroup.add(sh.visual.group);
+      this.worldGroup.add(sh.foam.mesh);
+      this.worldGroup.add(sh.wake.mesh);
+      const ai = new AIShip(sh, waypoints.map(w => w.clone()), 'route');
+      ai.squadron = true;
+      if (prevAI) ai.leader = prevAI;
+      this.aiShips.push(ai);
+      prevAI = ai;
+    }
+    this.sqnSpawnedTotal++;
+    this.pushMessage(war
+      ? `⚔️ На горизонте — военная эскадра: ${n} судна кильватерной колонной`
+      : `📦 На горизонте — торговый конвой: ${n} судна друг за другом`);
+    return { ships: stats.map(x => x.m), theme: war ? 'war' : 'convoy', n };
+  }
+
+  /** Task 56: цикл эскадры — редкое появление + уборка ушедших */
+  private updateSquadron(dt: number) {
+    this.sqnT -= dt;
+    if (this.sqnT <= 0) {
+      this.sqnT = 60;
+      // максимум ОДНА эскадра на карте (память/флот не плодятся;
+      // следующая — когда эта уйдёт за горизонт или погибнет)
+      const alive = this.aiShips.some(a => a.squadron && !a.ship.sunk);
+      if (!alive && Math.random() < 0.14) this.spawnSquadron();
+    }
+    this.sqnDespawnT -= dt;
+    if (this.sqnDespawnT <= 0) {
+      this.sqnDespawnT = 10;
+      for (let i = this.aiShips.length - 1; i >= 0; i--) {
+        const a = this.aiShips[i];
+        if (!a.squadron) continue;
+        const d = a.ship.position.distanceTo(this.player.position);
+        if (d > 5200 || (a.ship.sunk && d > 900)) {
+          this.worldGroup.remove(a.ship.visual.group, a.ship.foam.mesh, a.ship.wake.mesh);
+          this.aiShips.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  /** Аудит парусов всех пресетов (e2e/VLM) */
+  debugSailAudit() {
+    return sailAuditAll();
+  }
+
   /** Поразить «человечков» на берегу (жители деревень + пираты
    *  логова) — сабля/пистолет игрока (Task 36) */
   killFolkNear(x: number, y: number, z: number, r: number, mode: 'grape' | 'ball', dx?: number, dz?: number): number {
@@ -997,8 +1109,10 @@ export class Game {
       ['cog', 300, 85, -2.2, 26, 380, [7, 2, 9, 0, 0], 'merchant'],
     ];
     for (const [model, a, dist, yaw, crew, gold, loot, flag] of specs) {
+      // Task 56: мертвецы — ТОЛЬКО на «Чёрной жемчужине»; шлюп и
+      // Mystique при логове — обычные живые пираты
       const sh = new Ship(model, false, this.wind, terrain, this.particles,
-        { ...aiOpts, flag });   // Task 50: флаг ДО сборки → тип экипажа
+        { ...aiOpts, flag, crewUndead: model === 'blackpearl' });
       sh.position.copy(ring(a, dist));
       sh.quaternion.setFromEuler(new THREE.Euler(0, yaw, 0));
       sh.crew = crew;
@@ -1294,7 +1408,10 @@ export class Game {
       { durabilityMul: gp.hullDurability, ammo: { ...gp.startingAmmo }, boatCount: gp.boatCount,
         planking: gp.hullModel === 'planks',
         crewCats: gp.catsInsteadOfCrew,
-        crewDetailed: this.settings.graphics.crewDetail === 'detailed' });
+        crewDetailed: this.settings.graphics.crewDetail === 'detailed',
+        // Task 57: «Чёрная жемчужина» несёт ПРОКЛЯТУЮ команду —
+        // мертвецы и при выборе на полигоне, и при покупке на верфи
+        crewUndead: presetId === 'blackpearl' });
     // не отнимать боезапас при смене (берём максимум из текущего и стартового)
     (['ball', 'chain', 'grape', 'fire'] as const).forEach(k => {
       np.ammo[k] = Math.max(ammo[k] ?? 0, np.ammo[k] ?? 0);
@@ -2490,7 +2607,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string }[] }; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[] };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -2872,6 +2989,29 @@ export class Game {
     // Task 51: лут на воде + трубы/форт (телеметрия e2e)
     dbg.__flotsamInfo = () => flotsamInfo();
     // Task 52: модель экипажа — кто на какой модели (e2e/VLM)
+    // Task 56/57: эскадра — состав/кильватер (e2e)
+    dbg.__squadronInfo = () => {
+      const sqn = this.aiShips.filter(a => a.squadron && !a.ship.sunk);
+      return {
+        total: this.sqnSpawnedTotal,
+        ships: sqn.map(a => ({
+          model: a.ship.preset.id,
+          leader: !!a.leader,
+          speed: +a.ship.speed().toFixed(1),
+          pos: [+(a.ship.position.x - this.player.position.x).toFixed(0),
+                +(a.ship.position.z - this.player.position.z).toFixed(0)],
+          heading: +a.ship.heading.toFixed(2),
+          state: a.state,
+        })),
+      };
+    };
+    // Task 56: правила экипажа (задержка выхода подмены — e2e)
+    dbg.__crewRules = () => ({ ...CREW_RULES });
+    // Task 55/56: мертвецы — какие корабли прокляты (e2e/VLM)
+    dbg.__undeadShips = () => this.aiShips
+      .filter(a => !a.ship.sunk && a.ship.crewUndeadOpt)
+      .map(a => a.ship.preset.id)
+      .concat(this.player.crewUndeadOpt ? ['__player__'] : []);
     dbg.__crewModelInfo = () => {
       const one = (sh: Ship) => ({
         detailed: sh.crewDetailedOpt,
@@ -3083,6 +3223,8 @@ export class Game {
       }
     }
     this.lairFolk?.update(dt, this.time, { x: this.player.position.x, z: this.player.position.z });
+    // Task 56: редкая эскадра на горизонте + уборка ушедших
+    this.updateSquadron(dt);
 
   // небо и свет (+ погода: облачность, приглушение, вспышки молний)
     playerScene.copy(this.player.position).add(this.shift);

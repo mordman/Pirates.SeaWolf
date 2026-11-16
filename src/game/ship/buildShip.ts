@@ -2562,12 +2562,25 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     normalScale: new THREE.Vector2(0.35, 0.35), roughness: 1,
   });
 
-  // бушприт
-  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.16, L * 0.32, 6), woodMat);
-  bowsprit.rotation.x = Math.PI / 2 - 0.18;
-  bowsprit.position.set(0, P.freeboard * 0.75, L / 2 + L * 0.12);
+  // Task 56 (скрин игрока «кливер в воде»): бушприт поднят круче
+  // (0.28 рад) и УДЛИНЁН — прежде штаг крепился на L*0.32 вперёд,
+  // а сам шест оканчивался на L*0.16: узел висел в воздухе.
+  // Теперь шест оканчивается ровно в точке крепления штага
+  const sprA = 0.28;                          // угол подъёма бушприта
+  const sprOut = L * 0.32;                    // вылет за точку крепления штага
+  const sprLen = L * 0.44;                    // длина шеста (входит в корпус)
+  const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.16, sprLen, 6), woodMat);
+  bowsprit.rotation.x = Math.PI / 2 - sprA;
+  bowsprit.position.set(0, P.freeboard * 0.75 + Math.sin(sprA) * (sprLen / 2 - L * 0.12),
+    L / 2 + L * 0.12 + Math.cos(sprA) * (sprLen / 2 - L * 0.12));
   group.add(bowsprit);
-  const bowspritTip = new THREE.Vector3(0, P.freeboard * 0.75 + L * 0.32 * 0.18, L / 2 + L * 0.12 + L * 0.32 * Math.cos(0.18) * 0.98);
+  const bowspritTip = new THREE.Vector3(0, P.freeboard * 0.75 + Math.sin(sprA) * sprOut,
+    L / 2 + L * 0.12 + Math.cos(sprA) * sprOut * 0.98);
+  // точка крепления внутреннего кливера — 70% вылета и поднята над
+  // бушпритом (галсовый угол не должен висеть у самой воды, Task 56)
+  const sprBase = new THREE.Vector3(0, P.freeboard * 0.75, L / 2 + L * 0.12);
+  const sprMid = sprBase.clone().lerp(bowspritTip, 0.7);
+  sprMid.y += P.freeboard * 0.5;
 
   // мачты
   const mastDefs: { z: number; h: number }[] = [];
@@ -2764,27 +2777,33 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     });
   };
   if (P.rig === 'single') {
+    // Task 57: реи вне полосы марса 0.70–0.76h (пивот +0.05 выше уровня)
     // когг: один большой прямой парус на мачту
-    addSquareSail(0, 0.7, L * 0.42, L * 0.24, 0.5);
-    addSquareSail(1, 0.76, L * 0.4, L * 0.22, 0.72);
+    addSquareSail(0, 0.64, L * 0.42, L * 0.24, 0.5);
+    addSquareSail(1, 0.8, L * 0.4, L * 0.22, 0.72);
   } else if (P.rig === 'lateenMix') {
     // каравелла редонда: прямой фок + латинские грот и бизань
     addSquareSail(0, 0.6, L * 0.28, L * 0.13, 0.55);
     addLateenSail(1, 0.45, L * 0.5, mastDefs[1].h * 0.5, 0.85);
-    addLateenSail(2, 0.8, L * 0.32, mastDefs[2].h * 0.5, 0.55);
+    // Task 56: спуск бизани уменьшен — шкотовый угол был у воды
+    addLateenSail(2, 0.8, L * 0.32, mastDefs[2].h * 0.4, 0.55);
   } else if (P.rig === 'lateen') {
     // шебека / галера: огромные латинские паруса на всех мачтах
     addLateenSail(0, 0.68, L * 0.34, mastDefs[0].h * 0.46, 0.5);
     addLateenSail(1, 0.45, L * 0.52, mastDefs[1].h * 0.52, 0.85);
     addLateenSail(2, 0.78, L * 0.3, mastDefs[2].h * 0.44, 0.5);
   } else if (P.masts === 2) {
+    // Task 54/57: нижний парус головой НИЖЕ марса (0.72h), топсель
+    // реей НАД марсом — прежде топсель (0.45h) висел ПОД гротом и
+    // при полном раскрытии пара полотен резалась друг другом
     addSquareSail(0, 0.66, L * 0.3, L * 0.16, 0.62);   // фок
-    addSquareSail(1, 0.72, L * 0.36, L * 0.2, 0.45);   // грот нижний — ставится первым
-    addSquareSail(1, 0.45, L * 0.26, L * 0.14, 0.92);  // грот верхний (брамсель)
+    addSquareSail(1, 0.62, L * 0.36, L * 0.2, 0.45);   // грот нижний — ставится первым
+    addSquareSail(1, 0.86, L * 0.26, L * 0.14, 0.92);  // топсель — рея НАД марсом
   } else {
-    addSquareSail(0, 0.62, L * 0.24, L * 0.13, 0.60);
-    addSquareSail(1, 0.7, L * 0.34, L * 0.18, 0.45);
-    addSquareSail(1, 0.44, L * 0.24, L * 0.13, 0.92);
+    // Task 54/57: топсель грота — НАД марсом (был 0.44h — под гротом)
+    addSquareSail(0, 0.58, L * 0.24, L * 0.13, 0.60);
+    addSquareSail(1, 0.62, L * 0.34, L * 0.18, 0.45);
+    addSquareSail(1, 0.88, L * 0.24, L * 0.13, 0.92);
     addSquareSail(2, 0.5, L * 0.18, L * 0.11, 0.78);
   }
 
@@ -2848,9 +2867,12 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
   // кливера — только на «полных» вооружениях (у когга, каравеллы и шебеки их нет)
   const foreTop = mastDefs[0];
   if (P.rig !== 'lateenMix' && P.rig !== 'single' && P.rig !== 'lateen') {
-    addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 1.0), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
-    addJib(new THREE.Vector3(bowspritTip.x * 0.55, bowspritTip.y - (bowspritTip.y - P.freeboard * 0.72) * 0.45, bowspritTip.z - L * 0.1),
-      new THREE.Vector3(0, P.freeboard * 0.72, L / 2 - 2.0), foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
+    // Task 56/57: шкотовые углы подняты к бушприту — прежде висели
+    // на fb*0.72 (≈2 м) у самого штема: при ПОЛНОМ раскрытии кливер
+    // прорезал бак и уходил в море (скрин игрока «парус делит корабль»)
+    addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 1.6 + 1.2, L / 2 + 0.6), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
+    addJib(sprMid, new THREE.Vector3(0, P.freeboard * 1.7 + 1.0, L / 2 - 0.8),
+      foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
   }
 
   // флаг на топе грот-мачты (потомок мачты — валится вместе с ней)
@@ -3212,4 +3234,72 @@ export function shipPrice(P: ShipPreset): number {
   const p = P.hullHP * 3 + Math.pow(P.gunsPerSide, 1.6) * 90
     + P.maxCrew * 3 + P.cargo * 0.8 + P.maxSpeed * 120;
   return Math.round(p / 10) * 10;
+}
+
+/** ============================================================
+ *  Task 55/56/57: АУДИТ ВООРУЖЕНИЯ ВСЕХ ПРЕСЕТОВ (e2e/VLM) —
+ *  паруса не должны черпать воду и резать друг друга/корабль.
+ *  Восстановлено после отката песочницы (потерян вместе с Task 55):
+ *   - реи в пределах мачт и НЕ в полосе марса (0.70–0.76h);
+ *   - нижний угол КАЖДОГО паруса выше гребней обычного моря
+ *     (max(3.2, fb*0.8)) — при полном раскрытии кливера прежде
+ *     уходили в море, рассекая бак (скрин игрока);
+ *   - топсель реей НИЖЕ реи нижнего паруса не висит (Task 54). */
+export function sailAuditAll(): { id: string; name: string; issues: string[] }[] {
+  const out: { id: string; name: string; issues: string[] }[] = [];
+  for (const P of Object.values(PRESETS)) {
+    const vis = buildShip(P);
+    const issues: string[] = [];
+    const mastTop = (i: number) => {
+      const m = vis.masts[i];
+      return ((m?.userData.height as number) ?? 0) - P.draft * 0.3;
+    };
+    const mastH = (i: number) => (vis.masts[i]?.userData.height as number) ?? 1;
+    // сгруппировать прямые паруса по мачтам
+    const byMast = new Map<number, typeof vis.sails.sails>();
+    for (const sl of vis.sails.sails) {
+      if (!sl.square || sl.mastIndex === undefined) continue;
+      const arr = byMast.get(sl.mastIndex) ?? [];
+      arr.push(sl);
+      byMast.set(sl.mastIndex, arr);
+    }
+    for (const [mi, list] of byMast) {
+      const top = mastTop(mi);
+      const h = mastH(mi);
+      const sorted = [...list].sort((a, b) => a.quad.pivot.y - b.quad.pivot.y);
+      for (const sl of sorted) {
+        const yard = sl.quad.pivot.y;
+        const len = sl.holeH;
+        if (yard > top + 0.3) issues.push(`мачта${mi}: рея ${yard.toFixed(1)} выше топа ${top.toFixed(1)}`);
+        const rel = (yard + P.draft * 0.3) / h;
+        if (rel > 0.70 && rel < 0.76) issues.push(`мачта${mi}: рея в полосе марса (${rel.toFixed(2)}h)`);
+        if (yard - len < P.freeboard - 1.5) issues.push(`мачта${mi}: парус доходит до палубы (${(yard - len).toFixed(1)})`);
+      }
+      for (let i = 1; i < sorted.length; i++) {
+        const low = sorted[i - 1], up = sorted[i];
+        if (up.quad.pivot.y - up.holeH < low.quad.pivot.y - 0.4) {
+          issues.push(`мачта${mi}: верхний парус висит ниже реи нижнего`);
+        }
+      }
+    }
+    // Task 55/56: нижний угол ЛЮБОГО паруса (кливер/латинский/прямой)
+    // — выше гребней обычного моря (энвалоп ~3.2 м при 12 м/с);
+    // в шторм кливера убираются (Ship.ts), латинские паруса высоко
+    let lowest = Infinity;
+    for (const sl of vis.sails.sails) {
+      for (const c of sl.quad.corners) lowest = Math.min(lowest, sl.quad.pivot.y + c.y);
+    }
+    if (lowest < Math.max(3.2, P.freeboard * 0.8)) {
+      issues.push(`нижний угол паруса почти в воде (${lowest.toFixed(1)} м)`);
+    }
+    // прибраться: геометрия аудита не нужна в сцене
+    vis.group.traverse(o => {
+      const m = o as THREE.Mesh;
+      if ((m as unknown as { isMesh?: boolean }).isMesh) {
+        m.geometry?.dispose();
+      }
+    });
+    out.push({ id: P.id, name: P.name, issues });
+  }
+  return out;
 }

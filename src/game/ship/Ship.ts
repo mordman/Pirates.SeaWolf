@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PRESETS, ShipPreset, buildShip, ShipVisual, enableLantern, sailAddHole, hullProfile, hullHalfWidthAt, FlagKind } from './buildShip';
 import { buildCrew, CrewVisual, CREW_MAT, CrewKind } from './crew';
 import type { PlankSystem, PlankRec } from './plankHull';
-import { waterHeightAt } from '../water/waves';
+import { waterHeightAt, SEA } from '../water/waves';
 import { BUOYANCY_CONFIG, PHYSICS, CONTROLS } from '../water/buoyancy';
 import { WaterlineFoam, WakeTrail } from '../water/wake';
 import { Particles } from '../fx/particles';
@@ -71,6 +71,9 @@ export interface ShipOpts {
    *  ('navy' → солдаты в мундирах, 'merchant' → простые матросы,
    *  пиратские → пираты). Без опции — флаг пресета */
   flag?: FlagKind;
+  /** Task 55/56: ПРОКЛЯТАЯ команда — мертвецы (облезлая кожа,
+   *  глазницы, рёбра, рваное тряпьё); у игрока — «Чёрная жемчужина» */
+  crewUndead?: boolean;
 }
 
 const G = 9.81;
@@ -90,6 +93,8 @@ export class Ship {
   flagKind?: FlagKind;
   /** Task 50: тип экипажа на палубе (по флагу судна) */
   crewKind: CrewKind = 'pirate';
+  /** Task 55/56: проклятая команда-мертвецы (сохраняется при пересборке) */
+  crewUndeadOpt = false;
 
   /** Task 49: цвет краски корпуса — обломки конструкции (доски/
    *  щепы/панели/рангоут) летят под цвет своего корабля */
@@ -420,7 +425,8 @@ export class Ship {
     // у игрока может быть «экипаж из котов» (настройка, cats.ts).
     // Task 50: тип экипажа — по флагу судна
     this.crewDetailedOpt = !!opts?.crewDetailed;
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind, !!opts?.crewDetailed);
+    this.crewUndeadOpt = !!opts?.crewUndead;
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind, !!opts?.crewDetailed, this.crewUndeadOpt);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -454,7 +460,7 @@ export class Ship {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });
-    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind, detailed);
+    this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind, detailed, this.crewUndeadOpt);
     this.visual.group.add(this.crew3d.group);
   }
 
@@ -2223,11 +2229,18 @@ export class Ship {
     const braceTarget = clamp(bt, -0.96, 0.96);
     const bellyBase = (0.35 + 0.95 * windClamp) * (0.15 + 0.85 * polar);
     const flutterBase = 0.012 * windClamp * (1 + (1 - polar) * 2.2);
+    // Task 56: ШТОРМ — КЛИВЕРА УБИРАЮТ: энвалоп гребней доходит до
+    // 6 м и бьёт в нос, низко вырезанное полотно черпает воду
+    // (скрин игрока). Курс-паруса остаются: несущая парусность в
+    // шторм — зарифленные марсели. 0.72 → 1.0 amp01 = плавная уборка
+    const stormJib = clamp((SEA.amp01 - 0.72) / 0.28, 0, 1);
     for (const s of v.sails.sails) {
       // мачта-носитель сломана → парус безжизненно обвисает
       const mastDead = s.mastIndex !== undefined && this.mastFall[s.mastIndex] >= 0;
       // доля постановки этого паруса при текущей скорости хода
-      const setFrac = mastDead ? 0 : smoothstep(s.setAt - 0.38, s.setAt, setTotal);
+      let setFrac = mastDead ? 0 : smoothstep(s.setAt - 0.38, s.setAt, setTotal);
+      // кливер при усилении волнения убирается первым
+      if (!s.square) setFrac *= 1 - stormJib;
       s.furl += ((1 - setFrac) - s.furl) * Math.min(1, dt * (mastDead ? 2.2 : 1.1));
       const sf = 1 - s.furl;
       s.mat.uniforms.uTime.value = time;
