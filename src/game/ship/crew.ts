@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { animateCrewDetail, buildDetailedFigure, detailTris, professionFor } from './crewDetailed';
+import { animateCrewDetail, buildDetailedFigure, detailTris, professionFor, setDetailPoseMode } from './crewDetailed';
 import type { CrewDetailState, DetailEnv } from './crewDetailed';
 import { ShipPreset, hullProfile, gunLayout, wheelZFor, quarterFrontZ } from './buildShip';
 import type { GibPool } from '../fx/gibs';
@@ -94,6 +94,16 @@ export interface CrewFigure {
   wristMount?: THREE.Object3D | null;
   /** Task 40: >0 — фигура МАШЕТ рукой (сек до конца анимации) */
   waveT?: number;
+  // --- Task 77: ПОДЗОРНАЯ ТРУБА капитана («как пистолет») ---
+  /** капитан смотрит в трубу (классика: рука к глазу, труба в руке) */
+  spyOn?: boolean;
+  /** труба в руке (ребёнок руки; видна только при spyOn) */
+  spyObj?: THREE.Object3D | null;
+  /** сложенная труба за поясом (видна когда НЕ смотрит) */
+  spyBelt?: THREE.Object3D | null;
+  /** рука с трубой (плечо-пивот) и её сторона (−1 левая / +1 правая) */
+  spyArm?: THREE.Object3D | null;
+  spySide?: -1 | 1;
   seed: number;
   // ходьба: путь туда-обратно по палубе
   walkA?: number; walkB?: number; // z-границы пути
@@ -797,10 +807,62 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   }
 
   // --- предметы ролей ---
-  if (role === 'captain') {
-    // подзорная труба в правой руке
-    bake(t, new THREE.CylinderGeometry(0.035, 0.05, 0.34, 6), 0xb8912f, torsoW / 2 + 0.14, hipY + 0.18, 0.14,
-      new THREE.Euler(1.1, 0, -0.5));
+  // Task 77: ПОДЗОРНАЯ ТРУБА капитана — «как пистолет»: СЛОЖЕННАЯ
+  // висит за поясом; при активации (T) перекочёвывает в руку и
+  // рука поднимает её к глазу (crew.ts, spyArm). Статический
+  // «вечно в руке» цилиндр (Task 39) убран.
+  let spyObj: THREE.Object3D | null = null;
+  let spyBelt: THREE.Object3D | null = null;
+  let spyArm: THREE.Object3D | null = null;
+  let spySide: -1 | 1 = -1;
+  if (role === 'captain' && (armL || armR)) {
+    // рука БЕЗ крюка (предпочтительно −X, как у детальной модели)
+    spySide = armL && traits.hook !== -1 ? -1 : 1;
+    spyArm = spySide === -1 ? armL! : armR!;
+    const mBrass = new THREE.MeshStandardMaterial({ color: 0xb8912f, metalness: 0.8, roughness: 0.42 });
+    const mLeather = new THREE.MeshStandardMaterial({ color: 0x3a2c1c, roughness: 0.9 });
+    // ТРУБА В РУКЕ (ось +Z от окуляра к объективу): латунный ствол,
+    // кожаная обмотка хвата, два выдвинутых колена, окуляр-раструб
+    const tube = new THREE.Group();
+    const seg = (rt: number, rb: number, len: number, mat: THREE.Material, z: number) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, len, 8), mat);
+      m.rotation.x = Math.PI / 2;
+      m.position.z = z;
+      tube.add(m);
+      return m;
+    };
+    seg(0.0175, 0.0175, 0.11, mLeather, -0.01);        // обмотка хвата
+    seg(0.014, 0.0145, 0.09, mBrass, 0.075);           // колено 1
+    seg(0.0145, 0.0205, 0.08, mBrass, 0.155);          // колено 2 с раструбом
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.0175, 0.03, 8), mLeather);
+    cup.rotation.x = Math.PI / 2;
+    cup.position.z = -0.075;
+    tube.add(cup);
+    // посадка в КИСТЬ (формула руки mkArmMesh): локоть E → кисть W → H
+    const sx = spySide * (torsoW / 2 + 0.05);
+    const E = new THREE.Vector3(sx * 0.16, -upA, 0.04);
+    const W = new THREE.Vector3(sx * 0.26, -upA - foA * 0.68, 0.04 + foA * 0.64);
+    const H = W.clone().addScaledVector(W.clone().sub(E).normalize(), 0.055);
+    tube.position.copy(H);
+    // поворот — численная калибровка FK (scripts/calib_spy.mjs):
+    // при поднятой к лицу руке труба смотрит ВПЕРЁД от глаза
+    tube.rotation.set(1.249, 0.752 * spySide, -0.644 * spySide);
+    tube.visible = false;
+    spyArm.add(tube);
+    spyObj = tube;
+    // СЛОЖЕННАЯ за поясом (у бедра руки с трубой)
+    const beltTube = new THREE.Group();
+    const bt = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.014, 0.15, 8), mBrass);
+    bt.rotation.z = Math.PI / 2;
+    beltTube.add(bt);
+    const bw = new THREE.Mesh(new THREE.CylinderGeometry(0.0165, 0.0165, 0.05, 8), mLeather);
+    bw.rotation.z = Math.PI / 2;
+    bw.position.x = -0.03;
+    beltTube.add(bw);
+    beltTube.position.set(spySide * (torsoW / 2 + 0.075), hipY + 0.03, -0.05);
+    beltTube.rotation.set(0.12, 0.25, 1.25);
+    group.add(beltTube);
+    spyBelt = beltTube;
   }
   if (role === 'boatswain') {
     // свисток боцмана на груди
@@ -929,6 +991,8 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       skin: traits.skin, shirt: traits.shirt, pants: traits.pants,
       hasHook: traits.hook !== 0, hasPeg: traits.pegLeg !== 0, hasParrot: traits.parrot,
       verts: t.pos.length / 3,
+      // Task 77: труба капитана (за поясом ↔ в руке)
+      spyObj, spyBelt, spyArm, spySide,
     };
   }
   // статичные: ноги вторым мешом (деревянная нога заменяет одну из них)
@@ -1062,6 +1126,11 @@ export interface CrewVisual {
   /** Task 40: капитан РАЗДАЁТ УКАЗАНИЯ — машет рукой (2.2 с);
    *  false — капитана на палубе нет (погиб/смыт) */
   waveCaptain(): boolean;
+  /** Task 77: капитан ПОДНИМАЕТ/ОПУСКАЕТ ПОДЗОРНУЮ ТРУБУ («как
+   *  пистолет»): детальный — фазовый цикл (выхват правой → к глазу
+   *  → колена выдвигаются), классика — труба перекочёвывает за
+   *  поясом↔в руку, рука к глазу. false — капитана нет */
+  captainSpyglass(on: boolean): boolean;
   /** Поражение экипажа вдоль пути снаряда (a→b в ЛОКАЛЬНЫХ координатах
    *  корабля). grape — фигуры падают; ball — разрывает на куски.
    *  Возвращает число убитых (1 фигура = 1 человек). */
@@ -1094,9 +1163,11 @@ export interface CrewVisual {
   /** Task 76: капитан на борту — ИГРОК, выбравший внешность в
    *  начале игры (captainTraits). isPlayer=true — фигура капитана
    *  собрана из настроек игрока; undead — «Чёрная жемчужина»
-   *  (модель игрока-мертвеца); profession — гардероб детальной */
+   *  (модель игрока-мертвеца); profession — гардероб детальной;
+   *  spy (Task 77) — состояние ПОДЗОРНОЙ ТРУБЫ капитана */
   captainInfo(): { isPlayer: boolean; skin: number; shirt: number; pants: number;
-    undead: boolean; profession: string; role: CrewRole } | null;
+    undead: boolean; profession: string; role: CrewRole;
+    spy: { phase: 'holster' | 'draw' | 'observe' | 'lower'; inHand: boolean; ext: number; hand: 'L' | 'R' } } | null;
 }
 
 // temporaries для стрельбы (не аллоцировать в кадре)
@@ -1661,6 +1732,27 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
       cap.waveT = 2.2;
       return true;
     },
+    captainSpyglass(on) {
+      // Task 77: капитан поднимает/опускает ТРУБУ. Детальный —
+      // фазовый цикл (draw→observe / lower→backTo deck); классика —
+      // труба перекочёвывает за поясом↔в руку + рука к глазу
+      const cap = figures.find(f => f.role === 'captain' && !f.dead && f.group.visible);
+      if (!cap) return false;
+      if (cap.detail) {
+        if (on) {
+          // развернуть капитана к носу — вглядываться вдаль
+          cap.group.rotation.y = 0.2;
+          return setDetailPoseMode(cap.detail, 'spyglass');
+        }
+        return setDetailPoseMode(cap.detail, 'deck');
+      }
+      if (!cap.spyObj) return false;
+      cap.spyOn = on;
+      cap.spyObj.visible = on;
+      if (cap.spyBelt) cap.spyBelt.visible = !on;
+      if (on) cap.group.rotation.y = 0.2;
+      return true;
+    },
     killNearPath(a, b, mode, maxCount, radius, shipPos, shipQuat) {
       // ТОЧНОЕ поражение: путь снаряда (a→b, локальные координаты корабля)
       // против вертикальной капсулы КАЖДОЙ фигуры (ноги → голова).
@@ -1824,12 +1916,27 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     },
     captainInfo() {
       if (!capFig) return null;
+      // Task 77: телеметрия ТРУБЫ капитана (e2e): фаза/в руке/выдвижение
+      const sg = capFig.detail?.spyglass
+        ? {
+          phase: capFig.detail.spyglass.phase,
+          inHand: capFig.detail.spyglass.inHand,
+          ext: +capFig.detail.spyglass.ext.toFixed(2),
+          hand: capFig.detail.spyglass.arm,
+        }
+        : {
+          phase: (capFig.spyOn ? 'observe' : 'holster') as 'observe' | 'holster',
+          inHand: !!capFig.spyOn,
+          ext: capFig.spyOn ? 1 : 0,
+          hand: capFig.spySide === 1 ? ('R' as const) : ('L' as const),
+        };
       return {
         isPlayer: capIsPlayer,
         skin: capFig.skin, shirt: capFig.shirt, pants: capFig.pants,
         undead: !!capFig.group.userData.undead,
         profession: capFig.detail ? capFig.detail.profession : 'classic',
         role: capFig.role,
+        spy: sg,
       };
     },
     update(dt, time, ship) {
@@ -1991,6 +2098,12 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
       const stroke = ship.stroke;
       for (const f of figures) {
         if (!f.group.visible || f.dead) continue;
+        // Task 77: капитан в ИНТЕРАКТИВНОЙ ПОЗЕ (смотрит в ТРУБУ) —
+        // телом управляет animateCrewDetail; фигура замерла на месте
+        if (f.detail && f.detail.pose !== 'deck') {
+          if (f.legL && f.legR) { f.legL.rotation.x *= 0.85; f.legR.rotation.x *= 0.85; }
+          continue;
+        }
         // ========================================================
         // Task 45: СТРЕЛОК НА БОЕВОМ ПОСТУ — до основной анимации:
         // под атакой фигура БЕЖИТ на пост вдоль борта угрози и
@@ -2221,6 +2334,15 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
             // кот-капитан: воодушевлённо прыгает на месте
             f.group.position.y += Math.abs(Math.sin(time * 9)) * 0.08;
           }
+        }
+        // Task 77: КАПИТАН СМОТРИТ В ТРУБУ (классика) — рука с трубой
+        // поднята к лицу (углы — калибровка FK scripts/calib_spy.mjs),
+        // лёгкая живая дрожь; перекрывает махи ходьбы (труба —
+        // ребёнок руки, следует за ней)
+        if (f.spyOn && f.spyArm) {
+          const inward = f.spySide === -1 ? 1 : -1;
+          f.spyArm.rotation.x = -1.537 + Math.sin(time * 1.8 + f.phase) * 0.015;
+          f.spyArm.rotation.z = 0.798 * inward + Math.cos(time * 2.2 + f.phase) * 0.012;
         }
       }
     },

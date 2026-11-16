@@ -27,6 +27,7 @@ import { buildCats, CAT_NAMES, CAT_PRICE, MAX_SHIP_CATS, type CatsVisual } from 
 import { BoatLaunch } from './ship/launch';
 import { SkySystem } from './fx/sky';
 import { WeatherSystem } from './fx/weather';
+import { SpyglassFX } from './fx/spyglassFx';
 import { AudioSys } from './audio/audio';
 import { AIShip } from './ai/ai';
 import { GameSettings, loadSettings, saveSettings, rollStartingAmmo, type FxSettings, type PhysicsSettings, type PhysicsMode, type WireframeSettings } from './core/settings';
@@ -234,16 +235,28 @@ export class Game {
   private looted = new Set<Ship>();
   /** Task 51: ПОДЗОРНАЯ ТРУБА поднята (FOV ×4) */
   spyglassOn = false;
+  /** Task 77: СТЕКЛО ТРУБЫ — пост-процесс «взгляд сквозь оптику»
+   *  (зерно/пыль/царапины/хроматика/бочка); включается, пока
+   *  spyglassOn, с плавным blend */
+  private spyFx = new SpyglassFX();
 
   /** Task 51: поднять/опустить подзорную трубу: в прицеле нельзя */
   toggleSpyglass(): boolean {
     if (this.combat.aim.active || this.docked) return this.spyglassOn;
     this.spyglassOn = !this.spyglassOn;
     this.rig.spyglass = this.spyglassOn;
+    // Task 77: капитан поднимает/опускает ТРУБУ («как пистолет»)
+    this.player.crew3d?.captainSpyglass(this.spyglassOn);
     this.pushMessage(this.spyglassOn
       ? `Подзорная труба поднята (×${this.rig.spyZoom.toFixed(0)}, колесо мыши — зум)`
       : 'Труба опущена');
     return this.spyglassOn;
+  }
+
+  /** Task 77: после пересборки экипажа/смены корабля капитан
+   *  продолжает смотреть в трубу, если она поднята */
+  private syncCaptainSpyglass() {
+    if (this.spyglassOn) this.player.crew3d?.captainSpyglass(true);
   }
 
   docked = false;
@@ -320,6 +333,12 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.06;
+    // Task 77: буфер пост-процесса ТРУБЫ под размер канваса
+    {
+      const size = new THREE.Vector2();
+      this.renderer.getDrawingBufferSize(size);
+      this.spyFx.resize(size.x, size.y, this.renderer.capabilities.isWebGL2 === true);
+    }
 
     this.input = new InputManager(canvas);
     this.input.setPreventCodes(this.preventCodes());
@@ -601,6 +620,7 @@ export class Game {
         a.ship.crewDetailZone = -1;   // сброс LOD-зоны: пересчитается
       }
       this.crewLodT = 0;              // и сразу проверить дистанции
+      this.syncCaptainSpyglass();     // Task 77: труба не теряется
       this.pushMessage(g.crewDetail === 'detailed'
         ? 'Экипаж: ДЕТАЛЬНЫЕ фигурки (скелет, лица, кисти, обувь)'
         : 'Экипаж: классические фигурки');
@@ -609,6 +629,7 @@ export class Game {
     // (NPC-корабли остаются с матросами: коты — только у игрока)
     if (prev.gameplay.catsInsteadOfCrew !== s.gameplay.catsInsteadOfCrew) {
       this.player.rebuildCrew(s.gameplay.catsInsteadOfCrew);
+      this.syncCaptainSpyglass();     // Task 77: труба не теряется
       this.pushMessage(s.gameplay.catsInsteadOfCrew
         ? '🐱 Экипаж заменён котами: капитан-кот у штурвала, боцман-кот у шпиля, канониры-коты таскают ядра'
         : 'Экипаж снова из матросов');
@@ -618,6 +639,7 @@ export class Game {
     // капитана на палубе из НОВОГО выбора игрока
     if (JSON.stringify(prev.player) !== JSON.stringify(s.player)) {
       this.player.setCaptainTraits(appearanceToTraits(s.player));
+      this.syncCaptainSpyglass();     // Task 77: труба не теряется
     }
     // ===== Task 46: МОДЕЛЬ КОРПУСА — дощатая ↔ обычная =====
     if (prev.gameplay.hullModel !== s.gameplay.hullModel) {
@@ -1454,6 +1476,7 @@ export class Game {
     this.applySkins(np);
     this.player = np;
     this.combat.player = np;
+    this.syncCaptainSpyglass();       // Task 77: капитан продолжает смотреть в трубу
     // шлюпка нового корабля — свой контроллер спуска (след пены
     // старой шлюпки снимается со сцены)
     this.boatLaunch?.dispose();
@@ -2076,6 +2099,8 @@ export class Game {
     if (this.combat.aim.active && this.spyglassOn) {
       this.spyglassOn = false;
       this.rig.spyglass = false;
+      // Task 77: капитан складывает трубу
+      this.player.crew3d?.captainSpyglass(false);
     }
     if (inp.pressed(c.aimPort)) {
       this.combat.toggleAim(-1);
@@ -2618,7 +2643,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string }[] }; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[] };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string }[] }; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -3018,6 +3043,15 @@ export class Game {
     };
     // Task 56: правила экипажа (задержка выхода подмены — e2e)
     dbg.__crewRules = () => ({ ...CREW_RULES });
+    // Task 77: телеметрия ТРУБЫ — состояние капитана + пост-процесс
+    dbg.__spyglassInfo = () => ({
+      on: this.spyglassOn,
+      fov: +this.rig.camera.fov.toFixed(2),
+      zoom: +this.rig.spyZoom.toFixed(1),
+      fx: this.spyFx.info(),
+      captain: this.player.crew3d.captainInfo()?.spy ?? null,
+      hud: this.hud.spyglass,
+    });
     // Task 55/56: мертвецы — какие корабли прокляты (e2e/VLM)
     dbg.__undeadShips = () => this.aiShips
       .filter(a => !a.ship.sunk && a.ship.crewUndeadOpt)
@@ -3357,8 +3391,28 @@ export class Game {
     }
 
     this.updateHud();
-    if (!this.debugNoRender) this.renderer.render(this.scene, this.rig.camera);
+    // Task 77: сглаживание blend ТРУБЫ — в СИМУЛЯЦИИ (e2e шагает
+    // мир без рендера; blend/зерно должны жить и там)
+    {
+      const want = this.spyglassOn ? 1 : 0;
+      this.spyFx.blend += (want - this.spyFx.blend) * Math.min(1, dt * 4.5);
+      if (!want && this.spyFx.blend < 0.001) this.spyFx.blend = 0;
+      this.spyFx.tick(dt);
+    }
+    if (!this.debugNoRender) this.renderFrame();
     this.input.endFrame();
+  }
+
+  /** Task 77: кадр на экран — с ПОСТ-ПРОЦЕССОМ ТРУБЫ («взгляд
+   *  сквозь стекло»: зерно/пыль/царапины/хроматика), пока она
+   *  поднята; blend сглажен в stepFrame — вход/выход без рывка */
+  private renderFrame() {
+    if (this.spyFx.active) {
+      this.spyFx.render(this.renderer, this.scene, this.rig.camera);
+    } else {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.scene, this.rig.camera);
+    }
   }
 
   /** E2E: не рендерить кадры внутри stepDebug (гнать только физику) */
@@ -3480,7 +3534,9 @@ export class Game {
     } finally {
       this.debugNoRender = false;
     }
-    this.renderer.render(this.scene, this.rig.camera);
+    // Task 77: финальный кадр e2e — ЧЕРЕЗ ТРУБУ, если она поднята
+    // (скриншот показывает эффект стекла)
+    this.renderFrame();
   }
 
   private _v1 = new THREE.Vector3();
@@ -3540,6 +3596,12 @@ export class Game {
   private onResize = () => {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.rig.resize(window.innerWidth / window.innerHeight);
+    // Task 77: буфер ТРУБЫ следует за канвасом
+    {
+      const size = new THREE.Vector2();
+      this.renderer.getDrawingBufferSize(size);
+      this.spyFx.resize(size.x, size.y, this.renderer.capabilities.isWebGL2 === true);
+    }
     this.updateParticleScale();
   };
 
@@ -3563,6 +3625,7 @@ export class Game {
     this.envRT?.dispose();
     this.envTex?.dispose();
     this.pmrem?.dispose();
+    this.spyFx.dispose();            // Task 77: буфер трубы
     this.renderer.dispose();
     this.bus.clear();
   }

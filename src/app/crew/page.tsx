@@ -38,10 +38,11 @@ const PROFESSIONS: { id: DetailProfession; label: string; icon: string;
   { id: 'captain', label: 'Капитан', icon: '🎓', kind: 'pirate', role: 'captain' },
 ];
 
-const MODES: { id: 'idle' | 'combat' | 'pistol'; label: string }[] = [
+const MODES: { id: 'idle' | 'combat' | 'pistol' | 'spyglass'; label: string }[] = [
   { id: 'idle', label: 'Дозор на палубе' },
   { id: 'combat', label: 'Боевая стойка' },
   { id: 'pistol', label: 'Выстрел из пистолета' },
+  { id: 'spyglass', label: '🔭 Труба' },
 ];
 
 interface CrewViewInfo {
@@ -65,7 +66,7 @@ export default function CrewViewPage() {
   const [undead, setUndead] = useState(false);
   const [info, setInfo] = useState<CrewViewInfo | null>(null);
   const rebuildRef = useRef<((p: DetailProfession, s: number, u: boolean) => void) | null>(null);
-  const poseRef = useRef<((m: 'idle' | 'combat' | 'pistol') => void) | null>(null);
+  const poseRef = useRef<((m: 'idle' | 'combat' | 'pistol' | 'spyglass') => void) | null>(null);
   const windRef = useRef<((w: number) => void) | null>(null);
 
   useEffect(() => {
@@ -383,11 +384,39 @@ export default function CrewViewPage() {
           if (d > skirtDx) skirtDx = d;
         }
       }
+      // Task 77: ГЕОМЕТРИЯ трубы (калибровка/e2e): где окуляр,
+      // куда смотрит ось, расстояние до головы, скрыта ли сабля
+      let spyGeo: null | {
+        eye: number[]; axis: number[]; head: number[];
+        distEyeHead: number; cutlassVisible: boolean | null;
+      } = null;
+      if (detail.spyglass && detail.spyglass.inHand) {
+        const obj = detail.spyglass.obj;
+        const wp = obj.getWorldPosition(new THREE.Vector3());
+        const wq = obj.getWorldQuaternion(new THREE.Quaternion());
+        const axis = new THREE.Vector3(0, 0, 1).applyQuaternion(wq);
+        const eye = wp.clone().addScaledVector(axis, -0.088);
+        const head = detail.head.getWorldPosition(new THREE.Vector3());
+        spyGeo = {
+          eye: eye.toArray().map(v => +v.toFixed(3)),
+          axis: axis.toArray().map(v => +v.toFixed(3)),
+          head: head.toArray().map(v => +v.toFixed(3)),
+          distEyeHead: +eye.distanceTo(head).toFixed(3),
+          cutlassVisible: detail.cutlassObj ? detail.cutlassObj.visible : null,
+        };
+      }
       return {
         profession: detail.profession,
         pose: detail.pose,
         pistolPhase: detail.pistol ? detail.pistol.phase : null,
         pistolInHand: detail.pistol ? detail.pistol.inHand : false,
+        // Task 77: подзорная труба — фазы/кисть/выдвижение колен
+        spyPhase: detail.spyglass ? detail.spyglass.phase : null,
+        spyInHand: detail.spyglass ? detail.spyglass.inHand : false,
+        spyExt: detail.spyglass ? +detail.spyglass.ext.toFixed(3) : 0,
+        spySections: detail.spyglass ? detail.spyglass.sections.length : 0,
+        spyArm: detail.spyglass ? detail.spyglass.arm : null,
+        spyGeo,
         windItems: detail.wind.map(w => w.kind),
         featherDx: +featherDx.toFixed(4),
         skirtDx: +skirtDx.toFixed(4),
@@ -398,7 +427,7 @@ export default function CrewViewPage() {
       };
     };
     (window as unknown as Record<string, unknown>).__crewSetPose =
-      (m: 'idle' | 'combat' | 'pistol') => { if (detail) return setDetailPoseMode(detail, m); return false; };
+      (m: 'idle' | 'combat' | 'pistol' | 'spyglass') => { if (detail) return setDetailPoseMode(detail, m); return false; };
     // Task 76: детерминированный шаг времени для e2e (rAF в headless
     // не гарантирован): проталкивает кадр и возвращает виртуальное время
     (window as unknown as Record<string, unknown>).__crewStep =
@@ -415,6 +444,9 @@ export default function CrewViewPage() {
         hand: [0.34, 0.98, 0.72, 0.15, 0.66, 0.14],
         feet: [0.25, 0.34, 0.90, 0, 0.13, 0.06],
         back: [0, 1.35, -0.7, 0, 1.2, 0],
+        // Task 77: труба у лица — ПРОФИЛЬ сбоку (перпендикулярно
+        // оси трубы: ось +Z, камера с +X — труба читается в длину)
+        tube: [1.35, 1.44, 0.52, 0, 1.33, 0.16],
       };
       const v = V[view] ?? V.full;
       camera.position.set(v[0], v[1], v[2]);

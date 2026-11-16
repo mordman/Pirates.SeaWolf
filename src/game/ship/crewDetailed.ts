@@ -637,7 +637,7 @@ export interface CrewDetailState {
   pelvisBaseY: number;
   /** режим позы: 'deck' — фигурой управляет crew.ts (только
    *  дыхание/баланс/осмотр); иначе — интерактивные позы превью */
-  pose: 'deck' | 'idle' | 'combat' | 'pistol';
+  pose: 'deck' | 'idle' | 'combat' | 'pistol' | 'spyglass';
   poseT: number;
   /** выстрел из пистолета: фазы и объекты перекочёвки за пояс↔рука */
   pistol: {
@@ -649,8 +649,27 @@ export interface CrewDetailState {
     inHand: boolean;
     recoil: number;
   } | null;
+  /** Task 77: ПОДЗОРНАЯ ТРУБА — «как пистолет»: висит СЛОЖЕННОЙ
+   *  за поясом, перекочёвывает в кисть, поднимается к глазу
+   *  и РАСКРЫВАЕТСЯ (латунные колена выдвигаются). ext — выдвижение
+   *  колен 0..1; arm — кисть с трубой ('R' правая / 'L' если
+   *  правая занята крюком); backTo — поза после складывания */
+  spyglass: {
+    phase: 'holster' | 'draw' | 'observe' | 'lower';
+    t: number;
+    obj: THREE.Group;               // сама труба (ось объектива +Z)
+    beltHome: THREE.Object3D;       // гнездо за поясом (бедро руки с трубой)
+    handMount: THREE.Object3D;      // маунт в кисти с трубой
+    inHand: boolean;
+    ext: number;                    // выдвижение колен 0..1
+    sections: THREE.Object3D[];     // выдвижные колена (скользят по Z)
+    arm: 'R' | 'L';                 // рука с трубой (правая занята крюком → левая)
+    backTo: 'idle' | 'combat' | 'deck' | null;
+  } | null;
   undead: boolean;
   profession: DetailProfession;
+  /** Task 77: САБЛЯ в кисти — прячется, пока в руке ТРУБА */
+  cutlassObj: THREE.Object3D | null;
   /** телеметрия снаряжения (e2e): заряды бандольера («двенадцать
    *  апостолов»), сабля в руке, перо на шляпе */
   charges: number;
@@ -1405,6 +1424,67 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
     pistol = { phase: 'holster', t: 0, obj: pistolObj, beltHome, handMount, inHand: false, recoil: 0 };
   }
 
+  // ================== ПОДЗОРНАЯ ТРУБА КАПИТАНА (Task 77) ==================
+  // «Как пистолет»: висит СЛОЖЕННОЙ за поясом у бедра; при активации
+  // перекочёвывает в кисть, поднимается к глазу и РАСКРЫВАЕТСЯ —
+  // два латунных колена выдвигаются из ствола. Ось трубы:
+  // окуляр −Z → объектив +Z (окуляром к глазу).
+  // Правая кисть занята КРЮКОМ → труба в левой (позы зеркалятся).
+  let spyglass: CrewDetailState['spyglass'] = null;
+  if (prof === 'captain') {
+    const armR = traits.hook !== 1;            // правая рука свободна?
+    const spyBelt = joint(pelvis, armR ? -0.148 : 0.148, 0.01 * h, -0.085, 'spyBelt');
+    const spyHand = joint(armR ? handR : handL, 0, -0.042, 0.018, 'spyHand');
+    const mkSpy = (): THREE.Group => {
+      const g = new THREE.Group();
+      const mBrass = brassMat();
+      const mLeather = leatherMat(undead ? 0x241c12 : 0x3a2c1c);
+      const mGlass = new THREE.MeshStandardMaterial({
+        color: 0x16352c, roughness: 0.12, metalness: 0.35,
+      });
+      // ствол (НЕПОДВИЖЕН): латунь + кожаная обмотка хвата
+      const body = latheSmooth([[0.0162, -0.062], [0.0174, -0.03], [0.0174, 0.03], [0.016, 0.05]], 8, 12);
+      body.rotateX(Math.PI / 2);
+      mesh(body, mBrass, g);
+      const wrap = latheSmooth([[0.019, -0.026], [0.0195, 0], [0.019, 0.026]], 6, 12);
+      wrap.rotateX(Math.PI / 2);
+      mesh(wrap, mLeather, g);
+      // окуляр: кожаный наглазник-раструб (длинный конус — прижимается
+      // к глазнице, «прислонён» к лицу) + тёмная линзочка
+      const cup = latheSmooth([[0.0122, -0.108], [0.0158, -0.088], [0.0172, -0.062]], 6, 12);
+      cup.rotateX(Math.PI / 2);
+      mesh(cup, mLeather, g);
+      const eye = cyl(0.0098, 0.0098, 0.004, mGlass, g, 0, 0, -0.0855, 12);
+      eye.rotation.x = Math.PI / 2;
+      // КОЛЕНО 1 (выдвижное): латунная трубка + ферулы-кольца
+      const sec1 = joint(g, 0, 0, 0, 'spySec1');
+      const t1 = latheSmooth([[0.0134, 0.03], [0.0148, 0.05], [0.0148, 0.095]], 6, 12);
+      t1.rotateX(Math.PI / 2);
+      mesh(t1, mBrass, sec1);
+      mesh(new THREE.TorusGeometry(0.0164, 0.0022, 6, 12), mBrass, sec1, 0, 0, 0.03);
+      mesh(new THREE.TorusGeometry(0.0154, 0.002, 6, 12), mBrass, sec1, 0, 0, 0.093);
+      // КОЛЕНО 2 (объективное): раструб с линзой
+      const sec2 = joint(g, 0, 0, 0, 'spySec2');
+      const t2 = latheSmooth([[0.013, 0.088], [0.0146, 0.11], [0.0172, 0.128], [0.0206, 0.142]], 8, 12);
+      t2.rotateX(Math.PI / 2);
+      mesh(t2, mBrass, sec2);
+      mesh(new THREE.TorusGeometry(0.0216, 0.0024, 6, 14), mBrass, sec2, 0, 0, 0.139);
+      const lens = cyl(0.0182, 0.0182, 0.005, mGlass, sec2, 0, 0, 0.137, 14);
+      lens.rotation.x = Math.PI / 2;
+      return g;
+    };
+    const spyObj = mkSpy();
+    // за поясом: лежит ВДОЛЬ ремня у бедра руки с трубой (окуляром вперёд)
+    spyBelt.add(spyObj);
+    spyObj.position.set(0, -0.018, 0.004);
+    spyObj.rotation.set(0.10, armR ? -1.18 : 1.18, armR ? 0.34 : -0.34);
+    spyglass = {
+      phase: 'holster', t: 0, obj: spyObj, beltHome: spyBelt, handMount: spyHand,
+      inHand: false, ext: 0, sections: spyObj.children.filter(c => c.name === 'spySec1' || c.name === 'spySec2'),
+      arm: armR ? 'R' : 'L', backTo: null,
+    };
+  }
+
   // ================== АБОРДАЖНАЯ САБЛЯ (CUTLASS) ==================
   // Изогнутый клинок ExtrudeGeometry по кривым Безье, ЛАТУННАЯ
   // ГАРДА-ЧАШКА, ореховая рукоять с проволочной обмоткой — в руке
@@ -1478,10 +1558,15 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   };
   // сабля в кисти: клинок вперёд-вниз от кулака (локально +Z кисти);
   // пальцы этой кисти УЖЕ запечены СГУБТОМ вокруг рукояти (см. mkArm)
-  const cutlass = mkCutlass(undead && prof === 'captain');
-  cutlass.position.set(0, -0.055, 0.03);
-  cutlass.rotation.x = Math.PI / 2 + 0.18;
-  swordHand.add(cutlass);
+  // Task 77: пока в руке ТРУБА — сабля скрыта (рука одна!)
+  let cutlassObj: THREE.Object3D | null = null;
+  {
+    const cutlass = mkCutlass(undead && prof === 'captain');
+    cutlass.position.set(0, -0.055, 0.03);
+    cutlass.rotation.x = Math.PI / 2 + 0.18;
+    swordHand.add(cutlass);
+    cutlassObj = cutlass;
+  }
   // НОЖНЫ на противоположном бедре (кожа + латунный наконечник)
   {
     const scabX = -swordSide * 0.155;
@@ -1542,7 +1627,9 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
     pelvisBaseY: pelvis.position.y,
     pose: 'deck', poseT: 0,
     pistol,
+    spyglass,
     undead, profession: prof,
+    cutlassObj,
     charges: bandolierBuilt ? 12 : 0,
     hasCutlass: true,
     hasFeather: !!featherMesh,
@@ -1718,17 +1805,44 @@ function updateFx(dt: number) {
 // РЕЖИМЫ ПОЗЫ (превью /crew; на палубе pose='deck' — не трогает
 // руки/ноги, ими управляет crew.ts: ходьба/посты/махи)
 // ------------------------------------------------------------
-/** Включить интерактивный режим (idle/combat/pistol). 'pistol'
+/** Интерактивный режим фигуры (превью и палуба) */
+export type DetailPoseMode = 'idle' | 'combat' | 'pistol' | 'spyglass';
+
+/** Включить интерактивный режим (idle/combat/pistol/spyglass);
+ *  'deck' — вернуть фигуру под управление crew.ts. 'pistol'
  *  запускает ФАЗОВУЮ последовательность выстрела (выхват левой
- *  рукой → прицел → вспышка+отдача+дым → опускание → за пояс) */
-export function setDetailPoseMode(d: CrewDetailState, mode: 'idle' | 'combat' | 'pistol'): boolean {
+ *  рукой → прицел → вспышка+отдача+дым → опускание → за пояс);
+ *  'spyglass' (Task 77) — цикл ТРУБЫ (выхват правой → к глазу →
+ *  колена выдвигаются → при смене режима: сложить → за пояс).
+ *  Труба и пистолет взаимоисключимы в цикле. */
+export function setDetailPoseMode(d: CrewDetailState, mode: DetailPoseMode | 'deck'): boolean {
+  if (mode === 'spyglass') {
+    if (!d.spyglass) return false;
+    if (d.spyglass.phase !== 'holster' && d.spyglass.phase !== 'lower') return false;
+    if (d.pistol && d.pistol.phase !== 'holster') return false;
+    d.spyglass.phase = 'draw';
+    d.spyglass.t = 0;
+    d.spyglass.backTo = null;
+    d.pose = 'spyglass';
+    d.poseT = 0;
+    return true;
+  }
   if (mode === 'pistol') {
     if (!d.pistol || d.pistol.phase !== 'holster') return false;
+    // Task 77: пока ТРУБА в цикле — пистолет не выхватываем
+    if (d.spyglass && d.spyglass.phase !== 'holster') return false;
     d.pistol.phase = 'draw';
     d.pistol.t = 0;
     d.pose = 'pistol';
     d.poseT = 0;
     return true;
+  }
+  // Task 77: труба АКТИВНА — сначала фаза lower (сложить колена,
+  // вернуть за пояс), поза сменится на mode ПОСЛЕ её завершения
+  if (d.spyglass && d.spyglass.phase !== 'holster') {
+    if (d.spyglass.phase !== 'lower') { d.spyglass.phase = 'lower'; d.spyglass.t = 0; }
+    d.spyglass.backTo = mode as 'idle' | 'combat' | 'deck';
+    return true;   // поза ещё 'spyglass' — докручивает lower
   }
   // пистолет вернуть за пояс (если не в цикле выстрела)
   if (d.pistol && d.pistol.phase !== 'holster') {
@@ -1747,6 +1861,9 @@ export function setDetailPoseMode(d: CrewDetailState, mode: 'idle' | 'combat' | 
 
 /** фазы выстрела по времени, с */
 const PISTOL_T = { draw: 0.55, aim: 0.8, fire: 1.0, lower: 0.6 };
+
+/** Task 77: фазы трубы по времени, с (observe — до смены режима) */
+const SPY_T = { draw: 0.7, lower: 0.6 };
 
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -1782,7 +1899,7 @@ function updatePistolPhase(d: CrewDetailState, dt: number) {
   } else if (p.phase === 'fire') {
     p.recoil = Math.max(0, p.recoil - dt * 3.2);
     if (p.t >= PISTOL_T.fire) { p.phase = 'lower'; p.t = 0; }
-  } else if (p.phase === 'lower') {
+    } else if (p.phase === 'lower') {
     p.recoil = Math.max(0, p.recoil - dt * 3.2);
     if (p.t >= PISTOL_T.lower) {
       // за пояс; последовательность завершена — назад в «дозор»
@@ -1796,6 +1913,58 @@ function updatePistolPhase(d: CrewDetailState, dt: number) {
       d.pose = 'idle';
       d.poseT = 0;
     }
+  }
+}
+
+/** Task 77: ФАЗЫ ТРУБЫ (как пистолет): draw — выхват правой рукой
+ *  (в середине фазы труба перекочёвывает за пояс→кисть, колена
+ *  начинают выдвигаться), observe — у глаза (полное выдвижение),
+ *  lower — сложить и вернуть за пояс; затем поза backTo */
+function updateSpyglassPhase(d: CrewDetailState, dt: number) {
+  const p = d.spyglass!;
+  const mr = p.arm === 'R' ? 1 : -1;      // зеркало (правая/левая рука)
+  p.t += dt;
+  if (p.phase === 'draw') {
+    // в середине фазы труба ПЕРЕКАЧЁВЫВАЕТСЯ из-за пояса в кисть
+    if (!p.inHand && p.t > 0.32) {
+      p.handMount.attach(p.obj);
+      p.obj.position.set(0, -0.03, 0.012);
+      // поворот в кисти — калибровка FK: ось трубы вперёд от глаза
+      p.obj.rotation.set(-3.387, 0, 0.366 * mr);
+      p.inHand = true;
+      // Task 77: сабля в этой же кисти — убрать (не «три руки»)
+      if (d.cutlassObj) d.cutlassObj.visible = false;
+    }
+    // колена трогаются ещё по пути к глазу (на треть выдвижения)
+    const target = Math.max(0, (p.t - 0.3) / 0.55) * 0.35;
+    p.ext += (target - p.ext) * Math.min(1, dt * 6);
+    if (p.t >= SPY_T.draw) { p.phase = 'observe'; p.t = 0; }
+  } else if (p.phase === 'observe') {
+    // У ГЛАЗА: колена полностью выдвинуты — капитан вглядывается вдаль
+    p.ext += (1 - p.ext) * Math.min(1, dt * 4);
+  } else if (p.phase === 'lower') {
+    // сложить колена и вернуть за пояс
+    p.ext += (0 - p.ext) * Math.min(1, dt * 7);
+    if (p.t >= SPY_T.lower) {
+      if (p.inHand) {
+        p.beltHome.add(p.obj);
+        p.obj.position.set(0, -0.018, 0.004);
+        p.obj.rotation.set(0.10, -1.18 * mr, 0.34 * mr);
+        p.inHand = false;
+        // сабля возвращается в кисть
+        if (d.cutlassObj) d.cutlassObj.visible = true;
+      }
+      p.phase = 'holster';
+      p.ext = 0;                       // колена сложены до конца
+      const back = p.backTo ?? 'idle';
+      p.backTo = null;
+      d.pose = back;
+      d.poseT = 0;
+    }
+  }
+  // выдвижные колена скользят по оптической оси (+Z)
+  for (let i = 0; i < p.sections.length; i++) {
+    p.sections[i].position.z = p.ext * (i === 0 ? 0.052 : 0.104);
   }
 }
 
@@ -1858,6 +2027,41 @@ function poseTargets(d: CrewDetailState): Record<string, [number, number, number
       t.elL = [-1.1, 0, 0];
       t.spine = [0.04, -0.08, 0];
     }
+  } else if (d.pose === 'spyglass' && d.spyglass) {
+    // Task 77: ТРУБА — рука с трубой несёт её к глазу, вторая
+    // поддерживает ствол снизу (двуручный хват морского офицера).
+    // Зеркалим по руке с трубой (правая занята крюком → левая)
+    const ph = d.spyglass.phase;
+    const mr = d.spyglass.arm === 'R' ? 1 : -1;
+    const armSh = mr === 1 ? 'shR' : 'shL';      // рука с ТРУБОЙ
+    const armEl = mr === 1 ? 'elR' : 'elL';
+    const supSh = mr === 1 ? 'shL' : 'shR';      // рука-подпорка
+    const supEl = mr === 1 ? 'elL' : 'elR';
+    if (ph === 'draw') {
+      // рука с трубой тянется К ПОЯСУ (наклон корпуса к бедру)
+      t[armSh] = [0.30, -0.32 * mr, -0.10 * mr];
+      t[armEl] = [-0.55, 0, -0.10 * mr];
+      t.spine = [0.15, 0.10 * mr, 0];
+    } else if (ph === 'observe') {
+      // ТРУБА У ГЛАЗА (углы — численная калибровка FK scripts/calib_spy.mjs:
+      // окуляр в 3 см от правого глаза, ось трубы вперёд к горизонту,
+      // локоть согнут — не «вытянутая рука»); вторая кисть НА СТВОЛЕ
+      t[armSh] = [-1.00, 0.73 * mr, -0.40 * mr];
+      t[armEl] = [-1.81, 0, -0.26 * mr];
+      t[supSh] = [-2.61, -0.39 * mr, -0.95 * mr];
+      t[supEl] = [0, 0, -0.05 * mr];
+      t.spine = [0.02, -0.06 * mr, 0];
+      t.chest = [0.02, -0.04 * mr, 0];
+      t[armSh][1] += Math.sin(d.poseT * 0.5) * 0.06       // скан горизонта
+                   + Math.sin(d.poseT * 5.3) * 0.010;      // тремор плеча
+      t[armSh][0] += Math.sin(d.poseT * 6.1) * 0.012;
+      t[armEl][0] += Math.sin(d.poseT * 5.7) * 0.014;
+      t[supEl][0] += Math.sin(d.poseT * 4.9 + 1.1) * 0.05;
+    } else if (ph === 'lower') {
+      t[armSh] = [0.18, -0.12 * mr, -0.24 * mr];
+      t[armEl] = [-0.98, 0, -0.10 * mr];
+      t.spine = [0.04, 0.05 * mr, 0];
+    }
   } else {
     // IDLE (дозор): перенос веса, руки свободно
     const sw = Math.sin(d.poseT * 0.5);
@@ -1877,6 +2081,9 @@ function poseTargets(d: CrewDetailState): Record<string, [number, number, number
  *  режимы idle/combat/pistol с фазовым выстрелом */
 export function animateCrewDetail(d: CrewDetailState, t: number, dt: number, env?: DetailEnv) {
   updateFx(dt);
+  // Task 77: ФАЗЫ ТРУБЫ идут во всех позах (на палубе — пока
+  // складывается после переключения обратно в 'deck')
+  if (d.spyglass && d.spyglass.phase !== 'holster') updateSpyglassPhase(d, dt);
   // ---------- ДЫХАНИЕ: расширение грудной клетки + плечи ----------
   const br = Math.sin(t * 1.45 + d.breathePh);
   const k = 1 + br * 0.022;
@@ -1900,7 +2107,29 @@ export function animateCrewDetail(d: CrewDetailState, t: number, dt: number, env
     d.kneeR.rotation.x = flex * 0.3;
   }
   // ---------- ОСМОТР ГОРИЗОНТА (повороты головы) ----------
-  if (d.pose === 'deck' || d.pose === 'idle') {
+  // Task 77: в режиме ТРУБЫ голова ведёт себя по фазе — смотрит на
+  // пояс при выхвате, прижата к окуляру при наблюдении (скан)
+  if (d.pose === 'spyglass' && d.spyglass) {
+    const ph = d.spyglass.phase;
+    const mr = d.spyglass.arm === 'R' ? 1 : -1;
+    if (ph === 'draw') {
+      d.head.rotation.x += (0.30 - d.head.rotation.x) * Math.min(1, dt * 6);
+      d.head.rotation.y += (-0.34 * mr - d.head.rotation.y) * Math.min(1, dt * 6);
+      d.head.rotation.z *= 0.9;
+    } else if (ph === 'observe') {
+      // глаз к окуляру: наклон головы К ТРУБЕ + взгляд чуть выше
+      // горизонта (дальний рейд) + медленный скан
+      d.head.rotation.x += (-0.06 - d.head.rotation.x) * Math.min(1, dt * 6);
+      d.head.rotation.y += (Math.sin(d.poseT * 0.5) * 0.14 - 0.10 * mr - d.head.rotation.y)
+        * Math.min(1, dt * 6);
+      d.head.rotation.z += (0.16 * mr - d.head.rotation.z) * Math.min(1, dt * 4);
+    } else {
+      d.head.rotation.x += (0.12 - d.head.rotation.x) * Math.min(1, dt * 6);
+      d.head.rotation.y *= 0.92;
+      d.head.rotation.z *= 0.9;
+    }
+    if (d.neck) d.neck.rotation.y = d.head.rotation.y * 0.3;
+  } else if (d.pose === 'deck' || d.pose === 'idle') {
     const sn = Math.sin(t * 0.38 + d.breathePh * 2.3);
     const scan = Math.sign(sn) * Math.pow(Math.abs(sn), 0.6) * 0.4;
     d.head.rotation.y = scan;
