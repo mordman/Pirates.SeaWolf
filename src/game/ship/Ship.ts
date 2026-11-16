@@ -1801,11 +1801,15 @@ export class Ship {
       m.rotation.set(0, 0, 0);
       m.position.y = 0;
     }
-    // паруса порванных мачт — целы (КАСКАД ломания отменяется)
+    // паруса порванных мачт — целы (КАСКАД ломания отменяется);
+    // Task 78: реи, съехавшие к пню, — обратно на высоту (homeY)
     for (const s of this.visual.sails.sails) {
       s.mat.uniforms.uDamage.value = 0;
       s.mat.uniforms.uHoleN.value = 0;
       s.furl = 1;
+      if (s.brace && s.brace.userData.homeY !== undefined) {
+        s.brace.position.y = s.brace.userData.homeY as number;
+      }
     }
     for (const h of this.hullHoles) {
       // Task 46: зоны, не дошедшие до стадии 1 (лёгкие удары/выходные
@@ -2397,10 +2401,20 @@ export class Ship {
     // падение мачт: валится с нарастающим ускорением (ease-in),
     // заваливаясь за борт; реи и паруса едут вместе с мачтой (они
     // её потомки), обвязка уже оборвана (breakMast → snapRigging).
-    // Когда топ мачты достаёт воду — фонтан брызг
+    // Когда топ мачты достаёт воду — фонтан брызг.
+    // Task 78 («парус режет корабль у разрушаемых моделей»):
+    // реи сломанной мачты СЪЕЗЖАЮТ К ПНЮ — такелаж мёртв, реи
+    // ничего не держит; упавшая мачта остаётся «голой», и рей с
+    // зарифленным полотном не рассекает корпус/палубу/доски.
     for (let i = 0; i < v.masts.length; i++) {
       const f = this.mastFall[i];
-      if (f >= 0 && f < 1) {
+      if (f < 0) continue;
+      for (const s of v.sails.sails) {
+        if (s.mastIndex !== i || !s.brace) continue;
+        if (s.brace.userData.homeY === undefined) s.brace.userData.homeY = s.brace.position.y;
+        s.brace.position.y += (0.9 - s.brace.position.y) * Math.min(1, dt * 2.4);
+      }
+      if (f < 1) {
         // ускорение падения: 0.30 → 0.62 (мачта «набирает ход»)
         this.mastFall[i] = Math.min(1, f + dt * (0.30 + f * 0.32));
         const k = this.mastFall[i];
@@ -2408,7 +2422,9 @@ export class Ship {
         const lean = (i % 2 === 0 ? 1 : -1) * 0.52;
         v.masts[i].rotation.x = ke * 1.38;
         v.masts[i].rotation.z = ke * lean;
-        v.masts[i].position.y = -ke * 2.1;
+        // Task 78: покой НИЖЕ (−2.6) — мачта заваливается ЗА БОРТ
+        // и лежит концом в воде, а не горизонтально сквозь надстройки
+        v.masts[i].position.y = -ke * 2.6;
         // топ мачты доходит до воды — всплеск
         if (k > 0.62 && !this.mastSplashed[i]) {
           this.mastSplashed[i] = true;

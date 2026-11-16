@@ -6,7 +6,7 @@ import { Water } from './water/Water';
 import { SEA, waterHeightAt, waveEnvelope, windFactor } from './water/waves';
 import { applyBuoyancyConfig, PHYSICS, CONTROLS, BUOYANCY_CONFIG } from './water/buoyancy';
 import { Ship } from './ship/Ship';
-import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, deckPlan, sailAuditAll, type FlagKind } from './ship/buildShip';
+import { PRESETS, setFlagKind, setSailColor, setHullTint, shipPrice, setFigurehead, setDecoration, hullProfile, hullHalfWidthAt, deckPlan, sailAuditAll, buildShip, type FlagKind } from './ship/buildShip';
 import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
@@ -1092,6 +1092,100 @@ export class Game {
   /** Аудит парусов всех пресетов (e2e/VLM) */
   debugSailAudit() {
     return sailAuditAll();
+  }
+
+  /** Task 78: АУДИТ «ПАРУС РЕЖЕТ ДОЩАТЫЙ (разрушаемый) КОРПУС» —
+   *  паруса всех пресетов против ФАКТИЧЕСКИХ боксов досок обшивки
+   *  (PlankSystem: борт/палуба/транец) и, для сравнения, против
+   *  гладкого обвода (hullHalfWidthAt). Прямые паруса проверяются
+   *  и ПРИ БРАСОПКЕ (реи ±0.96 рад — шкоты-углы уходят к оконечностям,
+   *  а у носа/кормы дощатые пояса не сужаются тоньше 0.30 м —
+   *  «тупой клин» режется парусом). Возвращает худшее проникновение
+   *  (м) по каждой модели в обоих режимах корпуса. */
+  debugPlankSailAudit() {
+    type Row = { id: string; name: string; planksMax: number; smoothMax: number; hits: number; worst: string };
+    const out: Row[] = [];
+    const inv = new THREE.Quaternion();
+    const p = new THREE.Vector3();
+    const loc = new THREE.Vector3();
+    const mst = new THREE.Vector3();
+    for (const P of Object.values(PRESETS)) {
+      const vis = buildShip(P, { planking: true });
+      const recs = vis.planks?.records ?? [];
+      let planksMax = 0, smoothMax = 0, hits = 0;
+      let worst = '';
+      const test = (label: string) => {
+        // (а) гладкий корпус: точка внутри обвода НИЖЕ ПАЛУБЫ
+        // (bulwark − 1.0 — между фальшбортами парус легален)
+        const t = THREE.MathUtils.clamp((p.z + P.length / 2) / P.length, 0, 1);
+        const hw = hullHalfWidthAt(P, t, p.y);
+        const bw = hullProfile(t, P).bulwark;
+        if (p.y < bw - 1.05 && Math.abs(p.x) < hw) {
+          smoothMax = Math.max(smoothMax, hw - Math.abs(p.x));
+        }
+        // (б) дощатый корпус: внутри бокса какой-либо доски
+        for (const r of recs) {
+          const ext = Math.max(r.len, r.w, r.thick) * 0.5 + 0.12;
+          if (Math.abs(r.center.z - p.z) > ext) continue;
+          if (Math.abs(r.center.y - p.y) > ext) continue;
+          if (Math.abs(r.center.x - p.x) > ext) continue;
+          inv.copy(r.quat).invert();
+          loc.copy(p).sub(r.center).applyQuaternion(inv);
+          if (Math.abs(loc.x) < r.thick / 2 && Math.abs(loc.y) < r.w / 2
+            && Math.abs(loc.z) < r.len / 2) {
+            const depth = Math.min(
+              r.thick / 2 - Math.abs(loc.x),
+              r.w / 2 - Math.abs(loc.y),
+              r.len / 2 - Math.abs(loc.z));
+            hits++;
+            if (depth > planksMax) {
+              planksMax = depth;
+              worst = `${label}@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`;
+            }
+          }
+        }
+      };
+      for (const sl of vis.sails.sails) {
+        const c = sl.quad.corners;
+        // брасопка: реи прямого паруса поворачиваются вокруг мачты
+        // (±0.96 рад) — шкоты-углы смещаются к носу/корме дугой
+        const braces = sl.square && sl.mastIndex !== undefined ? [0, 0.96, -0.96] : [0];
+        const mast = sl.mastIndex !== undefined ? vis.masts[sl.mastIndex] : null;
+        mst.set(0, 0, mast ? mast.position.z : 0);
+        for (const br of braces) {
+          const cb = br !== 0
+            ? c.map(cc => {
+              const dx = cc.x, dz = cc.z - mst.z;
+              return new THREE.Vector3(
+                dx * Math.cos(br) + dz * Math.sin(br), cc.y,
+                mst.z + dz * Math.cos(br) - dx * Math.sin(br));
+            })
+            : c;
+          for (let iu = 0; iu <= 6; iu++) {
+            for (let iv = 0; iv <= 4; iv++) {
+              const u = iu / 6, w = iv / 4;
+              p.set(
+                (1 - u) * (1 - w) * cb[0].x + u * (1 - w) * cb[1].x + u * w * cb[2].x + (1 - u) * w * cb[3].x,
+                (1 - u) * (1 - w) * cb[0].y + u * (1 - w) * cb[1].y + u * w * cb[2].y + (1 - u) * w * cb[3].y,
+                (1 - u) * (1 - w) * cb[0].z + u * (1 - w) * cb[1].z + u * w * cb[2].z + (1 - u) * w * cb[3].z,
+              ).add(sl.quad.pivot);
+              test((sl.square ? (br === 0 ? 'прямой' : `брасоп${br > 0 ? '+' : '−'}`) : 'косой'));
+            }
+          }
+        }
+      }
+      // прибраться: геометрия аудита не нужна в сцене
+      vis.group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if ((m as unknown as { isMesh?: boolean }).isMesh) m.geometry?.dispose();
+      });
+      out.push({
+        id: P.id, name: P.name,
+        planksMax: +planksMax.toFixed(3), smoothMax: +smoothMax.toFixed(3),
+        hits, worst,
+      });
+    }
+    return out;
   }
 
   /** Поразить «человечков» на берегу (жители деревень + пираты
