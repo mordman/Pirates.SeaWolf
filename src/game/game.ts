@@ -297,6 +297,10 @@ export class Game {
   pgReturnFire = false;           // отвечает ли мишень огнём
   /** Task 46: счётчик попаданий по игроку (телеметрия: ответный огонь) */
   playerHitCount = 0;
+  /** Task 79: ПРОКЛЯТИЕ КАПИТАНА уже сработало (первое попадание
+   *  игрока по «Чёрной жемчужине» — капитан-игрок обратился в
+   *  мертвеца со светящимся клинком; раз за игру) */
+  captainCursed = false;
   // ПОЛИГОН на чистой воде (Task 36: карта ×10 — полигон уехал к 32 км)
   private PG_ANCHOR = new THREE.Vector3(32000, 0, 23000);
 
@@ -1101,19 +1105,42 @@ export class Game {
    *  и ПРИ БРАСОПКЕ (реи ±0.96 рад — шкоты-углы уходят к оконечностям,
    *  а у носа/кормы дощатые пояса не сужаются тоньше 0.30 м —
    *  «тупой клин» режется парусом). Возвращает худшее проникновение
-   *  (м) по каждой модели в обоих режимах корпуса. */
-  debugPlankSailAudit() {
-    type Row = { id: string; name: string; planksMax: number; smoothMax: number; hits: number; worst: string };
+   *  (м) по каждой модели в обоих режимах корпуса.
+   *  Task 79: belly > 0 — сэмплировать и «ПУЗО» паруса (вершинный
+   *  шейдер uBelly смещает полотно на sin(uπ)·sin(vπ)·(0.72+0.28(1−v))
+   *  поперёк плоскости; у косых — в ОБЕ стороны, знак зависит от
+   *  борта ветра) и РЕИ (прямой — цилиндр на пивоте при брасопке,
+   *  латинский — диагональная рейка к носу). Числами воспроизводит
+   *  то, что игрок видит глазом на полном ветру. */
+  debugPlankSailAudit(belly = 0) {
+    type Row = { id: string; name: string; planksMax: number; smoothMax: number; bowMax: number; hits: number; worst: string };
     const out: Row[] = [];
     const inv = new THREE.Quaternion();
     const p = new THREE.Vector3();
     const loc = new THREE.Vector3();
-    const mst = new THREE.Vector3();
     for (const P of Object.values(PRESETS)) {
       const vis = buildShip(P, { planking: true });
       const recs = vis.planks?.records ?? [];
-      let planksMax = 0, smoothMax = 0, hits = 0;
+      let planksMax = 0, smoothMax = 0, bowMax = 0, hits = 0;
       let worst = '';
+      // Task 79: «НОС» — штевень (каркас, поднимается над палубой в ДП)
+      // и галеонная фигура: парусина, проходящая сквозь них, на
+      // носовых ракурсах «рассекает переднюю часть пополам» (скрин
+      // игрока) — хотя между фальшбортами она «легальна»
+      const L0 = P.length;
+      const bowTop = hullProfile(1, P).bulwark;
+      const stemBox = {
+        x: 0.20, z0: L0 * 0.47, z1: L0 * 0.52,
+        y0: -P.draft * 0.5, y1: bowTop * 0.9,
+      };
+      const figS = THREE.MathUtils.clamp(P.freeboard * 0.26, 0.55, 1.25)
+        * THREE.MathUtils.clamp(P.freeboard * 0.30, 0.8, 1.6);
+      // бокс фигуры — С ЗАПАСОМ (фигуры шире формулы: русалки с зеркалом,
+      // львы с лапами; «Виктория» прежде проходила впритык кромкой кливера)
+      const figBox = {
+        x: 0.45 + figS * 0.55, z0: L0 / 2 - 0.15 - figS * 0.55, z1: L0 / 2 - 0.15 + figS * 0.65 + 0.35,
+        y0: P.freeboard * 1.02, y1: P.freeboard * 1.02 + figS * 2.1,
+      };
       const test = (label: string) => {
         // (а) гладкий корпус: точка внутри обвода НИЖЕ ПАЛУБЫ
         // (bulwark − 1.0 — между фальшбортами парус легален)
@@ -1122,6 +1149,16 @@ export class Game {
         const bw = hullProfile(t, P).bulwark;
         if (p.y < bw - 1.05 && Math.abs(p.x) < hw) {
           smoothMax = Math.max(smoothMax, hw - Math.abs(p.x));
+        }
+        // (в) Task 79: НОС — штевень/фигура в диаметральной плоскости
+        for (const b of [stemBox, figBox]) {
+          if (Math.abs(p.x) < b.x && p.z > b.z0 && p.z < b.z1 && p.y > b.y0 && p.y < b.y1) {
+            const depth = Math.min(b.x - Math.abs(p.x), b.z1 - p.z, p.z - b.z0, b.y1 - p.y);
+            if (depth > bowMax) {
+              bowMax = depth;
+              worst = `${label}:нос@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`;
+            }
+          }
         }
         // (б) дощатый корпус: внутри бокса какой-либо доски
         for (const r of recs) {
@@ -1147,29 +1184,64 @@ export class Game {
       };
       for (const sl of vis.sails.sails) {
         const c = sl.quad.corners;
-        // брасопка: реи прямого паруса поворачиваются вокруг мачты
-        // (±0.96 рад) — шкоты-углы смещаются к носу/корме дугой
-        const braces = sl.square && sl.mastIndex !== undefined ? [0, 0.96, -0.96] : [0];
-        const mast = sl.mastIndex !== undefined ? vis.masts[sl.mastIndex] : null;
-        mst.set(0, 0, mast ? mast.position.z : 0);
-        for (const br of braces) {
-          const cb = br !== 0
-            ? c.map(cc => {
-              const dx = cc.x, dz = cc.z - mst.z;
-              return new THREE.Vector3(
-                dx * Math.cos(br) + dz * Math.sin(br), cc.y,
-                mst.z + dz * Math.cos(br) - dx * Math.sin(br));
-            })
-            : c;
-          for (let iu = 0; iu <= 6; iu++) {
-            for (let iv = 0; iv <= 4; iv++) {
-              const u = iu / 6, w = iv / 4;
-              p.set(
-                (1 - u) * (1 - w) * cb[0].x + u * (1 - w) * cb[1].x + u * w * cb[2].x + (1 - u) * w * cb[3].x,
-                (1 - u) * (1 - w) * cb[0].y + u * (1 - w) * cb[1].y + u * w * cb[2].y + (1 - u) * w * cb[3].y,
-                (1 - u) * (1 - w) * cb[0].z + u * (1 - w) * cb[1].z + u * w * cb[2].z + (1 - u) * w * cb[3].z,
-              ).add(sl.quad.pivot);
-              test((sl.square ? (br === 0 ? 'прямой' : `брасоп${br > 0 ? '+' : '−'}`) : 'косой'));
+        const pv = sl.quad.pivot;
+        if (sl.square) {
+          // ПРЯМОЙ парус: параметрика полотна W×H (верхняя кромка у
+          // реи), плоскость на −0.25 позади мачты; «пузо» +Z (по
+          // ветру, uBelly ≥ 0); брасопка — поворот локальной точки
+          // вокруг мачты (как уголки квада в Task 78)
+          const W = sl.holeW, H = sl.holeH;
+          for (const br of [0, 0.94, -0.94]) {
+            const cb = Math.cos(br), sb = Math.sin(br);
+            // РЕЯ: цилиндр длиной W·1.04 на пивоте — тоже режет доски
+            for (let iu = 0; iu <= 8; iu++) {
+              const x = (iu / 8 - 0.5) * W * 1.04;
+              p.set(x * cb, pv.y, pv.z - x * sb);
+              test(br === 0 ? 'рея' : `рея${br > 0 ? '+' : '−'}`);
+            }
+            for (let iu = 0; iu <= 6; iu++) {
+              for (let iv = 0; iv <= 4; iv++) {
+                const u = iu / 6, v = iv / 4;
+                const lx = (u - 0.5) * W, ly = -H + v * H;
+                const d = belly * Math.sin(u * Math.PI) * Math.sin(v * Math.PI)
+                  * (0.72 + 0.28 * (1 - v));
+                const lz = -0.25 + d;
+                p.set(lx * cb + lz * sb, pv.y + ly, pv.z + lz * cb - lx * sb);
+                test(br === 0 ? (d ? 'прямой+пузо' : 'прямой') : `брасоп${br > 0 ? '+' : '−'}`);
+              }
+            }
+          }
+        } else {
+          // КОСОЙ парус (кливер/латинский): треугольник голова—(конец
+          // штага/рейки)—(шкот); «пузо» ±X (в подветренную сторону —
+          // знак зависит от борта ветра, проверяем оба). Ориентация
+          // меша: кливер rotY=+90° (мирZ = −локX), латинский rotY=−90°
+          // (мирZ = +локX)
+          const isLat = Math.abs(sl.mesh.rotation.y + Math.PI / 2) < 0.01;
+          const sgn = isLat ? 1 : -1;
+          const ax = sgn * c[1].z, ay = c[1].y;   // кливер: к галсовому / лат.: конец рейки
+          const bx = sgn * c[2].z, by = c[2].y;   // кливер: шкот / лат.: шкотовый угол
+          const sides = belly > 0 ? [belly, -belly] : [0];
+          for (const ds of sides) {
+            for (let iu = 0; iu <= 6; iu++) {
+              for (let iv = 0; iv <= 4; iv++) {
+                const u = iu / 6, v = iv / 4;
+                const lx = u * THREE.MathUtils.lerp(ax, bx, v);
+                const ly = u * THREE.MathUtils.lerp(ay, by, v);
+                const d = ds * Math.sin(u * Math.PI) * Math.sin(v * Math.PI)
+                  * (0.72 + 0.28 * (1 - v));
+                p.set(pv.x + d, pv.y + ly, pv.z + sgn * lx);
+                test((isLat ? 'латин' : 'кливер') + (ds !== 0 ? (ds > 0 ? 'пузо+' : 'пузо−') : ''));
+              }
+            }
+          }
+          // ЛАТИНСКАЯ РЕЙКА: диагональ голова→конец у мачты — жёсткий
+          // рангоут в диаметральной плоскости, проходит над носом
+          if (isLat) {
+            for (let iu = 0; iu <= 8; iu++) {
+              const u = iu / 8;
+              p.set(pv.x, pv.y + u * ay, pv.z + u * ax);
+              test('латин.рей');
             }
           }
         }
@@ -1182,7 +1254,103 @@ export class Game {
       out.push({
         id: P.id, name: P.name,
         planksMax: +planksMax.toFixed(3), smoothMax: +smoothMax.toFixed(3),
+        bowMax: +bowMax.toFixed(3),
         hits, worst,
+      });
+    }
+    return out;
+  }
+
+  /** Task 79: АУДИТ «МЁРТВЫЙ РАНГОУТ» — латинская рейка СЛОМАННОЙ
+   *  мачты (фокус Task 78 не покрывал латинские суда). В гладком
+   *  режиме рангоут не отстыковывается — вся мачта валится с рейкой:
+   *  раньше длинная диагональная рейка прошивала нос/палубу. Теперь
+   *  (Ship.ts) рейка складывается ВДОЛЬ мачты и пивот съезжает к
+   *  пню — аудит проверяет ФИНАЛЬНУЮ позу мёртвой мачты (поворот
+   *  1.38 рад + крен ±0.52 + посадка −2.6): ни одна точка рейки и
+   *  пучка полотна не должна быть внутри дощатых боксов или
+   *  гладкого обвода. */
+  debugDeadRigAudit() {
+    type Row = { id: string; lateen: number; planksMax: number; smoothMax: number; worst: string };
+    const out: Row[] = [];
+    const p = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    const eul = new THREE.Euler();
+    for (const P of Object.values(PRESETS)) {
+      const vis = buildShip(P, { planking: true });
+      const recs = vis.planks?.records ?? [];
+      let planksMax = 0, smoothMax = 0, lateenN = 0;
+      let worst = '';
+      const test = (label: string) => {
+        const t = THREE.MathUtils.clamp((p.z + P.length / 2) / P.length, 0, 1);
+        const hw = hullHalfWidthAt(P, t, p.y);
+        const bw = hullProfile(t, P).bulwark;
+        // внутрь гладкого корпуса (обвод) НАД ВОДОЙ до фальшборта
+        if (p.y > 0.3 && p.y < bw && Math.abs(p.x) < hw) {
+          const d = hw - Math.abs(p.x);
+          if (d > smoothMax) { smoothMax = d; worst = `${label}@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`; }
+        }
+        for (const r of recs) {
+          const ext = Math.max(r.len, r.w, r.thick) * 0.5 + 0.12;
+          if (Math.abs(r.center.z - p.z) > ext) continue;
+          if (Math.abs(r.center.y - p.y) > ext) continue;
+          if (Math.abs(r.center.x - p.x) > ext) continue;
+          const inv2 = new THREE.Quaternion().copy(r.quat).invert();
+          const loc2 = new THREE.Vector3().copy(p).sub(r.center).applyQuaternion(inv2);
+          if (Math.abs(loc2.x) < r.thick / 2 && Math.abs(loc2.y) < r.w / 2
+            && Math.abs(loc2.z) < r.len / 2) {
+            const depth = Math.min(
+              r.thick / 2 - Math.abs(loc2.x),
+              r.w / 2 - Math.abs(loc2.y),
+              r.len / 2 - Math.abs(loc2.z));
+            if (depth > planksMax) {
+              planksMax = depth;
+              worst = `${label}:доски@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`;
+            }
+          }
+        }
+      };
+      for (let mi = 0; mi < vis.masts.length; mi++) {
+        const mast = vis.masts[mi];
+        // мачта УПАЛА: поворот и посадка из Ship.updateVisual
+        const lean = (mi % 2 === 0 ? 1 : -1) * 0.52;
+        eul.set(1.38, 0, lean);
+        q.setFromEuler(eul);
+        const mz = mast.position.z;
+        const toShip = (lx: number, ly: number, lz: number) => {
+          p.set(lx, ly, lz).applyQuaternion(q);
+          p.y += -2.6; p.z += mz;
+        };
+        // Task 79: и сам МАЧТОВЫЙ ШЕСТ (в гладком режиме падает
+        // ЦЕЛИКОМ — весь рангоут его потомки): не должен прошивать
+        // корпус/носовые доски
+        const mh = ((mast.userData.height as number) || 20) - P.draft * 0.3;
+        for (let iu = 0; iu <= 10; iu++) {
+          toShip(0, mh * iu / 10, 0);
+          test('мачта');
+        }
+        for (const s of vis.sails.sails) {
+          if (s.mastIndex !== mi || !s.lateenYard) continue;
+          lateenN++;
+          const len = ((s.lateenYard.geometry as unknown) as { parameters: { height: number } }).parameters.height;
+          // ФИНАЛЬНАЯ поза фикса: пивот у пня (мачта-локаль y=1.0),
+          // рейка вдоль мачты: (0.26, 2.2..2.2+len, 0.12) в локале мачты
+          for (let iu = 0; iu <= 8; iu++) {
+            toShip(0.26, 2.2 + len * iu / 8, 0.12);
+            test('рейка');
+          }
+          // пучок зарифленного полотна у пня
+          toShip(0, 1.1, 0);
+          test('полотно');
+        }
+      }
+      vis.group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if ((m as unknown as { isMesh?: boolean }).isMesh) m.geometry?.dispose();
+      });
+      if (lateenN > 0) out.push({
+        id: P.id, lateen: lateenN,
+        planksMax: +planksMax.toFixed(3), smoothMax: +smoothMax.toFixed(3), worst,
       });
     }
     return out;
@@ -1297,12 +1465,23 @@ export class Game {
       }
     });
     this.bus.on(GameEvents.PROJECTILE_HIT, (p) => {
-      const d = (p as { pos: THREE.Vector3; target: Ship });
+      const d = (p as { pos: THREE.Vector3; target: Ship; shooter?: Ship });
       this.audio.woodHit(distToPlayer(d.pos));
       if (d.target === this.player) { this.rig.addShake(0.5); this.playerHitCount++; }
       // ИИ реагирует на агрессию игрока
       const ai = this.aiShips.find(a => a.ship === d.target);
       if (ai) ai.onPlayerAggression(this.aiShips);
+      // Task 79: ПРОКЛЯТИЕ «ЧЁРНОЙ ЖЕМЧУЖИНЫ» — первое попадание
+      // ИГРОКА по легендарному кораблю обращает КАПИТАНА-ИГРОКА в
+      // МЕРТВЕЦА со СВЕТЯЩИМСЯ КЛИНКОМ (остальная команда жива;
+      // труба уходит за пояс — кисть занята клинком). Раз за игру.
+      if (!this.captainCursed && d.shooter === this.player && d.target !== this.player
+        && !d.target.sunk && d.target.preset.id === 'blackpearl') {
+        this.captainCursed = true;
+        this.player.setCaptainUndead(true);
+        this.pushMessage('☠ Проклятие «Чёрной жемчужины»: капитан обращён в мертвеца — в руке светится зелёный клинок!');
+        this.audio.creak(0.4);
+      }
     });
     this.bus.on(GameEvents.MESSAGE, (p) => {
       this.pushMessage((p as { text: string }).text);
@@ -3168,8 +3347,11 @@ export class Game {
         setting: this.settings.graphics.crewDetail,
         player: one(this.player),
         // Task 76: капитан на борту — ИГРОК (внешность со старта);
-        // на «Чёрной жемчужине» его модель — МЕРТВЕЦ
+        // на «Чёрной жемчужине» его модель — МЕРТВЕЦ;
+        // Task 79: captainCursed — проклятие от попадания по
+        // «Чёрной жемчужине» (капитан-мертвец + светящийся клинок)
         captain: this.player.crew3d.captainInfo(),
+        captainCursed: this.captainCursed,
         playerAppearance: { ...this.settings.player },
         near: this.aiShips.filter(a => !a.ship.sunk && a.ship.crewDetailedOpt).length,
         far: this.aiShips.filter(a => !a.ship.sunk && !a.ship.crewDetailedOpt).length,

@@ -473,6 +473,14 @@ export interface SailInfo {
   quad: SailHitQuad;              // зона прострела полотна
   holeW: number;                  // размер полотна вдоль UV.u, м (круглые дыры)
   holeH: number;                  // размер полотна вдоль UV.v, м
+  /** Task 79: ЛАТИНСКИЙ рангоут — пивот (рейка+полотно у мачты) и сама
+   *  рейка: при сломе мачты рейка СКЛАДЫВАЕТСЯ ВДОЛЬ мачты и съезжает
+   *  к пню (Ship.ts, mastFall) — иначе длинная диагональная рейка
+   *  валится вместе с мачтой и прошивает нос/палубу (парус «режет
+   *  корабль» у латинских судов — фикс Task 78 покрывал только
+   *  прямые реи с brace) */
+  lateenPivot?: THREE.Group;
+  lateenYard?: THREE.Mesh;
 }
 
 /** Пробоина в парусе (UV + радиус в долях holeH) — пишется в uniform-массив */
@@ -2680,8 +2688,9 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     // рея+парус — потомок МАЧТЫ: сломанная мачта валится вместе с ними
     const pivot = new THREE.Group();
     pivot.position.set(0, y + 0.05, 0);
-    // рея
-    const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, width * 1.04, 5), woodMat);
+    // рея (Task 79: 0.99·width — ноки не выходят за шкаторину; при
+    // брасопке ±0.94 концы прежде цепляли дощатые пояса у кормы)
+    const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, width * 0.99, 5), woodMat);
     yard.rotation.z = Math.PI / 2;
     pivot.add(yard);
     mesh.position.set(0, 0, -0.25);
@@ -2774,6 +2783,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     sails.push({
       mesh, mat, setAt, furl: 1, square: false, braceAngle: 0, mastIndex,
       quad, holeW: yardLenM + Math.abs(C.x), holeH: drop,
+      lateenPivot: pivot, lateenYard: yard,
     });
   };
   if (P.rig === 'single') {
@@ -2804,7 +2814,10 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     addSquareSail(0, 0.58, L * 0.24, L * 0.13, 0.60);
     addSquareSail(1, 0.62, L * 0.34, L * 0.18, 0.45);
     addSquareSail(1, 0.88, L * 0.24, L * 0.13, 0.92);
-    addSquareSail(2, 0.5, L * 0.18, L * 0.11, 0.78);
+    // Task 79: бизань-топсель чуть выше и короче — на полной брасопке
+    // нижний шкотовый угол задевал дощатые пояса над квартердеком
+    // у самых длинных судов (soleil/bounty, ~2.5 см — аудит)
+    addSquareSail(2, 0.54, L * 0.18, L * 0.10, 0.78);
   }
 
   // кливера (треугольные) от бушприта к фок-мачте: сетка с uv —
@@ -2870,8 +2883,20 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     // Task 56/57: шкотовые углы подняты к бушприту — прежде висели
     // на fb*0.72 (≈2 м) у самого штема: при ПОЛНОМ раскрытии кливер
     // прорезал бак и уходил в море (скрин игрока «парус делит корабль»)
-    addJib(bowspritTip, new THREE.Vector3(0, P.freeboard * 1.6 + 1.2, L / 2 + 0.6), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
-    addJib(sprMid, new THREE.Vector3(0, P.freeboard * 1.7 + 1.0, L / 2 - 0.8),
+    // Task 79: шкоты ЕЩЁ и ВПЕРЕДИ ШТЕВНЯ (z ≥ L/2+1.2) и НАД
+    // ГАЛЕОННОЙ ФИГУРОЙ: прежде внутренний шкот висел НАД БАКОМ
+    // (z = L/2−0.8, за штевнем), а у крупных судов (L≥50, «Виктория»)
+    // кромка полотна опускалась до высоты фигуры прямо перед ней —
+    // с носовых ракурсов кливер «рассекал» переднюю часть пополам
+    // (скрин игрока, ночь). Теперь вся нижняя шкаторина — над
+    // бушпритом, впереди корпуса, с запасом ≥0.9 м над фигурой.
+    const figScaleJ = THREE.MathUtils.clamp(P.freeboard * 0.30, 0.8, 1.6);
+    const figTopY = P.freeboard * 1.02
+      + THREE.MathUtils.clamp(P.freeboard * 0.26, 0.55, 1.25) * figScaleJ * 2.1;
+    const clewOuterY = Math.max(P.freeboard * 1.6 + 1.6, figTopY + 0.9);
+    const clewInnerY = Math.max(P.freeboard * 1.75 + 1.3, figTopY + 1.1);
+    addJib(bowspritTip, new THREE.Vector3(0, clewOuterY, L / 2 + 1.2), foreTop.h * 0.62 - P.draft * 0.3, foreTop.z, 0.72);
+    addJib(sprMid, new THREE.Vector3(0, clewInnerY, L / 2 + 1.6),
       foreTop.h * 0.78 - P.draft * 0.3, foreTop.z, 1.0);
   }
 

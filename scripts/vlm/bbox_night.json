@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"x1\":24,\"y1\":61,\"x2\":40,\"y2\":82}",
+        "reasoning_content": "Sail meets hull at bow, left side around x 200-300, y 580-720 px → percentages of 790x879: x 25-38, y 62-82.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794906674,
+  "id": "20261117171111eacaeddc7d034823",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117171111eacaeddc7d034823",
+  "usage": {
+    "completion_tokens": 68,
+    "completion_tokens_details": {
+      "reasoning_tokens": 45
+    },
+    "prompt_tokens": 1030,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1098
+  }
+}

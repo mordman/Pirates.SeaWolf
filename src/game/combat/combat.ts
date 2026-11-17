@@ -911,7 +911,7 @@ export class CombatSystem {
         dx * 3.2 + (Math.random() - 0.5), 1.6 + Math.random() * 1.8,
         dz * 3.2 + (Math.random() - 0.5)), 60 + Math.random() * 25, t.hullTint);
     }
-    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
+    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t, shooter: pr.shooter });
   }
 
   private applyHit(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType], hit: HitInfo) {
@@ -1015,7 +1015,7 @@ export class CombatSystem {
       }
       P.smoke(pr.pos.x, pr.pos.y, pr.pos.z, 0, 0.7, 0, 0.95, 1.2);
     }
-    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t });
+    this.emit(GameEvents.PROJECTILE_HIT, { pos: pr.pos.clone(), target: t, shooter: pr.shooter });
   }
 
   private updateAimAssist(time: number, waterHeight: (x: number, z: number, t: number) => number) {

@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**ДА**\n\n- **Какой парус:** большой передний парус (фок/кливер, трапециевидное полотно, идущее от фок-мачты к носу).\n- **Где:** в носовой трети — полотно спускается к палубе бака и уходит нижней кромкой/углом прямо в доски фальшборта и обшивки корпуса слева от борта (в районе баковых поручней, рядом с фигурой на баке).\n- **Насколько сильно:** **средне** — ткань заметно «проваливается» внутрь обшивки/фальшборта на протяжённом участке нижней шкаторины, но не насквозь через весь корпус; бушприт при этом чист (такелаж на нём без артефактов).",
+        "reasoning_content": "The foresail/large sail extends toward bow and appears to pass through the bulwark near the bow.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903386,
+  "id": "20261117161618651138f709b94882",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117161618651138f709b94882",
+  "usage": {
+    "completion_tokens": 214,
+    "completion_tokens_details": {
+      "reasoning_tokens": 22
+    },
+    "prompt_tokens": 1135,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1349
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "ДА. Кливер (передний треугольный парус, идущий к бушприту): его нижняя задняя кромка в районе бака/фальшборта перед фок-мачтой визуально уходит внутрь обшивки и планширя носовой части. Пересечение выражено СЛАБО-СРЕДНЕ — ткань лишь частично погружена в доски корпуса у бака, остальная часть паруса корректно натянута вдоль штага и бушприта.",
+        "reasoning_content": "Looking at bow: the jib/foresail near bow appears to intersect the hull/bulwark near the foremast — sail seems to pass through the deck/railing area. Likely yes, weak/medium.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903398,
+  "id": "202611171616339fac23be6df34628",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "202611171616339fac23be6df34628",
+  "usage": {
+    "completion_tokens": 163,
+    "completion_tokens_details": {
+      "reasoning_tokens": 45
+    },
+    "prompt_tokens": 1135,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1298
+  }
+}

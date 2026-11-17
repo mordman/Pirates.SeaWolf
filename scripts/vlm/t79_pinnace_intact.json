@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**НЕТ — чисто.**\n\nОсматриваю носовую часть внимательно:\n\n- **Бушприт** — проходит по центру кадра от бака вперёд/вниз, ничего не пересекает, висит свободно.\n- **Большой прямой парус** (верх кадра) — обрезан только краем экрана/камеры, с корпусом не соприкасается.\n- **Треугольное полотно** (стаксель/кливер около фок-мачты) — натянут на штагах над палубой, до борта и фальшборта не достаёт.\n- **Штем/бак** — доски корпуса видны чистыми, парусина сквозь них не проходит, разрезов и «прорезания» ткани нет.\n\nПроблем с пересечением паруса и геометрии носовой части не обнаружено — чисто.",
+        "reasoning_content": "View from bow, bowsprit crosses frame. Sail at top clipped by screen? The large sail at top appears cut by screen edge, not hull. Bowsprit passes over deck; no sail intersects hull visibly.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903155,
+  "id": "2026111716122557a75e0e135c43a1",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "2026111716122557a75e0e135c43a1",
+  "usage": {
+    "completion_tokens": 247,
+    "completion_tokens_details": {
+      "reasoning_tokens": 44
+    },
+    "prompt_tokens": 1127,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1374
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**НЕТ.**\n\nОсмотр носовой трети (бак, фальшборт, штевень, бушприт) показывает: ткань парусов находится выше — у мачты и рея (видны полотнища в верхней части кадра). Доски обшивки корпуса и фальшборта чистые, никаких фрагментов парусины, уходящих внутрь обшивки, на бушприте или штевне не наблюдается. Кливер, проходящий сквозь такелаж/доски, отсутствует.",
+        "reasoning_content": "The bow view: brown stern? Actually galley_front — looking at front. Visible: hull planks, no sail passing through planks. Sails at mast above, no clipping visible. Answer: НЕТ.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903392,
+  "id": "20261117161626116725379ae74562",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117161626116725379ae74562",
+  "usage": {
+    "completion_tokens": 169,
+    "completion_tokens_details": {
+      "reasoning_tokens": 44
+    },
+    "prompt_tokens": 1135,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1304
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**ДА** — пересечение есть.\n\n- В носовой части видно треугольное полотно (передний кливер/фор-стаксель), нижняя шкаторина которого **уходит сквозь фальшборт и борт корпуса** в районе бака: парусина «прорезает» доски борта там, где должна идти над ними вдоль бушприта.\n- Ткань начинается прямо от уровня палубы/планширя и частично скрыта внутри корпуса, т.е. меш-парус не смещён наружу от борта и бушприта.\n\nОстальные паруса (грот и стаксель у грот-мачты) с корпусом не пересекаются — проблема локализована только в носу, у бушприта/штевня.",
+        "reasoning_content": "Looking at the bow: the jib/foresail near the bowsprit — a triangular jib appears to pass through the hull/bulwark near the bow. The sail canvas near the front mast seems to intersect the bulwark. Answer: ДА.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903164,
+  "id": "20261117161235ccf8dd9d66074e51",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117161235ccf8dd9d66074e51",
+  "usage": {
+    "completion_tokens": 241,
+    "completion_tokens_details": {
+      "reasoning_tokens": 55
+    },
+    "prompt_tokens": 1127,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1368
+  }
+}

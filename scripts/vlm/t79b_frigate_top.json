@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "ДА.\n\n- **Парус:** прямой парус (грота/фок-парус на передней мачте, нижняя часть больших полотнищ сверху кадра).\n- **Место:** носовая треть — нижняя кромка паруса уходит внутрь палубы/фальшборта в районе бака у фок-мачты (слева от мачты ткань «проваливается» под доски обшивки и планширь).\n- **Сила:** средне — нижняя часть полотна заметно срезается корпусом на протяжении нескольких метров, но не насквозь через весь борт.",
+        "reasoning_content": "The bow: forward sails (foresail squaresail) lower edge appears to pass through bulwark/deck near foremast — the large sail lower part intersects hull planks near bow. Yes, visible clipping of the foresail into the deck/bulwark near the forecastle.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903406,
+  "id": "20261117161638968e3c6b39fc4d30",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117161638968e3c6b39fc4d30",
+  "usage": {
+    "completion_tokens": 202,
+    "completion_tokens_details": {
+      "reasoning_tokens": 59
+    },
+    "prompt_tokens": 1135,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1337
+  }
+}

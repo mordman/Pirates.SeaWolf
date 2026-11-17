@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Нет:\n\n- Капитан у штурвала не виден — на изображении фигурки экипажа далеко и мелкие, разглядеть цвет кожи невозможно.\n- Светящегося зелёного клинка в чьей-либо руке нет.\n\nИзображение показывает палубу с такелажем, другое судно («Черная жемчужина») в 260 м и интерфейс игры.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794911334,
+  "id": "2026111718285085d51c3843fa4a48",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "2026111718285085d51c3843fa4a48",
+  "usage": {
+    "completion_tokens": 93,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1056,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1149
+  }
+}

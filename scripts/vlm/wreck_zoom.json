@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**ОККЛЮЗИЯ.**\n\nЖёлтый обломок мачты/рейки просто опирается на борт и частично заслоняется корпусом: нет видимого входа-отверстия в обшивке, нет среза дерева «внутри» досок, края корпуса в месте контакта целые и непрерывные. Дерево визуально лежит ПЕРЕД корпусом (нижний конец уходит за борт/в воду), т.е. это нормальная окклюзия — объект расположен перед/за судном, а не прорезает доски.",
+        "reasoning_content": "Yellow mast fragment leans against hull, appears in front/behind — occlusion.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794910092,
+  "id": "20261117180807d2df7829e17843b1",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117180807d2df7829e17843b1",
+  "usage": {
+    "completion_tokens": 154,
+    "completion_tokens_details": {
+      "reasoning_tokens": 17
+    },
+    "prompt_tokens": 639,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 793
+  }
+}

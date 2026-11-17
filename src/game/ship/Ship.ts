@@ -75,6 +75,10 @@ export interface ShipOpts {
   /** Task 55/56: ПРОКЛЯТАЯ команда — мертвецы (облезлая кожа,
    *  глазницы, рёбра, рваное тряпьё); у игрока — «Чёрная жемчужина» */
   crewUndead?: boolean;
+  /** Task 79: ПРОКЛЯТИЕ КАПИТАНА — при первом попадании игрока по
+   *  «Чёрной жемчужине» капитан-игрок обращается в МЕРТВЕЦА со
+   *  СВЕТЯЩИМСЯ КЛИНКОМ (остальная команда живая) */
+  captainUndead?: boolean;
   /** Task 76: ВНЕШНОСТЬ КАПИТАНА-ИГРОКА (выбор на старте игры):
    *  капитан на палубе собирается из этих признаков, а не «наугад»;
    *  вместе с crewUndead («Чёрная жемчужина») модель игрока
@@ -101,6 +105,10 @@ export class Ship {
   crewKind: CrewKind = 'pirate';
   /** Task 55/56: проклятая команда-мертвецы (сохраняется при пересборке) */
   crewUndeadOpt = false;
+  /** Task 79: ПРОКЛЯТИЕ КАПИТАНА-мертвеца со светящимся клинком
+   *  (первое попадание игрока по «Чёрной жемчужине»; сохраняется
+   *  при пересборке экипажа) */
+  crewCaptainUndead = false;
   /** Task 76: внешность КАПИТАНА-ИГРОКА (сохраняется при пересборке
    *  экипажа; null — обычный процедурный капитан у AI-судов) */
   crewCaptainTraits: Traits | null = null;
@@ -436,9 +444,10 @@ export class Ship {
     // Task 76: капитан игрока — из ВНЕШНОСТИ, выбранной на старте
     this.crewDetailedOpt = !!opts?.crewDetailed;
     this.crewUndeadOpt = !!opts?.crewUndead;
+    this.crewCaptainUndead = !!opts?.captainUndead;
     this.crewCaptainTraits = opts?.captainTraits ?? null;
     this.crew3d = buildCrew(this.preset, this.crewSeed(), !!opts?.crewCats, this.crewKind,
-      !!opts?.crewDetailed, this.crewUndeadOpt, this.crewCaptainTraits);
+      !!opts?.crewDetailed, this.crewUndeadOpt, this.crewCaptainTraits, this.crewCaptainUndead);
     this.visual.group.add(this.crew3d.group);
     // ИИ-гребцы ходят на вёслах постоянно (у игрока вёсла вываливаются
     // клавишей или командой гребли Alt+W/S)
@@ -475,7 +484,7 @@ export class Ship {
       if (m.geometry) m.geometry.dispose();
     });
     this.crew3d = buildCrew(this.preset, this.crewSeed(), allCats, this.crewKind,
-      detailed, this.crewUndeadOpt, this.crewCaptainTraits);
+      detailed, this.crewUndeadOpt, this.crewCaptainTraits, this.crewCaptainUndead);
     this.visual.group.add(this.crew3d.group);
   }
 
@@ -483,6 +492,17 @@ export class Ship {
    *  персонажа / настройки) и пересобрать экипаж с новым капитаном */
   setCaptainTraits(tr: Traits | null) {
     this.crewCaptainTraits = tr;
+    this.rebuildCrew(this.crewCatsOpt, this.crewDetailedOpt);
+  }
+
+  /** Task 79: ПРОКЛЯТИЕ «Чёрной жемчужины» — капитан-игрок обращается
+   *  в МЕРТВЕЦА со СВЕТЯЩИМСЯ КЛИНКОМ (трупная кожа, зелёное свечение
+   *  лезвия); остальная команда остаётся живой. Труба (Task 79) у
+   *  мертвеца убирается за пояс — кисть занята клинком. Действует
+   *  до конца игры (сброс — новая игра). */
+  setCaptainUndead(on: boolean) {
+    if (this.crewCaptainUndead === on) return;
+    this.crewCaptainUndead = on;
     this.rebuildCrew(this.crewCatsOpt, this.crewDetailedOpt);
   }
 
@@ -1802,13 +1822,24 @@ export class Ship {
       m.position.y = 0;
     }
     // паруса порванных мачт — целы (КАСКАД ломания отменяется);
-    // Task 78: реи, съехавшие к пню, — обратно на высоту (homeY)
+    // Task 78: реи, съехавшие к пню, — обратно на высоту (homeY);
+    // Task 79: латинская рейка — из «сложенной у пня» в рабочую позу
     for (const s of this.visual.sails.sails) {
       s.mat.uniforms.uDamage.value = 0;
       s.mat.uniforms.uHoleN.value = 0;
       s.furl = 1;
       if (s.brace && s.brace.userData.homeY !== undefined) {
         s.brace.position.y = s.brace.userData.homeY as number;
+      }
+      if (s.lateenPivot && s.lateenYard) {
+        const ly = s.lateenYard;
+        if (s.lateenPivot.userData.homeY !== undefined) {
+          s.lateenPivot.position.y = s.lateenPivot.userData.homeY as number;
+        }
+        if (ly.userData.homeRotX !== undefined) {
+          ly.rotation.x = ly.userData.homeRotX as number;
+          ly.position.copy(ly.userData.homePos as THREE.Vector3);
+        }
       }
     }
     for (const h of this.hullHoles) {
@@ -2252,7 +2283,10 @@ export class Ship {
     // цель брасопки: рея поперёк ветра (нормаль паруса по ветру), ±55°
     let bt = Math.atan2(wlX, Math.sin(psi)) - Math.PI;
     bt = Math.atan2(Math.sin(bt), Math.cos(bt)); // кратчайшая дуга
-    const braceTarget = clamp(bt, -0.96, 0.96);
+    // Task 79: предел ±0.94 (было ±0.96): на полном повороте реи
+    // шкоты-углы цепляли дощатые пояса у кормы (soleil/bounty, ~2.5 см,
+    // аудит debugPlankSailAudit); визуально неотличимо, геометрия чистая
+    const braceTarget = clamp(bt, -0.94, 0.94);
     const bellyBase = (0.35 + 0.95 * windClamp) * (0.15 + 0.85 * polar);
     const flutterBase = 0.012 * windClamp * (1 + (1 - polar) * 2.2);
     // Task 56: ШТОРМ — КЛИВЕРА УБИРАЮТ: энвалоп гребней доходит до
@@ -2406,13 +2440,36 @@ export class Ship {
     // реи сломанной мачты СЪЕЗЖАЮТ К ПНЮ — такелаж мёртв, реи
     // ничего не держит; упавшая мачта остаётся «голой», и рей с
     // зарифленным полотном не рассекает корпус/палубу/доски.
+    // Task 79: то же для ЛАТИНСКОЙ РЕЙКИ — длинная диагональная рейка
+    // (у шебеки/галеры 0.5L!) при падении мачты прошивала нос и
+    // палубу: теперь она СКЛАДЫВАЕТСЯ ВДОЛЬ мачты (вертикально в её
+    // локале) и пивот съезжает к пню — рейка лежит вдоль упавшей
+    // мачты у самого пня, ничего не рассекая.
     for (let i = 0; i < v.masts.length; i++) {
       const f = this.mastFall[i];
       if (f < 0) continue;
+      const rigRate = Math.min(1, dt * 2.4);
       for (const s of v.sails.sails) {
-        if (s.mastIndex !== i || !s.brace) continue;
-        if (s.brace.userData.homeY === undefined) s.brace.userData.homeY = s.brace.position.y;
-        s.brace.position.y += (0.9 - s.brace.position.y) * Math.min(1, dt * 2.4);
+        if (s.mastIndex !== i) continue;
+        if (s.brace) {
+          if (s.brace.userData.homeY === undefined) s.brace.userData.homeY = s.brace.position.y;
+          s.brace.position.y += (0.9 - s.brace.position.y) * rigRate;
+        } else if (s.lateenPivot && s.lateenYard) {
+          const piv = s.lateenPivot, ly = s.lateenYard;
+          if (piv.userData.homeY === undefined) {
+            piv.userData.homeY = piv.position.y;
+            ly.userData.homeRotX = ly.rotation.x;
+            ly.userData.homePos = ly.position.clone();
+            ly.userData.len = ((ly.geometry as unknown) as { parameters: { height: number } }).parameters.height;
+          }
+          // пивот (рейка + зарифленное полотно) — к пню
+          piv.position.y += (1.0 - piv.position.y) * rigRate;
+          // рейка — вдоль мачты: поворот к вертикали + центр выше пня
+          // (нижний конец у палубы, не под ней)
+          const len = ly.userData.len as number;
+          ly.rotation.x += (0 - ly.rotation.x) * rigRate;
+          ly.position.lerp(this.tmpV.set(0.26, len / 2 + 1.2, 0.12), rigRate);
+        }
       }
       if (f < 1) {
         // ускорение падения: 0.30 → 0.62 (мачта «набирает ход»)

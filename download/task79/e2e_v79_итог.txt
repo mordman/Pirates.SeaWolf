@@ -1,0 +1,39 @@
+[agent-browser] launched browser
+OK   0: игра загрузилась
+
+===== A: аудит парусов (плоские + пузо + мёртвый рангоут) =====
+{"total":30,"bad":[]}
+OK   A1: плоские паруса НЕ режут доски/нос (30 пресетов) | bad=[]
+{"bad":[]}
+OK   A2: паруса с ПУЗОМ (шторм 1.68 м) не режут доски/нос | bad=[]
+{"rows":[{"id":"caravel","lateen":2,"planksMax":0,"smoothMax":0,"worst":""},{"id":"mystique","lateen":3,"planksMax":0,"smoothMax":0,"worst":""},{"id":"galley","lateen":3,"planksMax":0,"smoothMax":0,"worst":""}],"bad":[]}
+OK   A3: МЁРТВЫЙ рангоут: латинская рейка у пня не режет корпус | пресетов с латинскими: 3, bad=[]
+
+===== B: кливера не «рассекают» нос =====
+{"L":38,"stem":19,"jibs":[{"clewZ":20.2,"mast":0},{"clewZ":20.6,"mast":0}]}
+OK   B1: шкоты кливеров ВПЕРЕДИ штевня (z ≥ L/2+1.0) | L=38, clew=[{"clewZ":20.2,"mast":0},{"clewZ":20.6,"mast":0}]
+
+===== C: слом мачт у латинского судна (гладкий режим) =====
+{"folded":3,"pivots":[{"rotX":0,"pivY":1,"len":20.7},{"rotX":0,"pivY":1,"len":31.1},{"rotX":0,"pivY":1,"len":17.6}]}
+OK   C1: латинские рейки СЛОЖИЛИСЬ вдоль мачт (rotX≈0, пивот у пня) | [{"rotX":0,"pivY":1,"len":20.7},{"rotX":0,"pivY":1,"len":31.1},{"rotX":0,"pivY":1,"len":17.6}]
+
+===== D: труба в руке капитана (классика + детальная) =====
+{"c0":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":17.325,"uBlend":0,"blend":0},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"L"},"hud":false},"c1":{"on":true,"fov":13.75,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":18.725,"uBlend":0.999,"blend":0.999},"captain":{"phase":"observe","inHand":true,"ext":1,"hand":"L"},"hud":true},"c2":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":19.925,"uBlend":0.003,"blend":0.003},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"L"},"hud":false}}
+OK   D1: классика — труба В РУКЕ в покое (hold, inHand)
+OK   D2: классика — T поднимает к глазу (observe, стекло, FOV)
+OK   D3: классика — T опускает, труба ОСТАЁТСЯ В РУКЕ
+{"c0":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":23.925,"uBlend":0,"blend":0},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"R"},"hud":false},"c1":{"on":true,"fov":13.75,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":26.125,"uBlend":1,"blend":1},"captain":{"phase":"observe","inHand":true,"ext":1,"hand":"R"},"hud":true},"c2":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":27.325,"uBlend":0.003,"blend":0.003},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"R"},"hud":false}}
+OK   D4: детальная — труба В РУКЕ в покое (hold, inHand, 2 колена)
+OK   D5: детальная — T: observe у глаза, колена выдвинуты
+OK   D6: детальная — после T труба СНОВА В РУКЕ (не за поясом)
+
+===== E: попадание по «Чёрной жемчужине» → капитан-мертвец =====
+{"cap0":{"isPlayer":true,"undead":false},"found":true,"cursed":true,"cap1":{"isPlayer":true,"skin":9674894,"shirt":2764074,"pants":1974559,"undead":true,"profession":"captain","role":"captain","spy":{"phase":"holster","inHand":false,"ext":0,"hand":"R"}},"glow":3,"hitLog":[{"t":"blackpearl","s":"player"},{"t":"sloop","s":"other"},{"t":"sloop","s":"other"},{"t":"sloop","s":"other"},{"fired":5,"side":1,"k":0}]}
+OK   E1: капитан на корабле — ИГРОК (внешность со старта) | isPlayer=true
+OK   E2: «Чёрная жемчужина» найдена, залп дан
+OK   E3: ПРОКЛЯТИЕ сработало (captainCursed, капитан-мертвец) | cursed=true, undead=true
+OK   E4: СВЕТЯЩИЙСЯ клинок в руке капитана (зелёный emissive) | glow=3
+OK   E5: проклятому труба — ЗА ПОЯСОМ (клинок занял руку) | spy={"phase":"holster","inHand":false,"ext":0,"hand":"R"}
+OK   E6: проклятие РАЗ за игру (флаг не меняется)
+
+ALL OK (проверок: 18)

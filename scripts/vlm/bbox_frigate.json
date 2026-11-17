@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"none\":true}",
+        "reasoning_content": "Sails don't intersect hull; but fore sail near bow? The staysail near bow at left — sail at ~(340-380, 230-270) hull top around y 240. Hmm, sail at bow may touch deck. Likely answer none.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794906340,
+  "id": "202611171705357228226ec6964010",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "202611171705357228226ec6964010",
+  "usage": {
+    "completion_tokens": 60,
+    "completion_tokens_details": {
+      "reasoning_tokens": 53
+    },
+    "prompt_tokens": 1090,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1150
+  }
+}

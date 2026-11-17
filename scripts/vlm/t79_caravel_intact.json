@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**НЕТ — чисто.**\n\nОсмотр носовой части: бушприт (наклонная мачта, уходящая вперёд за борт) свободен, никакого парусного полотна на нём нет. Треугольных кливеров/стакселей на носу не видно. Единственный прямой парус поднят на мачте и расположен позади носа — он висит над баком, но не касается и не прорезает фальшборт, штевень или доски корпуса. Ватерлиния и нос также чистые, корпус не пересекается парусиной.",
+        "reasoning_content": "View from stern, bow away. Bow area: no sails visible near bow/bowsprit; square sail is aft of bow. Fore sail doesn't intersect. Answer: НЕТ, чисто.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903145,
+  "id": "2026111716121892cbd7ebab9c423a",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "2026111716121892cbd7ebab9c423a",
+  "usage": {
+    "completion_tokens": 177,
+    "completion_tokens_details": {
+      "reasoning_tokens": 40
+    },
+    "prompt_tokens": 1127,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1304
+  }
+}

@@ -649,13 +649,16 @@ export interface CrewDetailState {
     inHand: boolean;
     recoil: number;
   } | null;
-  /** Task 77: ПОДЗОРНАЯ ТРУБА — «как пистолет»: висит СЛОЖЕННОЙ
-   *  за поясом, перекочёвывает в кисть, поднимается к глазу
-   *  и РАСКРЫВАЕТСЯ (латунные колена выдвигаются). ext — выдвижение
-   *  колен 0..1; arm — кисть с трубой ('R' правая / 'L' если
-   *  правая занята крюком); backTo — поза после складывания */
+  /** Task 77: ПОДЗОРНАЯ ТРУБА — «как пистолет». Task 79: ЖИВОЙ
+   *  капитан держит её В РУКЕ ПОСТОЯННО (home='hand': фаза покоя
+   *  'hold' — сложенная в кулаке стволом вперёд-вниз; при T — к
+   *  глазу, колена выдвигаются); за поясом (home='belt', фаза
+   *  'holster') — только МЕРТВЕЦ-капитан: проклятие «Чёрной
+   *  жемчужины» занимает кисть СВЕТЯЩИМСЯ КЛИНКОМ.
+   *  ext — выдвижение колен 0..1; arm — кисть с трубой; backTo —
+   *  поза после складывания */
   spyglass: {
-    phase: 'holster' | 'draw' | 'observe' | 'lower';
+    phase: 'holster' | 'hold' | 'draw' | 'observe' | 'lower';
     t: number;
     obj: THREE.Group;               // сама труба (ось объектива +Z)
     beltHome: THREE.Object3D;       // гнездо за поясом (бедро руки с трубой)
@@ -664,6 +667,8 @@ export interface CrewDetailState {
     ext: number;                    // выдвижение колен 0..1
     sections: THREE.Object3D[];     // выдвижные колена (скользят по Z)
     arm: 'R' | 'L';                 // рука с трубой (правая занята крюком → левая)
+    home: 'belt' | 'hand';          // где труба в ПОКОЕ (мертвец: пояс)
+    restX: number;                  // покой: наклон трубы в кисти (ствол вниз)
     backTo: 'idle' | 'combat' | 'deck' | null;
   } | null;
   undead: boolean;
@@ -1474,14 +1479,31 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
       return g;
     };
     const spyObj = mkSpy();
-    // за поясом: лежит ВДОЛЬ ремня у бедра руки с трубой (окуляром вперёд)
-    spyBelt.add(spyObj);
-    spyObj.position.set(0, -0.018, 0.004);
-    spyObj.rotation.set(0.10, armR ? -1.18 : 1.18, armR ? 0.34 : -0.34);
+    const mr0 = armR ? 1 : -1;
+    // Task 79: ГДЕ труба в ПОКОЕ. ЖИВОЙ капитан держит её В РУКЕ
+    // «как пистолет» — сложенная в кулаке, стволом вперёд-вниз
+    // вдоль предплечья. МЕРТВЕЦ (проклятие «Чёрной жемчужины»)
+    // держит СВЕТЯЩИЙСЯ КЛИНОК — труба остаётся за поясом (рука
+    // одна), как в Task 77.
+    const spyHome: 'belt' | 'hand' = undead ? 'belt' : 'hand';
+    const spyRestX = 1.50;                    // покой в кисти: +Z стволом вниз-вперёд
+    if (spyHome === 'belt') {
+      // за поясом: лежит ВДОЛЬ ремня у бедра руки с трубой (окуляром вперёд)
+      spyBelt.add(spyObj);
+      spyObj.position.set(0, -0.018, 0.004);
+      spyObj.rotation.set(0.10, -1.18 * mr0, 0.34 * mr0);
+    } else {
+      // В КУЛАКЕ у опущенной руки (как пистолет матроса, ствол вниз)
+      spyHand.add(spyObj);
+      spyObj.position.set(0, -0.03, 0.012);
+      spyObj.rotation.set(spyRestX, 0, 0.366 * mr0);
+    }
     spyglass = {
-      phase: 'holster', t: 0, obj: spyObj, beltHome: spyBelt, handMount: spyHand,
-      inHand: false, ext: 0, sections: spyObj.children.filter(c => c.name === 'spySec1' || c.name === 'spySec2'),
-      arm: armR ? 'R' : 'L', backTo: null,
+      phase: spyHome === 'belt' ? 'holster' : 'hold', t: 0,
+      obj: spyObj, beltHome: spyBelt, handMount: spyHand,
+      inHand: spyHome === 'hand', ext: 0,
+      sections: spyObj.children.filter(c => c.name === 'spySec1' || c.name === 'spySec2'),
+      arm: armR ? 'R' : 'L', home: spyHome, restX: spyRestX, backTo: null,
     };
   }
 
@@ -1559,6 +1581,10 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   // сабля в кисти: клинок вперёд-вниз от кулака (локально +Z кисти);
   // пальцы этой кисти УЖЕ запечены СГУБТОМ вокруг рукояти (см. mkArm)
   // Task 77: пока в руке ТРУБА — сабля скрыта (рука одна!)
+  // Task 79: у ЖИВОГО капитана труба теперь В РУКЕ ПОСТОЯННО —
+  // сабля в покое всегда скрыта (ножны на боку), появляется только
+  // в бою (setDetailPoseMode). У МЕРТВЕЦА наоборот: в руке
+  // СВЕТЯЩИЙСЯ КЛИНОК, труба за поясом.
   let cutlassObj: THREE.Object3D | null = null;
   {
     const cutlass = mkCutlass(undead && prof === 'captain');
@@ -1566,6 +1592,7 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
     cutlass.rotation.x = Math.PI / 2 + 0.18;
     swordHand.add(cutlass);
     cutlassObj = cutlass;
+    if (prof === 'captain' && !undead && spyglass) cutlass.visible = false;
   }
   // НОЖНЫ на противоположном бедре (кожа + латунный наконечник)
   {
@@ -1818,11 +1845,14 @@ export type DetailPoseMode = 'idle' | 'combat' | 'pistol' | 'spyglass';
 export function setDetailPoseMode(d: CrewDetailState, mode: DetailPoseMode | 'deck'): boolean {
   if (mode === 'spyglass') {
     if (!d.spyglass) return false;
-    if (d.spyglass.phase !== 'holster' && d.spyglass.phase !== 'lower') return false;
+    const ph = d.spyglass.phase;
+    if (ph !== 'holster' && ph !== 'hold' && ph !== 'lower') return false;
     if (d.pistol && d.pistol.phase !== 'holster') return false;
     d.spyglass.phase = 'draw';
     d.spyglass.t = 0;
     d.spyglass.backTo = null;
+    // Task 79: в бою труба была спрятана — обратно в руку
+    if (d.spyglass.home === 'hand') d.spyglass.obj.visible = true;
     d.pose = 'spyglass';
     d.poseT = 0;
     return true;
@@ -1830,19 +1860,28 @@ export function setDetailPoseMode(d: CrewDetailState, mode: DetailPoseMode | 'de
   if (mode === 'pistol') {
     if (!d.pistol || d.pistol.phase !== 'holster') return false;
     // Task 77: пока ТРУБА в цикле — пистолет не выхватываем
-    if (d.spyglass && d.spyglass.phase !== 'holster') return false;
+    if (d.spyglass && d.spyglass.phase !== 'holster' && d.spyglass.phase !== 'hold') return false;
     d.pistol.phase = 'draw';
     d.pistol.t = 0;
     d.pose = 'pistol';
     d.poseT = 0;
     return true;
   }
-  // Task 77: труба АКТИВНА — сначала фаза lower (сложить колена,
-  // вернуть за пояс), поза сменится на mode ПОСЛЕ её завершения
-  if (d.spyglass && d.spyglass.phase !== 'holster') {
+  // Task 77: труба АКТИВНА (цикл draw/observe) — сначала фаза lower
+  // (сложить колена, вернуть в покой), поза сменится на mode ПОСЛЕ
+  // её завершения
+  if (d.spyglass && d.spyglass.phase !== 'holster' && d.spyglass.phase !== 'hold') {
     if (d.spyglass.phase !== 'lower') { d.spyglass.phase = 'lower'; d.spyglass.t = 0; }
     d.spyglass.backTo = mode as 'idle' | 'combat' | 'deck';
     return true;   // поза ещё 'spyglass' — докручивает lower
+  }
+  // Task 79: рука ОДНА — на палубе/в дозоре ЖИВОЙ капитан держит
+  // ТРУБУ (сабля в ножнах), в бою кисть занимает КЛИНОК (труба
+  // спрятана). Мертвецу это не нужно: у него клинок всегда в руке.
+  if (d.spyglass && d.spyglass.home === 'hand' && d.spyglass.phase === 'hold') {
+    const fight = mode === 'combat';
+    d.spyglass.obj.visible = !fight;
+    if (d.cutlassObj) d.cutlassObj.visible = fight;
   }
   // пистолет вернуть за пояс (если не в цикле выстрела)
   if (d.pistol && d.pistol.phase !== 'holster') {
@@ -1916,16 +1955,19 @@ function updatePistolPhase(d: CrewDetailState, dt: number) {
   }
 }
 
-/** Task 77: ФАЗЫ ТРУБЫ (как пистолет): draw — выхват правой рукой
- *  (в середине фазы труба перекочёвывает за пояс→кисть, колена
- *  начинают выдвигаться), observe — у глаза (полное выдвижение),
- *  lower — сложить и вернуть за пояс; затем поза backTo */
+/** Task 77/79: ФАЗЫ ТРУБЫ (как пистолет). ЖИВОЙ капитан (home='hand')
+ *  держит трубу В РУКЕ ПОСТОЯННО: draw — рука поднимает её от бедра
+ *  к глазу (поворот в кисти от «ствол вниз» к «окуляр к глазу»),
+ *  observe — у глаза (полное выдвижение), lower — сложить и ВЕРНУТЬ
+ *  В РУКУ (ствол вниз). МЕРТВЕЦ (home='belt') — схема Task 77:
+ *  выхват за поясом→кисть, к глазу, обратно за пояс. */
 function updateSpyglassPhase(d: CrewDetailState, dt: number) {
   const p = d.spyglass!;
   const mr = p.arm === 'R' ? 1 : -1;      // зеркало (правая/левая рука)
   p.t += dt;
   if (p.phase === 'draw') {
     // в середине фазы труба ПЕРЕКАЧЁВЫВАЕТСЯ из-за пояса в кисть
+    // (только МЕРТВЕЦ — у живого она уже в руке с постройки)
     if (!p.inHand && p.t > 0.32) {
       p.handMount.attach(p.obj);
       p.obj.position.set(0, -0.03, 0.012);
@@ -1935,6 +1977,12 @@ function updateSpyglassPhase(d: CrewDetailState, dt: number) {
       // Task 77: сабля в этой же кисти — убрать (не «три руки»)
       if (d.cutlassObj) d.cutlassObj.visible = false;
     }
+    // Task 79: в кисти труба ПОВОРАЧИВАЕТСЯ от «ствол вниз» (покой)
+    // к «окуляром к глазу» — по мере подъёма руки
+    if (p.inHand) {
+      const k = Math.min(1, p.t / SPY_T.draw);
+      p.obj.rotation.x = THREE.MathUtils.lerp(p.restX, -3.387, k);
+    }
     // колена трогаются ещё по пути к глазу (на треть выдвижения)
     const target = Math.max(0, (p.t - 0.3) / 0.55) * 0.35;
     p.ext += (target - p.ext) * Math.min(1, dt * 6);
@@ -1943,18 +1991,23 @@ function updateSpyglassPhase(d: CrewDetailState, dt: number) {
     // У ГЛАЗА: колена полностью выдвинуты — капитан вглядывается вдаль
     p.ext += (1 - p.ext) * Math.min(1, dt * 4);
   } else if (p.phase === 'lower') {
-    // сложить колена и вернуть за пояс
+    // сложить колена и вернуть в ПОКОЙ (в руку — живому, за пояс — мертвецу)
     p.ext += (0 - p.ext) * Math.min(1, dt * 7);
+    if (p.inHand) {
+      const k = Math.max(0, 1 - p.t / SPY_T.lower);
+      p.obj.rotation.x = THREE.MathUtils.lerp(-3.387, p.restX, k);
+    }
     if (p.t >= SPY_T.lower) {
-      if (p.inHand) {
+      if (p.inHand && p.home === 'belt') {
         p.beltHome.add(p.obj);
         p.obj.position.set(0, -0.018, 0.004);
         p.obj.rotation.set(0.10, -1.18 * mr, 0.34 * mr);
         p.inHand = false;
-        // сабля возвращается в кисть
+        // сабля возвращается в кисть (мертвецу — проклятый клинок)
         if (d.cutlassObj) d.cutlassObj.visible = true;
       }
-      p.phase = 'holster';
+      // живому: труба ОСТАЁТСЯ в кулаке стволом вниз (рука опущена)
+      p.phase = p.home === 'belt' ? 'holster' : 'hold';
       p.ext = 0;                       // колена сложены до конца
       const back = p.backTo ?? 'idle';
       p.backTo = null;
@@ -2038,10 +2091,18 @@ function poseTargets(d: CrewDetailState): Record<string, [number, number, number
     const supSh = mr === 1 ? 'shL' : 'shR';      // рука-подпорка
     const supEl = mr === 1 ? 'elL' : 'elR';
     if (ph === 'draw') {
-      // рука с трубой тянется К ПОЯСУ (наклон корпуса к бедру)
-      t[armSh] = [0.30, -0.32 * mr, -0.10 * mr];
-      t[armEl] = [-0.55, 0, -0.10 * mr];
-      t.spine = [0.15, 0.10 * mr, 0];
+      // Task 79: ЖИВОЙ (home='hand') — рука ПОДНИМАЕТ трубу от бедра
+      // к глазу (полпути к позе observe); МЕРТВЕЦ — выхват от пояса
+      // (наклон корпуса к бедру, как в Task 77)
+      if (d.spyglass.home === 'belt') {
+        t[armSh] = [0.30, -0.32 * mr, -0.10 * mr];
+        t[armEl] = [-0.55, 0, -0.10 * mr];
+        t.spine = [0.15, 0.10 * mr, 0];
+      } else {
+        t[armSh] = [-0.45, 0.28 * mr, -0.26 * mr];
+        t[armEl] = [-1.30, 0, -0.18 * mr];
+        t.spine = [0.06, 0, 0];
+      }
     } else if (ph === 'observe') {
       // ТРУБА У ГЛАЗА (углы — численная калибровка FK scripts/calib_spy.mjs:
       // окуляр в 3 см от правого глаза, ось трубы вперёд к горизонту,
@@ -2082,8 +2143,9 @@ function poseTargets(d: CrewDetailState): Record<string, [number, number, number
 export function animateCrewDetail(d: CrewDetailState, t: number, dt: number, env?: DetailEnv) {
   updateFx(dt);
   // Task 77: ФАЗЫ ТРУБЫ идут во всех позах (на палубе — пока
-  // складывается после переключения обратно в 'deck')
-  if (d.spyglass && d.spyglass.phase !== 'holster') updateSpyglassPhase(d, dt);
+  // складывается после переключения обратно в 'deck');
+  // Task 79: 'hold' (труба покоится В РУКЕ) ничего не анимирует
+  if (d.spyglass && d.spyglass.phase !== 'holster' && d.spyglass.phase !== 'hold') updateSpyglassPhase(d, dt);
   // ---------- ДЫХАНИЕ: расширение грудной клетки + плечи ----------
   const br = Math.sin(t * 1.45 + d.breathePh);
   const k = 1 + br * 0.022;

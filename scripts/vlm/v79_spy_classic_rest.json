@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "1) Нет — в руке капитана подзорная труба не видна (он стоит у штурвала, руки на колесе; латунный цилиндр как пистолет стволом вперёд-вниз не различим).\n2) Нет — труба за поясом у бедра не видна (на таком удалении и ракурсе ничего похожего на трубу за поясом не различить).\n\nСудя по интерфейсу («Подзорная труба поднята (x4…)» / «Труба опущена»), она сейчас убрана/опущена, а не в руке.",
+        "reasoning_content": "Image shows distant ship; captain at wheel visible but details unclear. Answer: 1) no, not visible in hand; 2) not visible at hip.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794911329,
+  "id": "202611171828434ec41fa06d01412e",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "202611171828434ec41fa06d01412e",
+  "usage": {
+    "completion_tokens": 170,
+    "completion_tokens_details": {
+      "reasoning_tokens": 33
+    },
+    "prompt_tokens": 1074,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1244
+  }
+}

@@ -77,10 +77,10 @@ ev(`window.__game.stepDebugNR(0.5)`);
 
 const a0 = jparse(await evR(`(() => JSON.stringify(window.__spyglassInfo()))()`));
 log(JSON.stringify(a0));
-check('A1: до подъёма — holster, эффект выключен',
-  a0?.on === false && a0?.captain?.phase === 'holster' && a0?.captain?.inHand === false
+check('A1: до подъёма — труба В РУКЕ (hold, Task 79), эффект выключен',
+  a0?.on === false && a0?.captain?.phase === 'hold' && a0?.captain?.inHand === true
   && a0?.fx?.blend === 0 && a0?.fov > 50,
-  `phase=${a0?.captain?.phase}, blend=${a0?.fx?.blend}, fov=${a0?.fov}`);
+  `phase=${a0?.captain?.phase}, inHand=${a0?.captain?.inHand}, blend=${a0?.fx?.blend}, fov=${a0?.fov}`);
 check('A2: капитан детальный, труба при нём (profession=captain)',
   jparse(await evR(`(() => JSON.stringify(window.__crewModelInfo().captain))()`))?.profession === 'captain',
   '');
@@ -149,10 +149,10 @@ log(JSON.stringify(down));
 check('A11: повторное T — фаза lower (складывает)',
   ['lower'].includes(down?.d1?.captain?.phase) || down?.d1?.captain?.phase === 'observe',
   `phase=${down?.d1?.captain?.phase}`);
-check('A12: ТРУБА ЗА ПОЯСОМ (holster, не в руке)',
-  down?.d2?.captain?.phase === 'holster' && down?.d2?.captain?.inHand === false
+check('A12: ТРУБА ВОЗВРАЩАЕТСЯ В РУКУ (hold, Task 79: как пистолет)',
+  down?.d2?.captain?.phase === 'hold' && down?.d2?.captain?.inHand === true
   && down?.d2?.captain?.ext === 0,
-  `phase=${down?.d2?.captain?.phase}, ext=${down?.d2?.captain?.ext}`);
+  `phase=${down?.d2?.captain?.phase}, inHand=${down?.d2?.captain?.inHand}, ext=${down?.d2?.captain?.ext}`);
 check('A13: СТЕКЛО выключено, FOV вернулся (55°)',
   down?.d3?.on === false && down?.d3?.fx?.blend < 0.05 && down?.d3?.fov > 50,
   `blend=${down?.d3?.fx?.blend}, fov=${down?.d3?.fov}`);
@@ -176,9 +176,9 @@ run('open http://localhost:3000/crew');
 await sleep(7000);
 let pose = jparse(await evR(`(() => JSON.stringify(window.__crewPose()))()`));
 log(JSON.stringify(pose));
-check('B1: капитан с ТРУБОЙ (spy в телеметрии, 2 колена)',
-  pose?.profession === 'captain' && pose?.spyPhase === 'holster'
-  && pose?.spySections === 2 && pose?.spyInHand === false,
+check('B1: капитан с ТРУБОЙ (spy в телеметрии, 2 колена; Task 79: в руке)',
+  pose?.profession === 'captain' && pose?.spyPhase === 'hold'
+  && pose?.spySections === 2 && pose?.spyInHand === true,
   `prof=${pose?.profession}, sections=${pose?.spySections}`);
 
 const bp = jparse(await evR(`(() => {
@@ -227,8 +227,8 @@ log(JSON.stringify(bdown));
 check('B7: смена режима — фаза lower (труба складывается)',
   bdown?.p1?.spyPhase === 'lower' && bdown?.p1?.pose === 'spyglass',
   `phase=${bdown?.p1?.spyPhase}, pose=${bdown?.p1?.pose}`);
-check('B8: ТРУБА ЗА ПОЯСОМ, поза сменилась на idle',
-  bdown?.p2?.spyPhase === 'holster' && bdown?.p2?.spyInHand === false
+check('B8: ТРУБА ВЕРНУЛАСЬ В РУКУ (hold, Task 79), поза сменилась на idle',
+  bdown?.p2?.spyPhase === 'hold' && bdown?.p2?.spyInHand === true
   && bdown?.p2?.pose === 'idle',
   `phase=${bdown?.p2?.spyPhase}, pose=${bdown?.p2?.pose}`);
 
@@ -275,8 +275,8 @@ const cls = jparse(await evR(`(() => {
   return JSON.stringify({ c0, c1, c2, c3 });
 })()`));
 log(JSON.stringify(cls));
-check('C1: классика — до подъёма holster',
-  cls?.c0?.captain?.phase === 'holster' && cls?.c0?.captain?.inHand === false, '');
+check('C1: классика — до подъёма труба В РУКЕ (hold, Task 79)',
+  cls?.c0?.captain?.phase === 'hold' && cls?.c0?.captain?.inHand === true, '');
 check('C2: классика — ТРУБА В РУКЕ сразу при T (observe, inHand)',
   cls?.c1?.captain?.phase === 'observe' && cls?.c1?.captain?.inHand === true
   && cls?.c1?.captain?.ext === 1,
@@ -284,8 +284,8 @@ check('C2: классика — ТРУБА В РУКЕ сразу при T (obse
 check('C3: классика — СТЕКЛО и FOV работают и тут',
   cls?.c2?.fx?.blend > 0.9 && cls?.c2?.fov < 15 && cls?.c2?.on === true,
   `blend=${cls?.c2?.fx?.blend}, fov=${cls?.c2?.fov}`);
-check('C4: классика — T опускает (holster)',
-  cls?.c3?.captain?.phase === 'holster' && cls?.c3?.captain?.inHand === false, '');
+check('C4: классика — T опускает, труба ОСТАЁТСЯ В РУКЕ (hold, Task 79)',
+  cls?.c3?.captain?.phase === 'hold' && cls?.c3?.captain?.inHand === true, '');
 
 // СКРИНШОТ: классический капитан с трубой БЕЗ виньетки (T опущена,
 // но капитану приказано держать трубу — captainSpyglass напрямую)

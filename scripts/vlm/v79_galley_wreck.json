@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**ДА** — есть пересечения геометрии:\n\n1. **Нос**: упавшая мачта/рей (деревянный рангоут) лежит с наклоном вперёд и своим нижним концом **уходит внутрь корпуса у форштевня** — виден вход дерева в доски обшивки носа.\n\n2. **Борт (правая/видимая сторона)**: длинный сломанный рангоут, идущий вдоль корпуса к корме, в средней части **проходит сквозь фальшборт/планшир** — дерево исчезает внутри борта, а не лежит поверх него.\n\n3. **Корма**: наклонённая стоящая мачта с полотном паруса — нижняя часть парусины и рея **уходит в палубу/надстройку у грот-мачты** (ткань обрезается геометрией палубы).\n\nГрубее всего выглядит пункт 2 — сломанный рангоут «протыкает» борт по всей длине корпуса вместо лежания сверху.",
+        "reasoning_content": "Inspect: foremast area — a spar lies over the bow, appears to pass into hull near bow. Also fallen mast along starboard side seems to enter hull near bow. Sails hanging from tilted mast appear to intersect deck near stern mast.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794909952,
+  "id": "20261117180544ad855446c5564797",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117180544ad855446c5564797",
+  "usage": {
+    "completion_tokens": 293,
+    "completion_tokens_details": {
+      "reasoning_tokens": 49
+    },
+    "prompt_tokens": 1089,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1382
+  }
+}

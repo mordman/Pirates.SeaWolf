@@ -1,0 +1,29 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "**ДА**\n\n- **Какой парус:** кливеры (передние треугольные паруса с синими/бирюзовыми вставками, висящие на боковых рейках/уtripах по обе стороны носа).\n- **Где:** у обоих кливеров ткань обрывается прямо у линии обшивки корпуса/фальшборта — полотно не сходится к шкотовому углу на бушприте, а просто «уходит» внутрь дощатой бортовой обшивки слева и справа от надстройки.\n- **Насколько сильно:** **средне** — ткань заметно обрезается плоскостью корпуса (виден чёткий срез у борта с обеих сторон), но без глубокого «провала» сквозь весь корпус.",
+        "reasoning_content": "Rear view actually, but question says bow. The jibs' canvas disappears into hull planks — the blue/teal sails on the side yards visible clipping. The sails at left/right appear to end abruptly at hull. Answer: ДА.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1794903415,
+  "id": "20261117161646837a79b9373a4aab",
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "request_id": "20261117161646837a79b9373a4aab",
+  "usage": {
+    "completion_tokens": 233,
+    "completion_tokens_details": {
+      "reasoning_tokens": 51
+    },
+    "prompt_tokens": 1135,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 1368
+  }
+}
