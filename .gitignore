@@ -50,9 +50,8 @@ test
 prompt
 
 server.log
-# Skills directory
+# Skills directory: сами навыки (skills/) — в git; runtime-мусор — нет
 /skills/tool-results
-skills/
 /tool-results/
 
 # Task 51: скриншоты и логи прогонов — локальные артефакты, не для git
