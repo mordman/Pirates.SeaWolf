@@ -316,6 +316,12 @@ export class Ship {
   // --- события колбэки ---
   onSurrender?: (s: Ship) => void;
   onSunk?: (s: Ship) => void;
+  /** Task 80: набор корпуса затрещал (broke=false) / ПЕРЕЛОМ (true) —
+   *  звук+сообщение; СТАТИЧЕСКИЙ хук: одна точка в game.ts на все
+   *  корабли (игрок, ИИ, мишени полигона) */
+  static onAnyKeelCrack?: (s: Ship, broke: boolean) => void;
+  /** Task 80: мачта упала при ПЕРЕЛОМЕ корпуса */
+  static onAnyMastBroken?: (s: Ship, idx: number) => void;
 
   constructor(presetId: string, isPlayer: boolean, wind: WindState,
     terrainHeight: (x: number, z: number) => number, particles: Particles,
@@ -1272,6 +1278,94 @@ export class Ship {
   /** Время с последнего попадания по кораблю (сек; 999 — никогда) */
   sinceHit(): number { return Math.max(0, this.simT - this.lastHitT); }
 
+  // ============================================================
+  // Task 80: НАБОР КОРПУСА (киль/кильсон/шпангоуты) — «основание
+  // корпуса». Сквозные пробития и тяжёлые попадания у миделя ломают
+  // НЕ только обшивку: шпангоуты трещат, швы расходятся (течь),
+  // при keelHP→0 корабль ПЕРЕЛОМЛЯЕТСЯ пополам и тонет быстрее.
+  // ============================================================
+  keelHP = 100;
+  /** накопленная точка слома (взвешенная по урону, локальный z) */
+  private keelHitZSum = 0;
+  private keelHitW = 0;
+  /** перелом уже случился (визуально: пояс рваных пробоин по линии
+   *  слома + упавшие мачты + резкий дифферент) */
+  hullBroke = false;
+  private keelCrackWarned = false;
+
+  /** Доля ПРОБИТОГО борта в точке (0 свежий .. 1 решето) — для
+   *  сквозного пробития ядром (combat.ts) */
+  plankSideOpen(lp: THREE.Vector3): number {
+    if (!this.plankHull) return this.hullHP / this.hullMax < 0.5 ? 1 : 0;
+    return this.plankHull.sideOpen(lp.x >= 0 ? 1 : -1, lp.y, lp.z);
+  }
+
+  /** Урон по НАБОРУ (киль/шпангоуты): сквозное ядро, прошившее трюм,
+   *  или тяжёлое попадание у самого основания. Копит точку слома,
+   *  открывает швы (течь), при 0 — ПЕРЕЛОМ корпуса */
+  damageStructure(lp: THREE.Vector3, power: number) {
+    if (this.sunk || this.hullBroke || power <= 0) return;
+    this.keelHP = Math.max(0, this.keelHP - power);
+    this.keelHitZSum += lp.z * power;
+    this.keelHitW += power;
+    // швы разошлись — вода сочится в отсек у точки удара
+    if (power >= 6) this.addLeakAt(0.02 + power * 0.004, lp);
+    if (this.keelHP <= 0) { this.breakHull(); return; }
+    if (this.keelHP < 45 && !this.keelCrackWarned) {
+      this.keelCrackWarned = true;
+      Ship.onAnyKeelCrack?.(this, false);
+    }
+  }
+
+  /** ПЕРЕЛОМ КОРПУСА ПОПОЛАМ: набор не держит — обшивка рвётся по
+   *  линии слома (сквозные пробоины в пояс по обеим бортам и палубе),
+   *  мачты на линии валятся, гигантский всплеск щепы, корабль резко
+   *  зарывается сломанным концом и уходит под воду быстрее обычного */
+  breakHull() {
+    if (this.hullBroke || this.sunk) return;
+    this.hullBroke = true;
+    const L = this.preset.length;
+    const bz = this.keelHitW > 0 ? clamp(this.keelHitZSum / this.keelHitW, -L * 0.3, L * 0.3) : 0;
+    // (1) обшивка рвётся по линии слома: серия пробоин по всей высоте
+    //     борта на обоих бортах + палуба (двойная течь из проломов)
+    const yBot = -this.preset.draft * 0.6;
+    const yTop = this.preset.freeboard * 0.95;
+    for (const side of [1, -1] as const) {
+      for (let i = 0; i < 5; i++) {
+        const y = yBot + (yTop - yBot) * (i / 4);
+        const z = bz + (i - 2) * 0.55;
+        this.hitHull(new THREE.Vector3(side * this.halfWidthAt(z) * 0.9, y, z),
+          46, y < 0.6, undefined);
+      }
+    }
+    this.hitHull(new THREE.Vector3(0, hullProfile(0.5, this.preset).bulwark - 0.6, bz),
+      46, false, undefined);
+    // (2) мачты на линии слома — валятся
+    const masts = this.visual.masts;
+    for (let i = 0; i < masts.length; i++) {
+      if (this.mastFall[i] >= 0) continue;
+      if (Math.abs(masts[i].position.z - bz) < L * 0.16) {
+        if (this.damageMast(i, 999)) Ship.onAnyMastBroken?.(this, i);
+      }
+    }
+    // (3) всплеск щепы и досок по линии + грохот
+    for (let i = 0; i < 5; i++) {
+      const wp = this.tmpV.set((i % 2 ? 1 : -1) * this.halfWidthAt(bz), 0.5 + i * 0.4, bz + (i - 2) * 0.7)
+        .applyQuaternion(this.quaternion).add(this.position);
+      spawnHullPlate(wp.x, wp.y + 0.4, wp.z,
+        new THREE.Vector3((i % 2 ? 1 : -1) * 1.4, 1.8, (Math.random() - 0.5) * 1.4), this.hullTint);
+      spawnSplinterBurst(wp.x, wp.y + 0.6, wp.z,
+        new THREE.Vector3((i % 2 ? 1 : -1), 0.6, (Math.random() - 0.5)), 14, 3, this.hullTint);
+      if (this.particles) this.particles.splash(wp.x, 0.2, wp.z, 1.2);
+    }
+    Ship.onAnyKeelCrack?.(this, true);
+    // (4) гибель по сценарию ПЕРЕЛОМА: зарываемся концом у слома,
+    //     двойной крен, погружение быстрее (stepSinking: hullBroke)
+    if (!this.sinking) this.startSinking();
+    this.sinkPitchT = (bz >= 0 ? 1 : -1) * (0.55 + Math.random() * 0.25);
+    this.sinkRollT = (Math.random() < 0.5 ? -1 : 1) * (0.9 + Math.random() * 0.4);
+  }
+
   /** Дополнительная осадка от воды в трюме (м) — для простой физики.
    *  Task 48: 0.8 — полный трюм сажает заметно глубже (видно
    *  глазами, как затопленный корабль приседает) */
@@ -1795,6 +1889,12 @@ export class Ship {
     this.surrendered = false;
     this.mastsBroken = 0;
     this.mastAnim = -1;
+    // Task 80: набор корпуса цел, перелома нет
+    this.keelHP = 100;
+    this.keelHitZSum = 0;
+    this.keelHitW = 0;
+    this.hullBroke = false;
+    this.keelCrackWarned = false;
     // сухое дерево: вернуть материалы исходные цвета/шероховатость
     this.resetWetness();
     // ломаемые детали на место
@@ -1964,9 +2064,12 @@ export class Ship {
     }
 
     // --- вертикаль: погружение ускоряется по мере заполнения отсеков ---
-    const vSink = this.sinkPhase === 1 ? 0.20
+    // Task 80: ПЕРЕЛОМ корпуса — отсеки раскрыты в море, корабль
+    // уходит заметно быстрее (киль не держит форму)
+    const brokeMul = this.hullBroke ? 1.7 : 1;
+    const vSink = brokeMul * (this.sinkPhase === 1 ? 0.20
       : this.sinkPhase === 2 ? 0.42
-        : 0.85 + Math.min(0.9, (this.sinkT - 17) * 0.05);
+        : 0.85 + Math.min(0.9, (this.sinkT - 17) * 0.05));
     this.position.y -= vSink * dt;
     this.velocity.set(this.velocity.x * 0.9, -vSink, this.velocity.z * 0.9);
 
@@ -1974,8 +2077,8 @@ export class Ship {
     // чем глубже села палуба, тем сильнее вода давит на рангоут —
     // корпус «не может» докрутиться (как настоящие паруса-гидротормоз)
     const mastBrake = 1 / (1 + subFrac * 4.5 + (this.mastsBroken > 0 ? 0.7 : 0));
-    const rollRate = 0.34 * mastBrake;
-    const pitchRate = 0.13 * mastBrake;
+    const rollRate = (this.hullBroke ? 0.5 : 0.34) * mastBrake;
+    const pitchRate = (this.hullBroke ? 0.3 : 0.13) * mastBrake;
     e2.z += clamp(this.sinkRollT - e2.z, -rollRate * dt, rollRate * dt);
     e2.x += clamp(this.sinkPitchT - e2.x, -pitchRate * dt, pitchRate * dt);
     // спираль: едва заметное рыскание с начала, бодрое — в финале

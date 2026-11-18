@@ -1,0 +1,26 @@
+⚠ Chrome 157.0.8103.78 is behind the current stable release 158.0.8127.36, which fixes 204 CVEs (CVE-2026-121101, CVE-2026-130904, CVE-2026-130905, +201 more). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A1: МЕШ-аудит парусов (30 пресетов, пузо ±1.7, брасопка): чисто | bad=[]
+OK   A2: параметрический аудит (Task 79) по-прежнему чист | bad=[]
+OK   A3: внутренний кливер на проектной высоте (diff < 0.6 м) | {"want":19.65,"got":20}
+OK   A4: топсель грота на проектной высоте (diff < 0.6 м) | {"want":28.14,"got":28.44}
+OK   A5: флаг у топа главной мачты (не ниже 0.8·top) | {"got":31.94,"mastTop":30.74}
+OK   B1: прогулка по палубе включена (V-режим) | {"mode":"deck","weapon":"none"}
+OK   B2: «3» — труба В РУКЕ (weapon=spyglass, видима) | {"weapon":"spyglass","label":"Труба ×4.0","visible":true}
+OK   B3: ПКМ — смотрим сквозь трубу (aiming, FOV ≈ 55/4 = 13.75) | {"aiming":true,"spyAiming":true,"fov":13.78,"zoom":4}
+OK   B4: колесо — зум ×4.8; FX стекла активны (blend > 0.3) | {"zoom":4.8,"blend":1}
+OK   B5: отпустили ПКМ — осмотр кончился (FOV→55, blend→0), труба ОСТАЛАСЬ В РУКЕ | {"aiming":false,"fov":55,"blend":0,"inHand":true}
+OK   B6: «1» меняет трубу на саблю (слоты не конфликтуют) | {"weapon":"saber","spyVisible":false,"saberVisible":true}
+OK   C1: выбор «Чёрной жемчужины» → капитан-игрок МЕРТВЕЦ (без попаданий) | {"id":"blackpearl","cursed":true,"cap":{"isPlayer":true,"undead":true}}
+OK   C2: на палубе у капитана СВЕТЯЩИЙСЯ зелёный клинок (emissive 0x1e8f3e) | {"blade":2}
+OK   C3: фигурка игрока в прогулке — МЕРТВЕЦ | {"cursed":true}
+OK   C4: САБЛЯ игрока заменена ЗЕЛЁНЫМ клинком (та же сабля, emissive + дымка) | {"weapon":"saber","glow":4,"puffs":true}
+OK   C5: смена на обычный корабль — капитан снова ЖИВОЙ (проклятие не залипло) | {"cursed":false,"glow":0}
+OK   C6: попадание снаряда по жемчужине НЕ проклинает (триггер удалён) | {"hitLog":[{"t":"blackpearl","s":"player"},{"t":"sloop","s":"x"},{"t":"sloop","s":"x"}],"cursed":false,"undead":false}
+OK   D1: подготовлена пробоина борта: plankSideOpen > 0.45 (решето) | {"id":"fluyt","open":1,"s3":24,"hw":3.12}
+OK   D2: ядро ПРОЛЕТЕЛО сквозь пробитый борт: ПРОТИВОПОЛОЖНЫЙ борт сломан (exitOpen > 0.25) | {"s3":{"was":24,"now":48},"keel":{"was":100,"now":87.11885042741025},"exitOpen":{"was":0,"now":0.96},"entryOpen":0.64,"sinking":false}
+OK   D3: прошив трюм, ядро сломало НАБОР (keelHP < 100) | {"was":100,"now":87.11885042741025}
+OK   D4: ПЕРЕЛОМ корпуса: hullBroke + тонет + обшивка рвана по линии + мачты падают | {"hullBroke":true,"sinking":true,"sinkT":0,"torn":{"was":48,"now":114},"masts":{"was":0,"now":2},"keel":0}
+OK   D5: потопление идёт по сценарию (фаза ≥2, корпус глубоко) | {"sinkT":11,"phase":3,"y":-6.7,"broke":true}
+
+ALL OK (проверок: 22)

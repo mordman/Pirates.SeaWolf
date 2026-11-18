@@ -297,9 +297,9 @@ export class Game {
   pgReturnFire = false;           // отвечает ли мишень огнём
   /** Task 46: счётчик попаданий по игроку (телеметрия: ответный огонь) */
   playerHitCount = 0;
-  /** Task 79: ПРОКЛЯТИЕ КАПИТАНА уже сработало (первое попадание
-   *  игрока по «Чёрной жемчужине» — капитан-игрок обратился в
-   *  мертвеца со светящимся клинком; раз за игру) */
+  // Task 80: проклятие капитана — ПО СВЯЗИ с кораблём (player =
+  // «Чёрная жемчужина»), триггер попаданий удалён. Телеметрия:
+  // __crewModelInfo().captain.undead (экипаж) и lander.cursed
   captainCursed = false;
   // ПОЛИГОН на чистой воде (Task 36: карта ×10 — полигон уехал к 32 км)
   private PG_ANCHOR = new THREE.Vector3(32000, 0, 23000);
@@ -1261,6 +1261,126 @@ export class Game {
     return out;
   }
 
+  /** Task 80: МЕШ-УРОВЕНЬ аудит парусов. Прежние аудиты (Task 78/79)
+   *  параметризовали полотно КВАДОМ (углы+пивот) — а шейдер живёт на
+   *  РЕАЛЬНЫХ вершинах меша (uBelly по uv, локальная ось Z меша,
+   *  повороты родителей: мачта/сегмент/рея). Здесь проверяются сами
+   *  вершины: matrixWorld (свежепостроенного visual, с брасопкой
+   *  реи ±0.94 и промежуточными углами) + «пузо» шейдера ОБЕИХ
+   *  сторон (до bellyMax), против штевня/галеонной фигуры, боксов
+   *  досок и гладкого обвода (ниже кромки фальшборта). Возвращает
+   *  ТОЛЬКО пресеты с нарушениями (для e2e-гарда). */
+  debugSailMeshAudit(bellyMax = 1.7): { id: string; planksMax: number; bowMax: number; smoothMax: number; worst: string }[] {
+    const out: { id: string; planksMax: number; bowMax: number; smoothMax: number; worst: string }[] = [];
+    const p = new THREE.Vector3();
+    const invq = new THREE.Quaternion();
+    const loc = new THREE.Vector3();
+    for (const P of Object.values(PRESETS)) {
+      const vis = buildShip(P, { planking: true });
+      const recs = vis.planks?.records ?? [];
+      let planksMax = 0, bowMax = 0, smoothMax = 0;
+      let worst = '';
+      // нос: штевень + галеонная фигура (как в debugPlankSailAudit)
+      const L0 = P.length;
+      const stemBox = {
+        x: 0.20, z0: L0 * 0.47, z1: L0 * 0.52,
+        y0: -P.draft * 0.5, y1: hullProfile(1, P).bulwark * 0.9,
+      };
+      const figS = THREE.MathUtils.clamp(P.freeboard * 0.26, 0.55, 1.25)
+        * THREE.MathUtils.clamp(P.freeboard * 0.30, 0.8, 1.6);
+      const figBox = {
+        x: 0.45 + figS * 0.55, z0: L0 / 2 - 0.15 - figS * 0.55, z1: L0 / 2 - 0.15 + figS * 0.65 + 0.35,
+        y0: P.freeboard * 1.02, y1: P.freeboard * 1.02 + figS * 2.1,
+      };
+      const test = (label: string) => {
+        // гладкий обвод: точка внутри корпуса НИЖЕ палубы
+        const t = THREE.MathUtils.clamp((p.z + P.length / 2) / P.length, 0, 1);
+        const hw = hullHalfWidthAt(P, t, p.y);
+        const bw = hullProfile(t, P).bulwark;
+        if (p.y < bw - 1.05 && Math.abs(p.x) < hw) {
+          smoothMax = Math.max(smoothMax, hw - Math.abs(p.x));
+        }
+        // нос: штевень/фигура в диаметральной плоскости
+        for (const b of [stemBox, figBox]) {
+          if (Math.abs(p.x) < b.x && p.z > b.z0 && p.z < b.z1 && p.y > b.y0 && p.y < b.y1) {
+            const depth = Math.min(b.x - Math.abs(p.x), b.z1 - p.z, p.z - b.z0, b.y1 - p.y);
+            if (depth > bowMax) {
+              bowMax = depth;
+              worst = `${label}:нос@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`;
+            }
+          }
+        }
+        // дощатая обшивка
+        for (const r of recs) {
+          const ext = Math.max(r.len, r.w, r.thick) * 0.5 + 0.12;
+          if (Math.abs(r.center.z - p.z) > ext) continue;
+          if (Math.abs(r.center.y - p.y) > ext) continue;
+          if (Math.abs(r.center.x - p.x) > ext) continue;
+          invq.copy(r.quat).invert();
+          loc.copy(p).sub(r.center).applyQuaternion(invq);
+          if (Math.abs(loc.x) < r.thick / 2 && Math.abs(loc.y) < r.w / 2
+            && Math.abs(loc.z) < r.len / 2) {
+            const depth = Math.min(
+              r.thick / 2 - Math.abs(loc.x),
+              r.w / 2 - Math.abs(loc.y),
+              r.len / 2 - Math.abs(loc.z));
+            if (depth > planksMax) {
+              planksMax = depth;
+              worst = `${label}@(${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)})`;
+            }
+          }
+        }
+      };
+      // свежий visual не в сцене — матрицы считаются от локальных
+      vis.group.updateMatrixWorld(true);
+      for (const sl of vis.sails.sails) {
+        const mesh = sl.mesh;
+        const geo = mesh.geometry;
+        const posA = geo.attributes.position as THREE.BufferAttribute;
+        const uvA = geo.attributes.uv as THREE.BufferAttribute;
+        if (!posA || !uvA) continue;
+        // прямые паруса: рея брасопится — проверяем углы между 0 и ±0.94
+        // (дискретные 0/±0.94 пропускали попадания на промежуточных)
+        const braces = sl.square && sl.brace
+          ? [0, 0.94, -0.94, 0.55, -0.55, 0.78, -0.78] : [0];
+        const savedBrace = sl.square && sl.brace ? sl.brace.rotation.y : 0;
+        for (const br of braces) {
+          if (sl.square && sl.brace) {
+            sl.brace.rotation.y = br;
+            mesh.updateWorldMatrix(true, false);
+          }
+          // «пузо» шейдера — ОБЕ стороны (борт ветра)
+          for (const sgn of [1, -1]) {
+            for (let i = 0; i < posA.count; i++) {
+              const uvx = uvA.getX(i), uvy = uvA.getY(i);
+              const belly = bellyMax * sgn * Math.sin(uvx * Math.PI) * Math.sin(uvy * Math.PI)
+                * (0.72 + 0.28 * (1 - uvy));
+              p.set(posA.getX(i), posA.getY(i), posA.getZ(i) + belly)
+                .applyMatrix4(mesh.matrixWorld);
+              test(`${sl.square ? 'прямой' : 'косой'}${sgn > 0 ? '+' : '−'}${sl.square ? '@br' + br.toFixed(2) : ''}`);
+            }
+          }
+        }
+        if (sl.square && sl.brace) {
+          sl.brace.rotation.y = savedBrace;
+          mesh.updateWorldMatrix(true, false);
+        }
+      }
+      vis.group.traverse(o => {
+        const m = o as THREE.Mesh;
+        if ((m as unknown as { isMesh?: boolean }).isMesh) m.geometry?.dispose();
+      });
+      if (planksMax > 0.02 || bowMax > 0.02 || smoothMax > 0.02) {
+        out.push({
+          id: P.id,
+          planksMax: +planksMax.toFixed(3), bowMax: +bowMax.toFixed(3),
+          smoothMax: +smoothMax.toFixed(3), worst,
+        });
+      }
+    }
+    return out;
+  }
+
   /** Task 79: АУДИТ «МЁРТВЫЙ РАНГОУТ» — латинская рейка СЛОМАННОЙ
    *  мачты (фокус Task 78 не покрывал латинские суда). В гладком
    *  режиме рангоут не отстыковывается — вся мачта валится с рейкой:
@@ -1448,6 +1568,24 @@ export class Game {
 
   private wireEvents() {
     const distToPlayer = (p: THREE.Vector3) => p.distanceTo(this.player.position);
+    // Task 80: НАБОР КОРПУСА — треск и ПЕРЕЛОМ (все корабли: игрок,
+    // ИИ, мишени полигона; статический хук Ship)
+    Ship.onAnyKeelCrack = (s, broke) => {
+      const who = s === this.player ? 'Наш корабль' : s.preset.name;
+      this.audio.creak(broke ? 1 : 0.55);
+      if (broke) {
+        this.rig.addShake(s === this.player ? 0.9 : 0.4);
+        this.pushMessage(`☠ ${who}: корпус ПЕРЕЛОМИЛСЯ пополам — корабль уходит под воду!`);
+      } else {
+        this.pushMessage(`${who}: набор корпуса трещит по швам!`);
+      }
+    };
+    Ship.onAnyMastBroken = (s, idx) => {
+      const who = s === this.player ? 'Наш корабль' : s.preset.name;
+      const wp = s.visual.masts[idx]?.getWorldPosition(new THREE.Vector3()) ?? s.position;
+      this.audio.woodHit(distToPlayer(wp));
+      this.pushMessage(`${who}: мачта переломлена!`);
+    };
     this.bus.on(GameEvents.CANNON_FIRED, (p) => {
       const d = (p as { pos: THREE.Vector3; power: number });
       this.audio.cannon(d.power, distToPlayer(d.pos));
@@ -1471,17 +1609,10 @@ export class Game {
       // ИИ реагирует на агрессию игрока
       const ai = this.aiShips.find(a => a.ship === d.target);
       if (ai) ai.onPlayerAggression(this.aiShips);
-      // Task 79: ПРОКЛЯТИЕ «ЧЁРНОЙ ЖЕМЧУЖИНЫ» — первое попадание
-      // ИГРОКА по легендарному кораблю обращает КАПИТАНА-ИГРОКА в
-      // МЕРТВЕЦА со СВЕТЯЩИМСЯ КЛИНКОМ (остальная команда жива;
-      // труба уходит за пояс — кисть занята клинком). Раз за игру.
-      if (!this.captainCursed && d.shooter === this.player && d.target !== this.player
-        && !d.target.sunk && d.target.preset.id === 'blackpearl') {
-        this.captainCursed = true;
-        this.player.setCaptainUndead(true);
-        this.pushMessage('☠ Проклятие «Чёрной жемчужины»: капитан обращён в мертвеца — в руке светится зелёный клинок!');
-        this.audio.creak(0.4);
-      }
+      // Task 80: триггер проклятия от ПОПАДАНИЙ УДАЛЁН — капитан
+      // становится мертвецом только когда корабль игрока сам
+      // становится «Чёрной жемчужиной» (выбор на полигоне/верфи:
+      // changeShip → lander.setCursed + crewUndead у экипажа)
     });
     this.bus.on(GameEvents.MESSAGE, (p) => {
       this.pushMessage((p as { text: string }).text);
@@ -1750,6 +1881,13 @@ export class Game {
     this.player = np;
     this.combat.player = np;
     this.syncCaptainSpyglass();       // Task 77: капитан продолжает смотреть в трубу
+    // Task 80: корабль игрока стал «Чёрной жемчужиной» → капитан-игрок
+    // (и на палубе, и в прогулке/высадке) — МЕРТВЕЦ с ЗЕЛЁНЫМ клинком;
+    // никакие попадания снарядов больше не участвуют
+    const cursedNow = presetId === 'blackpearl';
+    this.lander?.setCursed(cursedNow);
+    this.captainCursed = cursedNow;
+    if (cursedNow) this.pushMessage('☠ Капитан «Чёрной жемчужины»: кожа мертвеца, в ножнах светится зелёный клинок');
     // шлюпка нового корабля — свой контроллер спуска (след пены
     // старой шлюпки снимается со сцены)
     this.boatLaunch?.dispose();
@@ -2177,7 +2315,7 @@ export class Game {
         isDown: (code) => inp.isDown(code),
         pressed: (code) => inp.pressed(code),
         mouseDX: inp.mouseDX, mouseDY: inp.mouseDY, wheel: inp.wheelDelta,
-        lmbJust: inp.lmbJust, rmb: inp.rmb,
+        lmbJust: inp.lmbJust, rmb: inp.rmb || this.lander.debugHoldRmb,
       });
       if (this.lander.mode === 'deck') {
         // ВЫХОД С ПАЛУБЫ: та же клавиша (V) или E у штурвала
@@ -2587,10 +2725,10 @@ export class Game {
         aiming: lh.aiming, nearBoat: lh.nearBoat, nearWheel: lh.nearWheel,
         canLand: false,
         hint: onDeck
-          ? (lh.nearWheel ? 'E — за штурвал' : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · V — к штурвалу' : 'ЛКМ — атака · X — убрать · V — к штурвалу')
+          ? (lh.nearWheel ? 'E — за штурвал' : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · 3 — труба · V — к штурвалу' : 'ЛКМ — атака · ПКМ — труба/прицел · X — убрать · V — к штурвалу')
           : lh.nearBoat
             ? 'E — в шлюпку'
-            : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · WASD — идти'
+            : lh.weapon === 'none' ? '1 — сабля · 2 — пистолет · 3 — труба · WASD — идти'
             : 'ЛКМ — атака · X — убрать оружие · Shift — бег',
       };
     } else {
@@ -3348,10 +3486,10 @@ export class Game {
         player: one(this.player),
         // Task 76: капитан на борту — ИГРОК (внешность со старта);
         // на «Чёрной жемчужине» его модель — МЕРТВЕЦ;
-        // Task 79: captainCursed — проклятие от попадания по
-        // «Чёрной жемчужине» (капитан-мертвец + светящийся клинок)
+        // Task 80: проклятие — от ВЫБОРА «Жемчужины» кораблём игрока
+        // (без попаданий): капитан-мертвец + светящийся клинок
         captain: this.player.crew3d.captainInfo(),
-        captainCursed: this.captainCursed,
+        captainCursed: this.player.preset.id === 'blackpearl',
         playerAppearance: { ...this.settings.player },
         near: this.aiShips.filter(a => !a.ship.sunk && a.ship.crewDetailedOpt).length,
         far: this.aiShips.filter(a => !a.ship.sunk && !a.ship.crewDetailedOpt).length,
@@ -3669,8 +3807,10 @@ export class Game {
     this.updateHud();
     // Task 77: сглаживание blend ТРУБЫ — в СИМУЛЯЦИИ (e2e шагает
     // мир без рендера; blend/зерно должны жить и там)
+    // Task 80: труба «как пистолет» (3, осмотр по ПКМ) — смотреть
+    // сквозь стекло можно и ПЕШКОМ/НА ПАЛУБЕ, не только с корабля (T)
     {
-      const want = this.spyglassOn ? 1 : 0;
+      const want = (this.spyglassOn || this.lander?.spyAiming) ? 1 : 0;
       this.spyFx.blend += (want - this.spyFx.blend) * Math.min(1, dt * 4.5);
       if (!want && this.spyFx.blend < 0.001) this.spyFx.blend = 0;
       this.spyFx.tick(dt);
@@ -3775,6 +3915,20 @@ export class Game {
       offStairY: +plan.surfaceY(plan.stairX + 1.2, (plan.stairZ0 + plan.qFrontZ) / 2).toFixed(2),
       obstacles: plan.obstacles.length,
     };
+  }
+
+  /** Task 80 E2E/отладка: войти в режим ПРОГУЛКИ ПО ПАЛУБЕ (как V)
+   *  или выйти — без клавиатуры (headless-пробы трубы/оружия) */
+  debugDeckWalk(on: boolean) {
+    if (on && this.lander && !this.lander.active) {
+      const p = this.player;
+      this.lander.enterDeck(deckPlan(p.preset), p.visual.group);
+    } else if (!on && this.lander?.active) {
+      this.lander.exitDeck();
+      this.lander.restoreCamera();
+      this.rig.snap();
+    }
+    return this.lander?.hud() ?? null;
   }
 
   /** E2E/отладка: прогнать симуляцию seconds секунд БЕЗ рендера

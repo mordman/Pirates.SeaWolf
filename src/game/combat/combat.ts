@@ -350,6 +350,25 @@ export class CombatSystem {
     }
   }
 
+  /** Task 80 E2E: пустить ЯДРО по явной траектории (пробы пробития
+   *  насквозь — точный выстрел в подготовленную пробоину борта) */
+  debugSpawnBall(from: THREE.Vector3, dir: THREE.Vector3, speed = 170) {
+    const pr = this.projectiles.find(q => !q.active);
+    if (!pr) return false;
+    pr.active = true;
+    pr.pos.copy(from);
+    pr.prev.copy(from);
+    pr.vel.copy(dir).normalize().multiplyScalar(speed);
+    pr.type = 'ball';
+    pr.shooter = this.player;
+    pr.age = 0;
+    pr.trailT = 0;
+    pr.spin = 0;
+    pr.pierced.clear();
+    pr.hullPierce = null;
+    return true;
+  }
+
   private doFire(gun: THREE.Object3D, info: typeof AMMO_INFO[AmmoType]) {
     const ship = this.player;
     // позиция дула в МИРОВЫХ координатах (без matrixWorld — floating origin!):
@@ -650,6 +669,15 @@ export class CombatSystem {
         const done = pr.type === 'chain' ? (pr.pierced.get(t) ?? []) : [];
         hit = this.hitTest(pr, t, done);
         if (hit) {
+          // Task 80: ПРОБИТ ЛИ борт в точке входа ДО этого удара?
+          // (доля сломанных досок вокруг точки: решето → ядро
+          // пролетает ВНУТРЬ и бьёт в противоположный борт)
+          const entryOpen = hit.mast < 0 ? t.plankSideOpen(hit.lp) : 0;
+          if (hit.mast < 0 && pr.type === 'ball') {
+            // E2E-телеметрия решения о пробитии
+            this.punchLog.push(`hit@(${hit.lp.x.toFixed(1)},${hit.lp.y.toFixed(1)},${hit.lp.z.toFixed(1)}) open=${entryOpen.toFixed(2)} hp=${(t.hullHP / t.hullMax).toFixed(2)}`);
+            if (this.punchLog.length > 8) this.punchLog.shift();
+          }
           this.applyHit(pr, t, info, hit);
           if (pr.type === 'chain' && hit.mast >= 0) {
             // сквозной пролёт: пометить разорванные мачты, летим дальше
@@ -657,13 +685,18 @@ export class CombatSystem {
             for (const mi of this.chainMasts) masts.push(mi);
             pr.pierced.set(t, masts);
             piercedMast = true;
-          } else if (hit.mast < 0 && pr.type === 'ball' && this.canPunch(pr, t)) {
+          } else if (hit.mast < 0 && pr.type === 'ball'
+            && (entryOpen > 0.45 || this.canPunch(pr, t))) {
             // изрешечённый борт не держит ядро: ПРОБИТИЕ НАСКВОЗЬ —
             // входная пробоина/урон уже нанесены, ядро теряет часть
             // энергии и ВЫЛЕТАЕТ с другой стороны (exitHull), не
-            // застревая и не оставаясь на экране
+            // застревая и не оставаясь на экране.
+            // Task 80: в УЖЕ ПРОБИТЫЙ борт (решето) — вход почти
+            // без сопротивления (×0.82), в ослабленный — ×0.6;
+            // прошив трюм, ядро ЛОМАЕТ НАБОР (киль/шпангоуты —
+            // damageStructure) — см. exitHull
             pr.hullPierce = t;
-            pr.vel.multiplyScalar(0.6);
+            pr.vel.multiplyScalar(entryOpen > 0.45 ? 0.82 : 0.6);
             punchedThrough = true;
           }
           break;
@@ -728,6 +761,8 @@ export class CombatSystem {
   private _vN = new THREE.Vector3();
   /** мачты в круге разлёта книппеля (заполняет hitTest) */
   private chainMasts: number[] = [];
+  /** Task 80 E2E: журнал решений о СКВОЗНОМ пробитии (последние 8) */
+  readonly punchLog: string[] = [];
   // temporaries for sailPass
   private sqA = new THREE.Vector3();
   private sqB = new THREE.Vector3();
@@ -857,9 +892,25 @@ export class CombatSystem {
     const hullTop = t.preset.freeboard * 1.17 + (t.preset.quarter ?? 0) + 0.85;
     const L = t.preset.length, B = t.preset.beam;
     const c = this.lcur;
-    if (Math.abs(c.z) < L * 0.52 && Math.abs(c.x) < B * 0.62
-      && c.y > -t.preset.draft * 0.8 && c.y < hullTop) {
-      return { mast: -1, lp: c.clone(), dir: this.hitDir.clone() };
+    const bx = B * 0.62, bz = L * 0.52;
+    const y0 = -t.preset.draft * 0.8, y1 = hullTop;
+    if (Math.abs(c.z) < bz && Math.abs(c.x) < bx && c.y > y0 && c.y < y1) {
+      // Task 80: точка попадания — на ГРАНИ бокса (пересечение отрезка
+      // prev→cur с поверхностью). Быстрое ядро пролетает 6+ м за кадр и
+      // прежде регистрировалось ГЛУБЖЕ корпуса: знак X переворачивал
+      // «борт входа», урон и пробитие попадали не туда (меш-проба:
+      // hit@(−2.8,·,3.5) при заходе с +X). Slab-метод: s — расстояние
+      // назад по полёту до последней пересечённой грани
+      const d = this.hitDir;
+      let s = 0;
+      if (d.x < -1e-6 && this.lprev.x >= bx) s = Math.max(s, (c.x - bx) / d.x);
+      else if (d.x > 1e-6 && this.lprev.x <= -bx) s = Math.max(s, (c.x + bx) / d.x);
+      if (d.z < -1e-6 && this.lprev.z >= bz) s = Math.max(s, (c.z - bz) / d.z);
+      else if (d.z > 1e-6 && this.lprev.z <= -bz) s = Math.max(s, (c.z + bz) / d.z);
+      if (d.y < -1e-6 && this.lprev.y >= y1) s = Math.max(s, (c.y - y1) / d.y);
+      else if (d.y > 1e-6 && this.lprev.y <= y0) s = Math.max(s, (c.y - y0) / d.y);
+      const lp = c.clone().addScaledVector(d, -s);
+      return { mast: -1, lp, dir: this.hitDir.clone() };
     }
     return null;
   }
@@ -887,15 +938,25 @@ export class CombatSystem {
 
   /** Снаряд ВЫЛЕТЕЛ из пробитого корпуса: выходная пробоина с другой
    *  стороны, щепы и доска летят из отверстия по ходу ядра, лёгкий
-   *  доп. урон — ядро продолжает полёт (до воды/земли/таймаута) */
+   *  доп. урон — ядро продолжает полёт (до воды/земли/таймаута).
+   *  Task 80: ПРОТИВОПОЛОЖНЫЙ БОРТ ЛОМАЕТСЯ по-настоящему — выходной
+   *  пролом вырывает доски наружу (урон ×0.55 вместо ×0.35), а
+   *  прошившее трюм ядро ЛОМАЕТ НАБОР (киль/шпангоуты: течь по
+   *  швам, при накоплении — ПЕРЕЛОМ корпуса) и срывает палубные
+   *  детали у линии выхода */
   private exitHull(pr: Projectile, t: Ship, info: typeof AMMO_INFO[AmmoType]) {
     this.invQ.copy(t.quaternion).invert();
     this.lcur.subVectors(pr.pos, t.position).applyQuaternion(this.invQ);
     const lp = this.lcur.clone();
     // Task 43: выходная пробоина — стадийная (щепы по ходу ядра
-    // изнутри наружу)
-    t.hitHull(lp, info.dmgHull * 0.35, lp.y < 0.6, pr.vel.clone());
+    // изнутри наружу); Task 80: ПРОТИВОПОЛОЖНЫЙ БОРТ ЛОМАЕТСЯ
+    // по-настоящему — урон зоны ≥46 (как addHole: ближайшая доска
+    // ломается, каскад вырывает весь пояс разрыва)
+    t.hitHull(lp, Math.max(46, info.dmgHull * 1.5), lp.y < 0.6, pr.vel.clone());
     t.applyDamage({ kind: 'ball', amount: info.dmgHull * 0.35, hitPoint: pr.pos.clone() });
+    // Task 80: набор корпуса + палубные детали на пути выхода
+    t.damageStructure(lp, 9 + Math.random() * 7);
+    t.damageProp(lp, info.dmgHull * 0.8);
     const P = this.particles;
     for (let i = 0; i < 7; i++) {
       P.spawn(pr.pos.x, pr.pos.y, pr.pos.z,
@@ -1006,6 +1067,14 @@ export class CombatSystem {
             dirW.x * 2.2 + (Math.random() - 0.5), 1.2 + Math.random() * 1.6,
             dirW.z * 2.2 + (Math.random() - 0.5)), 55 + Math.random() * 30, t.hullTint);
         }
+      }
+      // Task 80: тяжёлое ядро у САМОГО ОСНОВАНИЯ (ближе к ДП, низко)
+      // ломает НАБОР корпуса — киль/шпангоуты трещат, швы текут;
+      // накопленный урон → ПЕРЕЛОМ (Ship.breakHull)
+      if (pr.type === 'ball'
+        && Math.abs(hit.lp.x) < t.preset.beam * 0.30
+        && hit.lp.y < t.preset.freeboard * 0.35) {
+        t.damageStructure(hit.lp, 4 + Math.random() * 5);
       }
       // щепки и дым
       for (let i = 0; i < 6; i++) {

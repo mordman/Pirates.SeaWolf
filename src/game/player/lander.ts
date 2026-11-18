@@ -23,11 +23,14 @@ import type { DeckPlan } from '../ship/buildShip';
 // 2 — ПИСТОЛЕТ — стреляет ТОЛЬКО НА ПРИЦЕЛЕ (ПКМ): вид от прицела,
 // узкий FOV, перекрестие; выстрел — ВИДИМАЯ ПУЛЯ в полёте (свинцовый
 // шарик по лучу камеры + дымный след) и ОБЛАКО ДЫМА у дула.
+// 3 — ПОДЗОРНАЯ ТРУБА (Task 80) «как пистолет»: в покое — в руке
+// стволом вперёд-вниз; ПКМ — СМОТРЕТЬ СКВОЗЬ НЕЁ (кратность 2×..8×,
+// колесо — зум, зерно/царапины/виньетка — эффект стекла).
 // X — убрать оружие. Руки фигурки МАШАТ при ходьбе; в покое
 // капитан периодически поднимает руку — «раздаёт указания».
 // ============================================================
 
-export type LanderWeapon = 'none' | 'saber' | 'pistol';
+export type LanderWeapon = 'none' | 'saber' | 'pistol' | 'spyglass';
 export type LanderMode = 'off' | 'island' | 'deck';
 
 export interface LanderAudio {
@@ -96,6 +99,18 @@ export class Lander {
   /** геометрия оружия — открыта для E2E-проб (прямая сабля) */
   saberG: THREE.Group | null = null;
   pistolG: THREE.Group | null = null;
+  /** Task 80: ПОДЗОРНАЯ ТРУБА — третье «оружие» (3): в покое в руке
+   *  стволом вперёд-вниз, ПКМ — смотреть сквозь неё (зум колесом) */
+  spyglassG: THREE.Group | null = null;
+  spyZoom = 4;                     // кратность 2×..8×
+  private spyExtT = 0;             // 0 сложена .. 1 колена выдвинуты
+  private spyDraw1: THREE.Object3D | null = null;
+  private spyDraw2: THREE.Object3D | null = null;
+  /** смотрим сквозь трубу? (для FX стекла в game.ts) */
+  get spyAiming(): boolean { return this.active && this.weapon === 'spyglass' && this.aiming; }
+  /** E2E: удерживать ПКМ (игровой цикл читает реальную мышь и
+   *  сбросил бы synthetic-прицел между шагами) */
+  debugHoldRmb = false;
 
   get active(): boolean { return this.mode !== 'off'; }
   get pos(): THREE.Vector3 { return this.group.position; }
@@ -131,6 +146,14 @@ export class Lander {
   private _w1 = new THREE.Vector3();
   private _w2 = new THREE.Vector3();
   private _e = new THREE.Euler();
+  /** Task 80: капитан-ИГРОК — МЕРТВЕЦ (корабль игрока = «Чёрная
+   *  жемчужина»): фигурка пересобирается в трупную внешность, а
+   *  САБЛЯ меняет клинок на СВЕТЯЩИЙСЯ ЗЕЛЁНЫЙ (замена, не добавка) */
+  private cursed = false;
+  private saberSteel: THREE.Material | null = null;
+  private saberBlades: THREE.Mesh[] = [];
+  private saberCurseMat: THREE.MeshPhysicalMaterial | null = null;
+  private saberPuffs: THREE.Mesh[] = [];
 
   constructor(deps: LanderDeps) {
     this.deps = deps;
@@ -143,8 +166,11 @@ export class Lander {
     // Task 39: фигурка капитана — по ВЫБРАННОЙ внешности (экран
     // создания персонажа); по умолчанию — «случайный моряк».
     // Task 40: walker → руки ОТДЕЛЬНЫМИ мешами (махи/прицел/привет)
+    // Task 80: cursed (корабль игрока = «Чёрная жемчужина») — та же
+    // внешность, но МЕРТВЕЦ (трупная кожа, как у капитана на палубе)
     this.appearance = this.deps.appearance ?? DEFAULT_APPEARANCE;
-    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
+    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777,
+      true, this.cursed);
     this.fig = fig;
     this.group.add(fig.group);
     // --- САБЛЯ (Task 40: ПРЯМАЯ — ровный клинок, сужающийся к
@@ -156,16 +182,20 @@ export class Lander {
     // клинок: три ровных сегнала с сужением 0.035 → 0.024 м
     let y0 = 0.1; // от гарды
     const segs: [number, number][] = [[0.035, 0.55], [0.03, 0.25], [0.024, 0.12]];
+    this.saberBlades = [];
     for (const [w, len] of segs) {
       const seg = new THREE.Mesh(new THREE.BoxGeometry(w, len, 0.012), steel);
       seg.position.y = y0 + len / 2;
       saber.add(seg);
+      this.saberBlades.push(seg);
       y0 += len;
     }
     // ровное остриё-клин (продолжение прямой линии клинка)
     const tip = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.09, 0.008), steel);
     tip.position.y = y0 + 0.045;
     saber.add(tip);
+    this.saberBlades.push(tip);
+    this.saberSteel = steel;
     const guard = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.035, 0.05), brass);
     guard.position.y = 0.1;
     saber.add(guard);
@@ -201,6 +231,52 @@ export class Lander {
     pistol.rotation.set(Math.PI / 2, 0, 0);
     pistol.visible = false;
     this.pistolG = pistol;
+    // --- ПОДЗОРНАЯ ТРУБА (Task 80): латунный ствол + кожаный хват +
+    //     окуляр-наглазник + ДВА ВЫДВИЖНЫХ КОЛЕНА + объектив;
+    //     ось — как у пистолета: ВДОЛЬ РУКИ (+Z кисти), в покое
+    //     стволом вперёд-вниз у бедра, при осмотре (ПКМ) — к глазу,
+    //     колена выдвигаются (spyExtT) ---
+    const spy = new THREE.Group();
+    const brassM = new THREE.MeshStandardMaterial({ color: 0xb08d3c, roughness: 0.35, metalness: 0.8 });
+    const leatherM = new THREE.MeshStandardMaterial({ color: 0x4a3220, roughness: 0.9 });
+    const barrelS = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.024, 0.20, 10), brassM);
+    barrelS.rotation.x = Math.PI / 2;
+    barrelS.position.z = 0.10;
+    spy.add(barrelS);
+    const wrap = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.07, 10), leatherM);
+    wrap.rotation.x = Math.PI / 2;
+    wrap.position.z = 0.035;
+    spy.add(wrap);
+    const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.021, 0.03, 10), leatherM);
+    eyepiece.rotation.x = Math.PI / 2;
+    eyepiece.position.z = -0.015;
+    spy.add(eyepiece);
+    // колено 1 (внутри ствола, выдвигается вперёд)
+    const draw1 = new THREE.Group();
+    const d1m = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.019, 0.16, 10), brassM);
+    d1m.rotation.x = Math.PI / 2;
+    d1m.position.z = 0.08;
+    draw1.add(d1m);
+    draw1.position.z = 0.19;
+    spy.add(draw1);
+    // колено 2 + объектив
+    const draw2 = new THREE.Group();
+    const d2m = new THREE.Mesh(new THREE.CylinderGeometry(0.0135, 0.015, 0.14, 10), brassM);
+    d2m.rotation.x = Math.PI / 2;
+    d2m.position.z = 0.07;
+    draw2.add(d2m);
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.015, 0.024, 10), brassM);
+    lens.rotation.x = Math.PI / 2;
+    lens.position.z = 0.15;
+    draw2.add(lens);
+    draw2.position.z = 0.15;
+    draw1.add(draw2);
+    spy.position.set(0.01, -0.03, 0.03);
+    spy.rotation.set(Math.PI / 2, 0, 0);
+    spy.visible = false;
+    this.spyglassG = spy;
+    this.spyDraw1 = draw1;
+    this.spyDraw2 = draw2;
     // ОРУЖИЕ → маунт у кисти (рука без крюка)
     this.attachWeaponToHand();
   }
@@ -218,6 +294,10 @@ export class Lander {
       this.pistolG.parent?.remove(this.pistolG);
       (mount ?? this.group).add(this.pistolG);
     }
+    if (this.spyglassG) {
+      this.spyglassG.parent?.remove(this.spyglassG);
+      (mount ?? this.group).add(this.spyglassG);
+    }
   }
 
   /** Сменить внешность капитана (экран создания/настройки) —
@@ -228,6 +308,7 @@ export class Lander {
     // иначе traverse уничтожит геометрию сабли/пистолета
     if (this.saberG) this.saberG.parent?.remove(this.saberG);
     if (this.pistolG) this.pistolG.parent?.remove(this.pistolG);
+    if (this.spyglassG) this.spyglassG.parent?.remove(this.spyglassG);
     if (this.fig) {
       const old = this.fig.group;
       this.group.remove(old);
@@ -236,16 +317,87 @@ export class Lander {
         if (m.isMesh) m.geometry.dispose();
       });
     }
-    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777);
+    const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777,
+      true, this.cursed);
     this.fig = fig;
     this.group.add(fig.group);
     this.attachWeaponToHand();
     this.deps.msg('Внешность капитана обновлена');
   }
 
+  /** Task 80: капитан-игрок — МЕРТВЕЦ (корабль игрока стал «Чёрной
+   *  жемчужиной» — на полигоне/верфи; БЕЗ попаданий снарядов).
+   *  Фигурка пересобирается в трупную внешность, а САБЛЯ получает
+   *  СВЕТЯЩИЙСЯ ЗЕЛЁНЫЙ клинок (клинок ЗАМЕНЯЕТСЯ — та же сабля
+   *  в той же руке, что и у капитана на палубе: 0x39d65a/0x1e8f3e,
+   *  пульс + мерцающая дымка вдоль лезвия) */
+  setCursed(on: boolean) {
+    if (this.cursed === on) return;
+    this.cursed = on;
+    // пересобрать фигурку (мертвец = трупная кожа/тряпьё)
+    if (this.fig) {
+      if (this.saberG) this.saberG.parent?.remove(this.saberG);
+      if (this.pistolG) this.pistolG.parent?.remove(this.pistolG);
+      if (this.spyglassG) this.spyglassG.parent?.remove(this.spyglassG);
+      const old = this.fig.group;
+      this.group.remove(old);
+      old.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) m.geometry.dispose();
+      });
+      const fig = buildFigure('walker', appearanceToTraits(this.appearance), 777,
+        true, this.cursed);
+      this.fig = fig;
+      this.group.add(fig.group);
+      this.attachWeaponToHand();
+    }
+    this.applySaberCurse(on);
+  }
+
+  /** зелёный проклятый клинок: тот же saberG, материалы заменены */
+  private applySaberCurse(on: boolean) {
+    if (!this.saberG || !this.saberSteel) return;
+    if (on && !this.saberCurseMat) {
+      const mat = new THREE.MeshPhysicalMaterial({
+        color: 0x39d65a, transparent: true, opacity: 0.55,
+        emissive: 0x1e8f3e, emissiveIntensity: 1.1,
+        roughness: 0.15, metalness: 0.3, side: THREE.DoubleSide, depthWrite: true,
+      });
+      const puffs: THREE.Mesh[] = [];
+      for (let i = 0; i < 3; i++) {
+        const puff = new THREE.Mesh(
+          new THREE.SphereGeometry(0.05 + i * 0.012, 6, 5),
+          new THREE.MeshBasicMaterial({ color: 0x52e07a, transparent: true, opacity: 0.3, depthWrite: false }));
+        puff.position.set(0, 0.25 + i * 0.24, 0.01);
+        this.saberG.add(puff);
+        puffs.push(puff);
+      }
+      const t0 = 7.7;
+      mat.onBeforeRender = () => {
+        const t = performance.now() * 0.001 + t0;
+        mat.opacity = 0.48 + 0.14 * Math.sin(t * 2.3);
+        mat.emissiveIntensity = 0.9 + 0.55 * Math.sin(t * 3.1 + 1.3);
+        for (let i = 0; i < puffs.length; i++) {
+          const pm = puffs[i].material as THREE.MeshBasicMaterial;
+          const ph = t * (1.1 + i * 0.35) + i * 2.1;
+          pm.opacity = 0.14 + 0.13 * (0.5 + 0.5 * Math.sin(ph));
+          puffs[i].position.x = Math.sin(ph * 0.7) * 0.03;
+          puffs[i].scale.setScalar(0.85 + 0.3 * (0.5 + 0.5 * Math.sin(ph * 0.5 + 1)));
+        }
+      };
+      this.saberCurseMat = mat;
+      this.saberPuffs = puffs;
+    }
+    const mat = on && this.saberCurseMat ? this.saberCurseMat : this.saberSteel;
+    for (const b of this.saberBlades) b.material = mat;
+    for (const p of this.saberPuffs) p.visible = on;
+  }
+
   /** Поза фигурки для E2E/телеметрии (попугай/повязка/детали) */
   figureInfo() {
     return {
+      cursed: this.cursed,   // Task 80: капитан-мертвец (жемчужина)
+      spy: { weapon: this.weapon, aiming: this.aiming, zoom: +this.spyZoom.toFixed(2) },
       parrot: this.fig?.hasParrot ?? false,
       eyePatch: this.appearance.eyePatch,
       headwear: this.appearance.headwear,
@@ -317,7 +469,10 @@ export class Lander {
     this.yaw = Math.atan2(faceX, faceZ);
     this.camYaw = Math.atan2(-faceX, -faceZ);
     this.camPitch = 0.3;
-    this.deps.msg('Высадка на берег! WASD — идти, мышь — камера, 1 — сабля, 2 — пистолет, E — в шлюпку');
+    this.saberG!.visible = false;
+    this.pistolG!.visible = false;
+    this.spyglassG!.visible = false;
+    this.deps.msg('Высадка на берег! WASD — идти, мышь — камера, 1 — сабля, 2 — пистолет, 3 — труба, E — в шлюпку');
   }
 
   /** Task 40: КАПИТАН СХОДИТ С МОСТИКА — прогулка по палубе.
@@ -341,6 +496,7 @@ export class Lander {
     this.waveT = 0;
     this.saberG!.visible = false;
     this.pistolG!.visible = false;
+    this.spyglassG!.visible = false;
     this.yaw = Math.PI; // лицом к корме (к штурвалу)
     this.camYaw = 0;    // камера с носа, видит капитана и штурвал
     this.camPitch = 0.3;
@@ -376,7 +532,9 @@ export class Lander {
     return {
       active: this.active, mode: this.mode,
       weapon: this.weapon,
-      weaponLabel: this.weapon === 'saber' ? 'Сабля' : this.weapon === 'pistol' ? 'Пистолет' : 'Без оружия',
+      weaponLabel: this.weapon === 'saber' ? 'Сабля'
+        : this.weapon === 'pistol' ? 'Пистолет'
+          : this.weapon === 'spyglass' ? `Труба ×${this.spyZoom.toFixed(1)}` : 'Без оружия',
       aiming: this.aiming, nearBoat: this.nearBoat, nearWheel: this.nearWheel,
       moving: this.moving, camYaw: this.camYaw, bullets: this.bullets.length,
     };
@@ -388,15 +546,22 @@ export class Lander {
     lmbJust: boolean; rmb: boolean;
   }) {
     if (!this.active) return;
-    const sens = this.aiming ? 0.0016 : 0.0032;
+    // Task 80: сквозь трубу — чувствительность ещё ниже (кратность!)
+    const sens = this.spyAiming ? 0.0009 : this.aiming ? 0.0016 : 0.0032;
     this.camYaw -= inp.mouseDX * sens;
     this.camPitch = THREE.MathUtils.clamp(this.camPitch + inp.mouseDY * sens, -0.5, 1.15);
-    this.camDist = THREE.MathUtils.clamp(this.camDist + inp.wheel * 0.008, 2.6, 12);
+    // колесо: в трубе — КРАТНОСТЬ (2×..8×, шаг ×1.2), иначе дистанция
+    if (this.spyAiming) {
+      if (inp.wheel) this.spyZoom = THREE.MathUtils.clamp(this.spyZoom * (inp.wheel > 0 ? 1 / 1.2 : 1.2), 2, 8);
+    } else {
+      this.camDist = THREE.MathUtils.clamp(this.camDist + inp.wheel * 0.008, 2.6, 12);
+    }
     if (inp.pressed('Digit1')) {
       this.weapon = this.weapon === 'saber' ? 'none' : 'saber';
       this.aiming = false;
       this.saberG!.visible = this.weapon === 'saber';
       this.pistolG!.visible = false;
+      this.spyglassG!.visible = false;
       this.deps.msg(this.weapon === 'saber' ? 'Сабля наголо! ЛКМ — рубить' : 'Сабля в ножны');
     }
     if (inp.pressed('Digit2')) {
@@ -404,16 +569,30 @@ export class Lander {
       this.aiming = false;
       this.pistolG!.visible = this.weapon === 'pistol';
       this.saberG!.visible = false;
+      this.spyglassG!.visible = false;
       this.deps.msg(this.weapon === 'pistol' ? 'Пистолет заряжен! ПКМ — прицел, ЛКМ — выстрел (только прицелившись)' : 'Пистолет за пояс');
+    }
+    if (inp.pressed('Digit3')) {
+      // Task 80: ТРУБА «КАК ПИСТОЛЕТ» — третий слот: в покое в руке,
+      // ПКМ — смотреть сквозь неё (зерно/царапины стекла + зум)
+      this.weapon = this.weapon === 'spyglass' ? 'none' : 'spyglass';
+      this.aiming = false;
+      this.spyglassG!.visible = this.weapon === 'spyglass';
+      this.saberG!.visible = false;
+      this.pistolG!.visible = false;
+      this.deps.msg(this.weapon === 'spyglass'
+        ? `Труба в руку (×${this.spyZoom.toFixed(1)})! ПКМ — смотреть, колесо — зум`
+        : 'Труба за пояс');
     }
     if (inp.pressed('KeyX') && this.weapon !== 'none') {
       this.weapon = 'none';
       this.aiming = false;
       this.saberG!.visible = false;
       this.pistolG!.visible = false;
+      this.spyglassG!.visible = false;
       this.deps.msg('Оружие убрано');
     }
-    if (this.weapon === 'pistol') {
+    if (this.weapon === 'pistol' || this.weapon === 'spyglass') {
       if (inp.rmb && !this.aiming) this.aiming = true;
       else if (!inp.rmb && this.aiming) this.aiming = false;
     } else this.aiming = false;
@@ -423,6 +602,9 @@ export class Lander {
         // Task 57: КАЖДЫЙ удар — случайный из трёх замахов
         this.swingKind = Math.floor(Math.random() * 3);
         this.deps.audio.saber();
+      } else if (this.weapon === 'spyglass') {
+        // труба не стреляет — только смотрим (ПКМ)
+        this.deps.msg('В трубу смотрят: удерживайте ПКМ');
       } else if (this.weapon === 'pistol') {
         // Task 40: стрелять можно ТОЛЬКО ПРИЦЕЛИВШИСЬ (ПКМ)
         if (this.aiming && this.shotCd <= 0) this.fire();
@@ -601,7 +783,12 @@ export class Lander {
       const freeArm = hookSide ? armR : armL;
       if (wrist && freeArm) {
         const wz = hookSide ? 0.16 : -0.16;   // отвод от бедра
-        if (this.aiming && this.weapon === 'pistol') {
+        if (this.aiming && this.weapon === 'spyglass') {
+          // Task 80: ТРУБА У ГЛАЗА — как прицел пистолета, но рука
+          // чуть согнута (труба короче ствола), окуляр к лицу
+          wrist.rotation.set(-(Math.PI / 2 - this.camPitch) * 0.92, 0, 0);
+          freeArm.rotation.set(0.25, 0, hookSide ? -0.18 : 0.18);
+        } else if (this.aiming && this.weapon === 'pistol') {
           // прицел: рука с пистолетом вытянута вперёд, дуло вперёд
           // Task 57: ствол ТОЧНО по тангажу камеры (прежде отставал
           // на 40% и был наклонён вбок — пистолет «смотрел» мимо)
@@ -713,6 +900,18 @@ export class Lander {
     }
     if (this.saberG) this.saberG.visible = this.weapon === 'saber';
     if (this.pistolG) this.pistolG.visible = this.weapon === 'pistol';
+    // Task 80: ТРУБА — колена плавно выдвигаются при осмотре (ПКМ),
+    // складываются при опускании; лёгкий тремор у глаза (живая рука)
+    if (this.spyglassG) {
+      this.spyglassG.visible = this.weapon === 'spyglass';
+      const want = this.spyAiming ? 1 : 0;
+      this.spyExtT += (want - this.spyExtT) * Math.min(1, dt * 6);
+      const e = this.spyExtT;
+      if (this.spyDraw1) this.spyDraw1.position.z = 0.19 + e * 0.115;
+      if (this.spyDraw2) this.spyDraw2.position.z = 0.15 + e * 0.115;
+      const tremor = this.spyAiming ? Math.sin(time * 21) * 0.004 * (1 - 1 / this.spyZoom) : 0;
+      this.spyglassG.rotation.set(Math.PI / 2 + tremor, tremor * 0.7, 0);
+    }
     this.shotCd = Math.max(0, this.shotCd - dt);
     this.updateBullets(dt);
     if (this.mode === 'deck') this.updateCameraDeck(dt);
@@ -800,7 +999,8 @@ export class Lander {
     const cam = this.deps.camera;
     const wantDist = this.aiming ? CAM_AIM_DIST : this.camDist;
     this.camDistSm += (wantDist - this.camDistSm) * Math.min(1, dt * 8);
-    const wantFov = this.aiming ? AIM_FOV : 55;
+    // Task 80: в ТРУБЕ — FOV 55/кратность (2×..8×), у пистолета — 40
+    const wantFov = this.spyAiming ? 55 / this.spyZoom : this.aiming ? AIM_FOV : 55;
     this.fovSm += (wantFov - this.fovSm) * Math.min(1, dt * 8);
     if (Math.abs(cam.fov - this.fovSm) > 0.05) { cam.fov = this.fovSm; cam.updateProjectionMatrix(); }
     const px = this.pos.x + this.shift.x;
@@ -835,7 +1035,8 @@ export class Lander {
     const cam = this.deps.camera;
     const wantDist = this.aiming ? CAM_AIM_DIST : this.camDist;
     this.camDistSm += (wantDist - this.camDistSm) * Math.min(1, dt * 8);
-    const wantFov = this.aiming ? AIM_FOV : 55;
+    // Task 80: в ТРУБЕ — FOV 55/кратность (2×..8×), у пистолета — 40
+    const wantFov = this.spyAiming ? 55 / this.spyZoom : this.aiming ? AIM_FOV : 55;
     this.fovSm += (wantFov - this.fovSm) * Math.min(1, dt * 8);
     if (Math.abs(cam.fov - this.fovSm) > 0.05) { cam.fov = this.fovSm; cam.updateProjectionMatrix(); }
     // свежие матрицы носителя (getWorldPosition обновляет цепочку)

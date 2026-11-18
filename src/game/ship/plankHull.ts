@@ -275,6 +275,22 @@ export class PlankSystem {
 
   belowWLBroken(): PlankRec[] { return this.brokenBelowWL; }
 
+  /** Task 80: насколько борт УЖЕ ПРОБИТ в точке (y, z)? Доля досок
+   *  в радиусе r вокруг точки, сломанных ДОСКОНЧАТЕЛЬНО (State_3 —
+   *  сквозной пролом). 0 — свежий борт (ядро застревает), ≥0.45 —
+   *  решето: ядро ПРОЛЕТАЕТ ВНУТРЬ корпуса и бьёт в противоположный
+   *  борт (реалистичное пробитие насквозь). */
+  sideOpen(side: 1 | -1, y: number, z: number, r = 1.9): number {
+    const arr = this.recsByMesh[side === 1 ? 0 : 1];
+    if (!arr.length) return 0;
+    let near = 0, broken = 0;
+    for (const rec of arr) {
+      if (rec.state !== 3 && rec.hp > 15) { if (this.rectDist(rec, y, z) < r) near++; }
+      else if (this.rectDist(rec, y, z) < r) { near++; broken++; }
+    }
+    return near > 0 ? broken / near : 0;
+  }
+
   /** Task 49: геометрия поясов (телеметрия e2e: нахлёст/наклон/тон) */
   geomInfo() {
     return {

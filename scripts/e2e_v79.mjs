@@ -204,75 +204,32 @@ ev(`window.__game.setCameraMode('rear'); window.__game.rig.distSet(16); window._
 run(`screenshot scripts/shots/t79_spy_detailed_rest.png`);
 
 // ============ E: ПРОКЛЯТИЕ «ЧЁРНОЙ ЖЕМЧУЖИНЫ» ============
-log('\n===== E: попадание по «Чёрной жемчужине» → капитан-мертвец =====');
+log('\n===== E: «Чёрная жемчужина» = корабль игрока → капитан-мертвец (Task 80) =====');
+// Task 80: триггер попаданий УДАЛЁН — капитан становится мертвецом
+// только когда игрок сам выбирает «Жемчужину» (полигон/верфь)
 const curse = jparse(await evR(`(() => {
   const g = window.__game;
   const cap0 = window.__crewModelInfo().captain;
-  const bp = g.aiShips.map(a => a.ship).find(s => s.preset.id === 'blackpearl' && !s.sunk);
-  if (!bp) return JSON.stringify({ error: 'нет жемчужины' });
-  // подойти к жемчужине с 4 сторон (45 м), прицелиться бортом
-  // (combat.aim — публичное состояние: side/azimuth/elevation),
-  // дать залп — пока проклятие не сработает. Кватернион ставим
-  // напрямую (рамка волн перезапишет лишь наклон, не курс).
-  let cursed = false;
-  window.__hitLog = [];
-  g.bus.on('projectile:hit', e => {
-    window.__hitLog.push({
-      t: e && e.target && e.target.preset ? e.target.preset.id : '?',
-      s: e && e.shooter === g.player ? 'player' : 'other',
-    });
-  });
-  for (let k = 0; k < 4 && !cursed; k++) {
-    const ang = k * Math.PI / 2 + 0.4;
-    const px = bp.position.x + Math.cos(ang) * 45;
-    const pz = bp.position.z + Math.sin(ang) * 45;
-    g.player.position.set(px, 0, pz);
-    g.player.velocity.set(0, 0, 0);
-    g.player.angular.set(0, 0, 0);
-    // бортом к цели: курс = на цель + 90°; кватернион — вручную
-    const h = Math.atan2(bp.position.x - px, bp.position.z - pz) + Math.PI / 2;
-    g.player.heading = h;
-    g.player.quaternion.set(0, Math.sin(h / 2), 0, Math.cos(h / 2));
-    g.stepDebugNR(0.6);
-    g.player.heading = h;
-    g.player.quaternion.set(0, Math.sin(h / 2), 0, Math.cos(h / 2));
-    // какой борт смотрит на жемчужину (starboard = −X при курсе 0)
-    const dSt = { x: -Math.cos(h), z: Math.sin(h) };
-    const side = ((bp.position.x - px) * dSt.x + (bp.position.z - pz) * dSt.z) > 0 ? 1 : -1;
-    g.combat.aim.active = true;
-    g.combat.aim.side = side;
-    g.combat.aim.azimuth = 0;
-    g.combat.aim.elevation = 0.04;
-    const fired = g.combat.fireBroadside();
-    g.stepDebugNR(4);
-    cursed = window.__crewModelInfo().captainCursed;
-    window.__hitLog.push({ fired, side, k });
-  }
+  // ВЫБОР «Жемчужины» кораблём игрока (как селектор полигона)
+  g.changeShip('blackpearl', true);
+  g.stepDebugNR(1.5);
   const info = window.__crewModelInfo();
-  // светящийся клинок: зелёный emissive-материал в группе капитана
   let glow = 0;
   g.player.crew3d.group.traverse(o => {
     const m = o && o.material;
-    if (m && m.emissive) {
-      const h = m.emissive.getHex();
-      if (h === 0x39d65a || h === 0x52e07a || h === 0x1e8f3e) glow++;
-    }
+    if (m && m.emissive && m.emissive.getHex() === 0x1e8f3e) glow++;
   });
   return JSON.stringify({
     cap0: { isPlayer: cap0.isPlayer, undead: cap0.undead },
-    found: true,
-    cursed: info.captainCursed,
-    cap1: info.captain,
-    glow,
-    hitLog: window.__hitLog,
+    found: true, cursed: info.captainCursed, cap1: info.captain, glow,
   }); })()`));
 log(JSON.stringify(curse));
 check('E1: капитан на корабле — ИГРОК (внешность со старта)',
   curse?.cap0?.isPlayer === true && curse?.cap0?.undead === false,
   `isPlayer=${curse?.cap0?.isPlayer}`);
-check('E2: «Чёрная жемчужина» найдена, залп дан',
+check('E2: «Чёрная жемчужина» выбрана кораблём игрока',
   curse?.found === true && curse?.error === undefined, '');
-check('E3: ПРОКЛЯТИЕ сработало (captainCursed, капитан-мертвец)',
+check('E3: капитан-игрок стал МЕРТВЕЦОМ (по выбору корабля, БЕЗ попаданий)',
   curse?.cursed === true && curse?.cap1?.undead === true,
   `cursed=${curse?.cursed}, undead=${curse?.cap1?.undead}`);
 check('E4: СВЕТЯЩИЙСЯ клинок в руке капитана (зелёный emissive)',
@@ -283,13 +240,29 @@ check('E5: проклятому труба — ЗА ПОЯСОМ (клинок �
 // скриншот проклятого капитана (задняя камера, крупно)
 ev(`window.__game.setCameraMode('rear'); window.__game.rig.distSet(16); window.__game.stepDebug(0.3)`);
 run(`screenshot scripts/shots/t79_cursed_captain.png`);
-// повторное попадание не дублирует проклятие (раз за игру)
+// Task 80: попадание по чужой «Жемчужине» НЕ проклинает (триггер
+// удалён): возвращаемся на шлюп, стреляем по жемчужине — флаг чист
 const again = jparse(await evR(`(() => {
   const g = window.__game;
-  const before = window.__crewModelInfo().captainCursed;
-  g.combat.fireBroadside(); g.stepDebugNR(4);
-  return JSON.stringify({ before, after: window.__crewModelInfo().captainCursed }); })()`));
-check('E6: проклятие РАЗ за игру (флаг не меняется)',
-  again?.before === true && again?.after === true, '');
+  g.changeShip('sloop', true); g.stepDebugNR(1);
+  const bp = g.aiShips.map(a => a.ship).find(s => s.preset.id === 'blackpearl' && !s.sunk);
+  let hit = false;
+  if (bp) {
+    window.__hitLog = [];
+    g.bus.on('projectile:hit', e => { if (e.target === bp) window.__hitLog.push(1); });
+    const px = bp.position.x + 55, pz = bp.position.z;
+    g.player.position.set(px, 0, pz); g.player.velocity.set(0, 0, 0);
+    g.player.quaternion.set(0, 0, 0, 1);
+    g.stepDebugNR(0.3);
+    const from = new (window.__THREE.Vector3)(px, 1.6, pz);
+    const dir = new (window.__THREE.Vector3)(bp.position.x - px, 0.4, bp.position.z - pz);
+    g.combat.debugSpawnBall(from, dir, 170);
+    g.stepDebugNR(3);
+    hit = (window.__hitLog || []).length > 0;
+  }
+  return JSON.stringify({ hit, cursed: window.__crewModelInfo().captainCursed,
+    undead: window.__crewModelInfo().captain.undead }); })()`));
+check('E6: попадание по жемчужине НЕ проклинает (триггер удалён, Task 80)',
+  again?.cursed === false && again?.undead === false, JSON.stringify(again));
 
 log(`\n${fails === 0 ? 'ALL OK' : 'FAILURES: ' + fails} (проверок: ${checks})`);

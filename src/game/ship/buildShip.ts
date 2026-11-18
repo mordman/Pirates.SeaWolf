@@ -2642,7 +2642,15 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
       seg1.add(mars);
       mast.add(seg1);
       const seg2 = new THREE.Group();
-      seg2.position.y = j2 - j1;
+      // Task 80: ФИКС — прежде j2−j1 (как будто отец seg1), а отец
+      // МАЧТА (сегменты падают ОТДЕЛЬНО, Task 46): верхний сегмент
+      // висел на ~⅓ высоты, и всё прикреплённое к нему через
+      // attachRig (внутренний кливер setAt=1, топселя, латинские,
+      // флаг) опускалось на 10+ м — внутренний кливер при ПОЛНЫХ
+      // парусах прошивал нос/палубу (меш-аудит debugSailMeshAudit;
+      // параметрический аудит Task 78/79 матрицы не видел). Пивот
+      // у верхнего марса, как у seg1: base + j2
+      seg2.position.y = base + j2;
       const pole2 = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.15, md.h - j2, 7), woodMat);
       pole2.position.y = (md.h - j2) / 2;
       pole2.castShadow = true;
