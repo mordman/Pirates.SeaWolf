@@ -1059,6 +1059,11 @@ export class Game {
       ai.squadron = true;
       if (prevAI) ai.leader = prevAI;
       this.aiShips.push(ai);
+      // Task 81: КОРЕНЬ «нельзя уничтожить эскадру» — combat.others
+      // заполнялся ТОЛЬКО при старте игры (game.ts:993), а эскадра
+      // спавнится позже: снаряды игрока пролетали корабли насквозь
+      // (цели берутся из combat.others), эскадра стала неуязвимой
+      this.combat.others.push(sh);
       prevAI = ai;
     }
     this.sqnSpawnedTotal++;
@@ -1086,6 +1091,9 @@ export class Game {
         if (!a.squadron) continue;
         const d = a.ship.position.distanceTo(this.player.position);
         if (d > 5200 || (a.ship.sunk && d > 900)) {
+          // Task 81: убрать и из списка целей (иначе тонул бы «фантом»)
+          const oi = this.combat.others.indexOf(a.ship);
+          if (oi >= 0) this.combat.others.splice(oi, 1);
           this.worldGroup.remove(a.ship.visual.group, a.ship.foam.mesh, a.ship.wake.mesh);
           this.aiShips.splice(i, 1);
         }
@@ -3054,7 +3062,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string }[] }; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string; hittable: boolean; tactic: string; mastsBroken: number }[] }; __aiInfo?: () => { model: string; state: string; tactic: string; crewEngage: boolean; anchored: boolean; mastsBroken: number; masts: number; speed: number; dist: number; hullFrac: number; sunk: boolean }[]; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -3449,9 +3457,31 @@ export class Game {
                 +(a.ship.position.z - this.player.position.z).toFixed(0)],
           heading: +a.ship.heading.toFixed(2),
           state: a.state,
+          // Task 81: цель видна снарядам игрока (combat.others) —
+          // раньше эскадра НЕ регистрировалась и была неуязвимой
+          hittable: this.combat.others.includes(a.ship),
+          tactic: a.tactic,
+          mastsBroken: a.ship.mastsBroken,
         })),
       };
     };
+    // Task 81: боевая логика ИИ — состояние/тактика/экипаж/мачты по
+    // каждому судну (e2e: маневр под атакой, выход из боя, посты)
+    dbg.__aiInfo = () => this.aiShips
+      .filter(a => !a.ship.sunk)
+      .map(a => ({
+        model: a.ship.preset.id,
+        state: a.state,
+        tactic: a.tactic,
+        crewEngage: a.ship.crewEngage,
+        anchored: a.ship.anchored,
+        mastsBroken: a.ship.mastsBroken,
+        masts: a.ship.mastHP.length,
+        speed: +a.ship.speed().toFixed(2),
+        dist: +a.ship.position.distanceTo(this.player.position).toFixed(0),
+        hullFrac: +(a.ship.hullHP / a.ship.hullMax).toFixed(2),
+        sunk: a.ship.sunk,
+      }));
     // Task 56: правила экипажа (задержка выхода подмены — e2e)
     dbg.__crewRules = () => ({ ...CREW_RULES });
     // Task 77: телеметрия ТРУБЫ — состояние капитана + пост-процесс
@@ -3491,6 +3521,8 @@ export class Game {
         captain: this.player.crew3d.captainInfo(),
         captainCursed: this.player.preset.id === 'blackpearl',
         playerAppearance: { ...this.settings.player },
+        // Task 81: РАЗБРОС ТЕЛОСЛОЖЕНИЙ экипажа игрока (kindStats.builds)
+        crewBuilds: this.player.crew3d.kindStats.builds,
         near: this.aiShips.filter(a => !a.ship.sunk && a.ship.crewDetailedOpt).length,
         far: this.aiShips.filter(a => !a.ship.sunk && !a.ship.crewDetailedOpt).length,
       };
@@ -3623,15 +3655,25 @@ export class Game {
     }
 
     // Task 51: ЛУТ ПОТОПЛЕННЫХ — судно ушло под воду: на месте
-    // остаются сундук с деньгами и мешки с товарами (один раз)
+    // остаются сундук с деньгами и мешки с товарами (один раз).
+    // Task 81: МАСШТАБ ПО РАЗМЕРУ СУДНА + случайный индекс — чем
+    // больше корпус, тем богаче добыча (24 м — базовый множитель);
+    // гарантия: сундук ≥60 золота и ≥2 мешка даже со шлюпа
     for (const a of this.aiShips) {
       const sh = a.ship;
       if (sh.sunk && !this.looted.has(sh)) {
         this.looted.add(sh);
-        spawnFlotsam(sh.position.x, sh.position.z, sh.gold, sh.cargo);
-        if (sh.gold > 0 || Object.keys(sh.cargo).length) {
-          this.pushMessage('Судно затонуло — на волнах остался груз!');
+        const sizeK = Math.max(0.75, sh.preset.length / 24);
+        const rndK = 0.7 + Math.random() * 0.8;
+        const gold = Math.round(Math.max(60, sh.gold * sizeK * rndK));
+        const cargo: Record<string, number> = {};
+        for (const [k, n] of Object.entries(sh.cargo)) {
+          const v = Math.round(n * sizeK * rndK);
+          if (v > 0) cargo[k] = v;
         }
+        const bags = Math.min(6, Math.max(2, Math.round(2 * sizeK + Math.random() * 2)));
+        spawnFlotsam(sh.position.x, sh.position.z, gold, cargo, 180, bags);
+        this.pushMessage('Судно затонуло — на волнах остался груз!');
       }
     }
     updateFlotsam(dt, this.time, this.wind, this.player.position);

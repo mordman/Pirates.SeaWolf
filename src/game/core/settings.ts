@@ -84,6 +84,14 @@ export const BEARD_LABELS: Record<0 | 1 | 2, string> = {
   0: 'Чисто выбрит', 1: 'Короткая борода', 2: 'Длинная борода',
 };
 
+// Task 81: ТЕЛОСЛОЖЕНИЕ — выбор на экране создания капитана и
+// случайный разброс у экипажа (худые/полные/мускулистые моряки)
+export type BuildKind = 'thin' | 'regular' | 'stout' | 'muscular';
+export const BUILD_KINDS: readonly BuildKind[] = ['thin', 'regular', 'stout', 'muscular'];
+export const BUILD_LABELS: Record<BuildKind, string> = {
+  thin: 'Худой', regular: 'Обычный', stout: 'Полный', muscular: 'Мускулистый',
+};
+
 export interface PlayerAppearance {
   skin: number;             // тон кожи (APPEARANCE_SKIN)
   shirt: number;            // рубаха (APPEARANCE_SHIRT)
@@ -96,12 +104,13 @@ export interface PlayerAppearance {
   parrot: boolean;          // попугай на плече
   pegLeg: boolean;          // деревянная нога (правая)
   hook: boolean;            // крюк вместо правой кисти
+  build: BuildKind;         // телосложение: худой/обычный/полный/мускулистый (Task 81)
 }
 
 export const DEFAULT_APPEARANCE: PlayerAppearance = {
   skin: 0xc98d68, shirt: 0x8f3b34, pants: 0x33404a,
   headwear: 'bandana', torso: 'shirt', pantsKind: 'long', beard: 1, eyePatch: false,
-  parrot: true, pegLeg: false, hook: false,
+  parrot: true, pegLeg: false, hook: false, build: 'regular',
 };
 
 export const HEADWEAR_KINDS: readonly HeadwearKind[] = ['none', 'bandana', 'hat', 'wide', 'straw', 'cap', 'top'];
@@ -680,6 +689,10 @@ export function loadSettings(): GameSettings {
       }
       if (typeof p.pantsKind === 'string' && PANTS_KINDS.includes(p.pantsKind as PantsKind)) {
         s.player.pantsKind = p.pantsKind as PantsKind;
+      }
+      // Task 81: телосложение капитана
+      if (typeof p.build === 'string' && BUILD_KINDS.includes(p.build as BuildKind)) {
+        s.player.build = p.build as BuildKind;
       }
       if (p.beard === 0 || p.beard === 1 || p.beard === 2) s.player.beard = p.beard;
       if (typeof p.eyePatch === 'boolean') s.player.eyePatch = p.eyePatch;

@@ -88,9 +88,11 @@ export function initFlotsam(parent: THREE.Object3D) {
 }
 
 /** Рассыпать лут потопленного корабля: сундук с золотом (если было)
- *  + мешки с товарами из трюма (по виду груза), разброс 6-18 м */
+ *  + мешки с товарами из трюма (по виду груза), разброс 6-18 м.
+ *  Task 81: maxBags — число мешков масштабируется размером судна
+ *  (шлюп 2-4, тяжёлый ост-индец до 6) */
 export function spawnFlotsam(x: number, z: number,
-  gold: number, cargo: Record<string, number>, ttl = 180) {
+  gold: number, cargo: Record<string, number>, ttl = 180, maxBags = 4) {
   if (!root) return;
   if (gold > 0) {
     // сундук: центр точки гибели, до двух — если золота очень много
@@ -108,13 +110,13 @@ export function spawnFlotsam(x: number, z: number,
       it.mesh.rotation.set(0, Math.random() * 6.28, 0);
     }
   }
-  // мешки: по одному на ВИД товара (числом до 3), количество делим
+  // мешки: по одному на ВИД товара (число мешков — по размеру судна)
   const kinds = Object.keys(cargo).filter(k => (cargo[k] ?? 0) >= 1);
   let bag = 0;
   for (const k of kinds) {
-    if (bag >= 4) break;
+    if (bag >= maxBags) break;
     const nBags = Math.min(3, Math.max(1, Math.floor(cargo[k] / 3)));
-    for (let b = 0; b < nBags && bag < 4; b++) {
+    for (let b = 0; b < nBags && bag < maxBags; b++) {
       const it = items.find(q => !q.active && q.kind === 'sack');
       if (!it) break;
       it.active = true;

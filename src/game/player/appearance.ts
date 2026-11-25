@@ -1,6 +1,6 @@
 import type { PlayerAppearance } from '../core/settings';
 import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS,
-  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS } from '../core/settings';
+  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS, BUILD_KINDS } from '../core/settings';
 import type { Traits } from '../ship/crew';
 
 // ============================================================
@@ -32,6 +32,7 @@ export function appearanceToTraits(a: PlayerAppearance): Traits {
     bald: false,           // Task 50: у капитана игрока волосы всегда есть
     hair: 'short',         // Task 51: причёска капитана (по умолчанию)
     glasses: false,        // Task 51: очки не выбраны
+    build: a.build,        // Task 81: телосложение капитана (экран создания)
   };
 }
 
@@ -50,5 +51,6 @@ export function randomAppearance(rnd: () => number): PlayerAppearance {
     parrot: rnd() < 0.5,
     pegLeg: rnd() < 0.25,
     hook: rnd() < 0.25,
+    build: pick(BUILD_KINDS),   // Task 81: «Наугад» — случайное телосложение
   };
 }

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { CrewFigure, CrewRole, mulberry32, Traits } from './crew';
+import { CrewFigure, CrewRole, mulberry32, Traits, BUILD_FAC } from './crew';
 
 // ============================================================
 // Task 76: ДЕТАЛЬНЫЕ ПЕРСОНАЖИ XVII ВЕКА — ПОЛНАЯ ПЕРЕРАБОТКА
@@ -717,6 +717,9 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   profession?: DetailProfession): CrewFigure {
   const rnd = mulberry32(seed);
   const h = traits.height;
+  // Task 81: ТЕЛОСЛОЖЕНИЕ — торс/таз шире-уже, плечи разведены,
+  // конечности толще/тоньше; длина конечностей (вдоль Y) не меняется
+  const BK = BUILD_FAC[traits.build ?? 'regular'];
   const group = new THREE.Group();
   if (undead) group.userData.undead = true;
 
@@ -762,8 +765,8 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   const chest = joint(spine, 0, 0.13 * h, 0, 'chest');
   const neck = joint(chest, 0, 0.335 * h, 0, 'neck');
   const head = joint(neck, 0, 0.065 * h, 0, 'head');
-  const shL = joint(chest, 0.163 * h, 0.29 * h, 0.008, 'shL');
-  const shR = joint(chest, -0.163 * h, 0.29 * h, 0.008, 'shR');
+  const shL = joint(chest, 0.163 * h * BK.shoulder, 0.29 * h, 0.008, 'shL');
+  const shR = joint(chest, -0.163 * h * BK.shoulder, 0.29 * h, 0.008, 'shR');
   const elL = joint(shL, 0, -0.185 * h, 0, 'elL');     // ЛОКОТЬ (предплечье)
   const elR = joint(shR, 0, -0.185 * h, 0, 'elR');
   const handL = joint(elL, 0, -0.155 * h, 0, 'handL'); // КИСТЬ (запястье)
@@ -774,18 +777,24 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   const kneeR = joint(hipR, 0, -thighL, 0.012, 'kneeR');
   const ankL = joint(kneeL, 0, -shinL, 0, 'ankL');                // СТУПНЯ (щиколотка)
   const ankR = joint(kneeR, 0, -shinL, 0, 'ankR');
+  // Task 81: конечности по телосложению — толще/тоньше в сечении,
+  // длина (вдоль Y) не меняется: масштаб на КОРНЕВОМ суставе руки/ноги
+  hipL.scale.set(BK.limb, 1, BK.limb);
+  hipR.scale.set(BK.limb, 1, BK.limb);
+  shL.scale.set(BK.limb, 1, BK.limb);
+  shR.scale.set(BK.limb, 1, BK.limb);
 
   // ================== ТАЗ И ПОЯС ==================
   mesh(latheSmooth([
     [0.001, -0.115], [0.108, -0.095], [0.145, -0.012], [0.138, 0.075], [0.001, 0.098],
-  ], 12, 12), mPants, pelvis);
+  ], 12, 12), mPants, pelvis).scale.set(BK.w * 0.95, 1, BK.d * 0.95);
   const mBelt = leatherMat(undead ? 0x1e1a14 : 0x3a2a1c);
   const belt = mesh(new THREE.TorusGeometry(0.143, 0.016, 7, 18), mBelt, pelvis, 0, 0.055 * h, 0);
   belt.rotation.x = Math.PI / 2;
-  belt.scale.set(1, 1, 0.84);
+  belt.scale.set(BK.w, 1, 0.84);
   // МЕДНАЯ ПРЯЖКА пояса
-  box(0.052, 0.036, 0.014, brassMat(), pelvis, 0, 0.055 * h, 0.132);
-  box(0.008, 0.030, 0.008, brassMat(), pelvis, 0, 0.055 * h, 0.138);
+  box(0.052, 0.036, 0.014, brassMat(), pelvis, 0, 0.055 * h, 0.132 * BK.d);
+  box(0.008, 0.030, 0.008, brassMat(), pelvis, 0, 0.055 * h, 0.138 * BK.d);
 
   // ================== ТОРС — анатомический Lathe-профиль ==================
   // (талия → рёбра → грудная клетка → плечевой свод; на chest-суставе,
@@ -793,9 +802,14 @@ export function buildDetailedFigure(role: CrewRole, traits: Traits, seed: number
   mesh(latheSmooth([
     [0.001, -0.315], [0.115, -0.29], [0.142, -0.185], [0.132, -0.06],
     [0.148, 0.045], [0.149, 0.15], [0.126, 0.25], [0.072, 0.31], [0.001, 0.325],
-  ], 18, 14), mShirt, chest);
-  sph(0.132 * h, mShirt, chest, 0, 0.30 * h, 0, 12, 8).scale.set(1.14, 0.5, 0.86); // плечевой свод
-  sph(0.112 * h, mPants, chest, 0, -0.29, 0, 10, 8).scale.set(1.02, 0.62, 0.92);   // стык с тазом
+  ], 18, 14), mShirt, chest).scale.set(BK.w, 1, BK.d);
+  sph(0.132 * h, mShirt, chest, 0, 0.30 * h, 0, 12, 8).scale.set(1.14 * BK.shoulder, 0.5, 0.86); // плечевой свод
+  sph(0.112 * h, mPants, chest, 0, -0.29, 0, 10, 8).scale.set(1.02 * BK.w, 0.62, 0.92);   // стык с тазом
+  // Task 81: ЖИВОТ полного телосложения — выпирает вперёд поверх
+  // лат-профиля (цвет одежды; чуть ниже поясного уровня)
+  if (BK.belly > 0) {
+    sph(0.1 * h, mShirt, chest, 0, -0.12, 0.03, 10, 8).scale.set(1.3, 0.78, 1.45);
+  }
 
   // шея
   cyl(0.046 * h, 0.055 * h, 0.09 * h, mSkin, neck, 0, 0.02 * h, 0, 8);

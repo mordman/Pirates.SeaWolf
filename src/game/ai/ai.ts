@@ -13,6 +13,9 @@ import { clamp, mod2pi } from '../core/rng';
 // ============================================================
 
 export type AIState = 'route' | 'flee' | 'surrender' | 'derelict' | 'patrol' | 'combat' | 'anchored';
+/** Task 81: боевые тактики ИИ — манера ведения боя выбирается при
+ *  входе в бой (по типу судна + случай) и меняет рисунок движения */
+export type AITactic = 'circling' | 'artillery' | 'brawler';
 
 export class AIShip {
   /** Task 56: ЭСКАДРА — ведомый следует за этим кораблём (кильватер) */
@@ -21,6 +24,16 @@ export class AIShip {
   squadron = false;
   ship: Ship;
   state: AIState;
+  /** Task 81: текущая тактика боя + борт циркуляции (±1 — раньше
+   *  все корабли крутились в одну и ту же сторону) */
+  tactic: AITactic = 'circling';
+  circleDir = 1;
+  /** чем занимался до боя (route/patrol/anchored) — куда вернуться */
+  private prevState: AIState | null = null;
+  /** Task 81: таймер СЪЁМА С ЯКОРЯ под атакой (0 — не снят) */
+  private anchorBreakT = 0;
+  /** Task 81: сколько секунд игрок вне угрозы (тонет/далеко) */
+  private calmT = 0;
   waypoints: THREE.Vector3[] = [];
   wpIndex = 0;
   private avoidTimer = 0;
@@ -115,6 +128,29 @@ export class AIShip {
       s.anchored = true;
       s.sailTarget = 0;
       s.rudderTarget = 0;
+      // Task 81: СЪЁМ С ЯКОРЯ под огнём — вооружённый корабль (кроме
+      // мишени полигона) снимается с якоря через случайную задержку
+      // (команда выбирает якорь) и маневрирует по своей тактике:
+      // под атакой никто не «стоит столбом»
+      if (this.anchorBreakT > 0) {
+        this.anchorBreakT -= dt;
+        if (this.anchorBreakT <= 0) {
+          this.state = 'combat';
+          s.anchored = false;
+          this.pickTactic();            // Task 81: своя манера боя
+          this.gunTimer = 2 + Math.random() * 3;
+        }
+        if (this.returnFire && !s.sinking && !player.sinking) {
+          // пока выбираются — всё же отстреливаются с якоря
+          this.gunTimer -= dt;
+          const dist = s.position.distanceTo(player.position);
+          if (this.gunTimer < 0 && dist < 340) {
+            this.gunTimer = 9 + Math.random() * 4;
+            combat.aiBallVolley(s, player);
+          }
+        }
+        return;
+      }
       if (this.returnFire && !s.sinking && !player.sinking) {
         this.gunTimer -= dt;
         const dist = s.position.distanceTo(player.position);
@@ -162,21 +198,63 @@ export class AIShip {
         this.wpIndex = (this.wpIndex + 1) % this.waypoints.length;
       }
     } else if (this.state === 'combat') {
-      // держать игрока на траверзе, дистанция 120-260
+      // ==========================================================
+      // Task 81: ТАКТИКИ БОЯ — три манеры, выбор при входе в бой:
+      //  - circling  — прежняя циркуляция на траверзе (120-260 м),
+      //                борт теперь СЛУЧАЕН (раньше все шли в одну сторону)
+      //  - artillery — артиллерийская дуэль: держит 200-330 м,
+      //                доворачивает бортом и отходит при сближении
+      //  - brawler   — таранно-абордажный псих: прёт в упор (<70 м),
+      //                картечь/ядра с ближней дистанции
+      // Уцелевшие мачты решают, чем это исполнимо: скорость по числу
+      // мачт — в Ship.fixedStep (тяга × mastThrust)
+      // ==========================================================
       const toP = new THREE.Vector3().subVectors(player.position, s.position).setY(0);
       const dist = toP.length();
       toP.normalize();
-      const side = new THREE.Vector3(toP.z, 0, -toP.x);
-      if (dist > 260) target = player.position.clone().addScaledVector(toP, -120);
-      else if (dist < 120) target = s.position.clone().addScaledVector(toP, 200);
-      else target = s.position.clone().addScaledVector(side, 300);
+      const dir = this.circleDir;
+      const side = new THREE.Vector3(toP.z * dir, 0, -toP.x * dir);
+      if (this.tactic === 'artillery') {
+        if (dist > 330) target = player.position.clone().addScaledVector(toP, -240);
+        else if (dist < 200) target = s.position.clone().addScaledVector(toP, 160).addScaledVector(side, 140);
+        else target = s.position.clone().addScaledVector(side, 260);
+      } else if (this.tactic === 'brawler') {
+        target = dist > 70 ? player.position.clone()
+          : s.position.clone().addScaledVector(side, 90);
+      } else {
+        if (dist > 260) target = player.position.clone().addScaledVector(toP, -120);
+        else if (dist < 120) target = s.position.clone().addScaledVector(toP, 200);
+        else target = s.position.clone().addScaledVector(side, 300);
+      }
       desiredSail = 3;
-      // бортовой залп, когда игрок на траверзе
+      // бортовой залп, когда игрок на траверзе (у brawler — и в упор)
       this.gunTimer -= dt;
       const dotSide = Math.abs(side.dot(s.forward));
-      if (this.gunTimer < 0 && dist < 320 && dotSide > 0.7) {
+      const fireArc = this.tactic === 'brawler' ? 0.45 : 0.7;
+      if (this.gunTimer < 0 && dist < 320 && dotSide > fireArc) {
         this.gunTimer = 9 + Math.random() * 5;
         combat.aiBallVolley(s, player);
+      }
+      // Task 81: ВЫХОД ИЗ БОЯ — игрок утонул или ушёл (>520 м) и
+      // угрозы нет 12+ с: возврат к прежним делам. Иначе корабль
+      // воюет вечно — экипаж так и не сходит с боевых постов
+      const gone = player.sunk || player.sinking || dist > 520;
+      this.calmT = gone ? this.calmT + dt : 0;
+      if (this.calmT > 12) {
+        this.calmT = 0;
+        if (this.prevState === 'anchored') {
+          // стали на якорь там, где бой их оставил; посты сданы —
+          // экипаж снова ходит по палубе (returnFire=false)
+          this.state = 'anchored';
+          s.anchored = true;
+          this.returnFire = false;
+          this.anchorBreakT = 0;
+        } else if (this.prevState) {
+          this.state = this.prevState;
+        } else {
+          this.state = 'patrol';
+        }
+        this.gunTimer = 6;
       }
     } else {
       target = this.waypoints[0];
@@ -225,16 +303,34 @@ export class AIShip {
     if (!s.surrendered) {
       const armed = s.preset.gunsPerSide > 0 && s.crew > s.preset.maxCrew * 0.25;
       if (this.state === 'anchored') {
-        // пиратская эскадра в бухте: с якоря не снимается — БЬЁТ по
-        // нападающему (залп с якоря + ружья экипажа через crewEngage)
-        if (armed && !this.returnFire) {
-          this.returnFire = true;
-          this.gunTimer = 1.2 + Math.random() * 1.8;   // немедленный ответ
+        // пиратская эскадра в бухте: отвечает огнём с якоря — и
+        // Task 81: ВЫБИРАЕТ ЯКОРЬ (задержка на «выборку якоря»),
+        // чтобы маневрировать по своей тактике; безоружные/лёгкие
+        // торговцы вместо боя УХОДЯТ бегством
+        if (armed) {
+          if (!this.returnFire) {
+            this.returnFire = true;
+            this.gunTimer = 1.2 + Math.random() * 1.8;   // немедленный ответ
+          }
+          const heavy = s.preset.gunsPerSide >= 4;
+          if (this.prevState === null) this.prevState = 'anchored';
+          if (heavy) {
+            if (this.anchorBreakT <= 0) this.anchorBreakT = 5 + Math.random() * 7;
+          } else {
+            // лёгкий торговец: встаёт и бежит
+            this.state = 'flee';
+            s.anchored = false;
+            this.returnFire = false;
+          }
         }
       } else if (armed) {
         // есть пушки и экипаж — даём отпор (залп по готовности, но быстро)
         const wasFlee = this.state === 'flee';
-        this.state = 'combat';
+        if (this.state !== 'combat') {
+          this.prevState = this.state;      // Task 81: куда вернуться после боя
+          this.state = 'combat';
+          this.pickTactic();
+        }
         if (wasFlee || this.gunTimer > 4) this.gunTimer = 1.5 + Math.random() * 2;
       } else if (this.state === 'route' || this.state === 'flee') {
         this.state = 'flee';
@@ -248,16 +344,45 @@ export class AIShip {
       const dist = ai.ship.position.distanceTo(s.position);
       if (dist > 500) continue;
       if (ai.state === 'patrol') {
+        ai.prevState = 'patrol';
         ai.state = 'combat';
+        ai.pickTactic();
       } else if (ai.state === 'anchored') {
         // сосед по стоянке просыпается: если есть пушки — отвечает
+        // и Task 81: тоже выбирает якорь (лёгкие — бегут)
         const a = ai.ship;
         const aArmed = a.preset.gunsPerSide > 0 && a.crew > a.preset.maxCrew * 0.25;
-        if (aArmed && !ai.returnFire) {
-          ai.returnFire = true;
-          if (ai.gunTimer > 3.5) ai.gunTimer = 2.5 + Math.random() * 2.5;
+        if (aArmed) {
+          if (!ai.returnFire) {
+            ai.returnFire = true;
+            if (ai.gunTimer > 3.5) ai.gunTimer = 2.5 + Math.random() * 2.5;
+          }
+          if (ai.prevState === null) ai.prevState = 'anchored';
+          if (a.preset.gunsPerSide >= 4) {
+            if (ai.anchorBreakT <= 0) ai.anchorBreakT = 5 + Math.random() * 9;
+          } else {
+            ai.state = 'flee';
+            a.anchored = false;
+            ai.returnFire = false;
+          }
         }
       }
+    }
+  }
+
+  /** Task 81: выбор тактики боя — по типу судна (военные с тяжёлым
+   *  залпом предпочитают дистанцию, лёгкие давят на сближение),
+   *  30% — случайная манера для разнообразия; борт циркуляции ±1 */
+  private pickTactic() {
+    this.circleDir = Math.random() < 0.5 ? 1 : -1;
+    const r = Math.random();
+    const heavy = this.ship.preset.gunsPerSide >= 4;
+    if (r < 0.3) {
+      this.tactic = r < 0.1 ? 'artillery' : r < 0.2 ? 'brawler' : 'circling';
+    } else if (heavy) {
+      this.tactic = r < 0.65 ? 'artillery' : 'brawler';
+    } else {
+      this.tactic = r < 0.75 ? 'circling' : 'artillery';
     }
   }
 }

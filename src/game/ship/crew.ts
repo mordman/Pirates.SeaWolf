@@ -7,7 +7,7 @@ import type { Particles } from '../fx/particles';
 import { buildCatCrewFigure } from './cats';
 import { waterHeightAt, SEA } from '../water/waves';
 import { APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS, APPEARANCE_BANDANA,
-  type HeadwearKind, type TorsoKind, type PantsKind } from '../core/settings';
+  type HeadwearKind, type TorsoKind, type PantsKind, type BuildKind } from '../core/settings';
 
 // ============================================================
 // Экипаж на палубе: процедурные типажи «наугад» — бороды,
@@ -80,6 +80,8 @@ export type KillMode = 'grape' | 'ball';
 export interface CrewFigure {
   group: THREE.Group;
   role: CrewRole;
+  /** Task 81: телосложение фигуры (телеметрия captainInfo/экипажа) */
+  build?: BuildKind;
   // Task 52: конечности — Object3D (у простой модели Mesh, у
   // детальной — Group-суставы; пивоты те же: бедро/плечо)
   legL?: THREE.Object3D;
@@ -258,7 +260,20 @@ export interface Traits {
   bald: boolean;           // Task 50: лысая голова (без волос под убором)
   hair: HairKind;          // Task 51: причёска (лысина — bald=true)
   glasses: boolean;        // Task 51: круглые очки (у редких мастовых)
+  build: BuildKind;         // Task 81: телосложение — худой/полный/мускулистый
 }
+
+/** Task 81: ТЕЛОСЛОЖЕНИЕ — геометрические факторы фигуры:
+ *  w/d — торс (ширина/глубина), limb — конечности, belly — живот,
+ *  shoulder — разведение плеч (мускулистые шире в плечах) */
+export const BUILD_FAC: Record<BuildKind, {
+  w: number; d: number; limb: number; belly: number; shoulder: number;
+}> = {
+  thin:     { w: 0.82, d: 0.84, limb: 0.86, belly: 0,   shoulder: 0.94 },
+  regular:  { w: 1,    d: 1,    limb: 1,    belly: 0,   shoulder: 1 },
+  stout:    { w: 1.24, d: 1.4,  limb: 1.1,  belly: 1,   shoulder: 1.06 },
+  muscular: { w: 1.14, d: 1.1,  limb: 1.16, belly: 0,   shoulder: 1.14 },
+};
 
 /** Task 51: ПРИЧЁСКИ — короткая (как прежде), длинная до плеч
  *  (полусфера + затылок), ХВОСТИК (пучок сзади головы на манере
@@ -364,6 +379,15 @@ export function rollTraits(rnd: () => number, role: CrewRole, kind: CrewKind = '
     })(),
     // Task 51: очки — редкость (штурманы/мастовые; солдатам ни к чему)
     glasses: kind !== 'navy' && rnd() < 0.07,
+    // Task 81: телосложение — взвешенный разброс у моряков:
+    // худых и обычных больше, полные/мускулистые — реже
+    build: (() => {
+      const r = rnd();
+      if (r < 0.22) return 'thin' as const;
+      if (r < 0.64) return 'regular' as const;
+      if (r < 0.84) return 'stout' as const;
+      return 'muscular' as const;
+    })(),
   };
 }
 
@@ -449,8 +473,10 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   }
   const t: { pos: number[]; col: number[] } = { pos: [], col: [] };
   const h = traits.height;
-  // размеры (м): фигура ~1.6 м
-  const legH = 0.62, torsoH = role === 'captain' ? 0.62 : 0.5, torsoW = role === 'captain' ? 0.4 : 0.36;
+  // размеры (м): фигура ~1.6 м. Task 81: телосложение — торс шире/
+  // уже, конечности толще/тоньше (голова и убор не трогаются)
+  const BK = BUILD_FAC[traits.build ?? 'regular'];
+  const legH = 0.62, torsoH = role === 'captain' ? 0.62 : 0.5, torsoW = (role === 'captain' ? 0.4 : 0.36) * BK.w;
   const hipY = legH;
   const torsoY = hipY + torsoH / 2;
   const headR = 0.13;
@@ -465,7 +491,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const n = 5;
     for (let i = 0; i < n; i++) {
       bake(t, new THREE.BoxGeometry(torsoW, torsoH / n + 0.005, 0.22),
-        stripeC[i % 2], 0, hipY + torsoH * (i + 0.5) / n, 0);
+        stripeC[i % 2], 0, hipY + torsoH * (i + 0.5) / n, 0, undefined, [1, 1, BK.d]);
     }
   } else if (traits.torso === 'stripedV') {
     // вертикальные полосы (узор «матросский»)
@@ -473,14 +499,19 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const n = 4;
     for (let i = 0; i < n; i++) {
       bake(t, new THREE.BoxGeometry(torsoW / n + 0.004, torsoH, 0.22),
-        stripeC[i % 2], -torsoW / 2 + torsoW * (i + 0.5) / n, torsoY, 0);
+        stripeC[i % 2], -torsoW / 2 + torsoW * (i + 0.5) / n, torsoY, 0, undefined, [1, 1, BK.d]);
     }
   } else {
-    bake(t, new THREE.BoxGeometry(torsoW, torsoH, 0.22), torsoCol, 0, torsoY, 0);
+    bake(t, new THREE.BoxGeometry(torsoW, torsoH, 0.22), torsoCol, 0, torsoY, 0, undefined, [1, 1, BK.d]);
+  }
+  // Task 81: ЖИВОТ у полного телосложения — торчит спереди, в цвет
+  // одежды (голый торс — кожа)
+  if (BK.belly > 0) {
+    bake(t, new THREE.SphereGeometry(0.115, 8, 6), torsoCol, 0, hipY + torsoH * 0.3, 0.07, undefined, [1.18, 0.82, 1.55]);
   }
   // СВИТЕР: плотнее + ворот-стойка
   if (traits.torso === 'sweater') {
-    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH + 0.005, 0.245), traits.shirt, 0, torsoY, 0);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH + 0.005, 0.245), traits.shirt, 0, torsoY, 0, undefined, [1, 1, BK.d]);
     bake(t, new THREE.CylinderGeometry(0.1, 0.118, 0.07, 8), traits.shirt, 0, hipY + torsoH - 0.015, 0);
     // узор «ромб» на груди
     bake(t, new THREE.BoxGeometry(0.07, 0.07, 0.012), 0xd8c27a, 0, torsoY + 0.04, 0.115,
@@ -491,7 +522,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const vc = VEST[Math.floor(rnd() * VEST.length)];
     bake(t, new THREE.BoxGeometry(torsoW * 0.42, torsoH * 0.94, 0.03), vc, -torsoW * 0.22, torsoY - 0.01, 0.115);
     bake(t, new THREE.BoxGeometry(torsoW * 0.42, torsoH * 0.94, 0.03), vc, torsoW * 0.22, torsoY - 0.01, 0.115);
-    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH * 0.94, 0.235), vc, 0, torsoY - 0.01, -0.004);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.02, torsoH * 0.94, 0.235), vc, 0, torsoY - 0.01, -0.004, undefined, [1, 1, BK.d]);
     for (let i = 0; i < 3; i++) {
       bake(t, new THREE.CylinderGeometry(0.011, 0.011, 0.012, 6), BUTTON, 0, torsoY + 0.1 - i * 0.11, 0.132,
         new THREE.Euler(Math.PI / 2, 0, 0));
@@ -500,7 +531,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   // КАМЗОЛ: длинный, до бёдер, с золотыми пуговицами
   if (traits.torso === 'coat') {
     bake(t, new THREE.BoxGeometry(torsoW + 0.05, 0.4, 0.25),
-      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : COAT[Math.floor(rnd() * COAT.length)], 0, hipY + 0.05, 0);
+      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : COAT[Math.floor(rnd() * COAT.length)], 0, hipY + 0.05, 0, undefined, [1, 1, BK.d]);
     for (let i = 0; i < 3; i++) {
       bake(t, new THREE.CylinderGeometry(0.012, 0.012, 0.012, 6), BUTTON, 0, torsoY + 0.08 - i * 0.12, 0.13,
         new THREE.Euler(Math.PI / 2, 0, 0));
@@ -513,7 +544,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     const uni = traits.shirt;
     const facing = FACING[Math.floor(rnd() * FACING.length)];
     // фалды/полы мундира (длиннее камзола, чуть шире)
-    bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.46, 0.26), uni, 0, hipY + 0.03, 0);
+    bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.46, 0.26), uni, 0, hipY + 0.03, 0, undefined, [1, 1, BK.d]);
     // отвороты (ланктуты) — две контрастные полы на груди
     bake(t, new THREE.BoxGeometry(0.085, 0.22, 0.014), facing, -torsoW * 0.22, torsoY + 0.06, 0.132,
       new THREE.Euler(0, 0, 0.1));
@@ -547,11 +578,11 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
   // капитан: длинный кафтан + золотой кант
   if (role === 'captain') {
     bake(t, new THREE.BoxGeometry(torsoW + 0.06, 0.42, 0.26),
-      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : (rnd() < 0.5 ? COAT[0] : COAT[1]), 0, hipY + 0.05, 0);
+      undead ? COAT_UNDEAD[Math.floor(rnd() * COAT_UNDEAD.length)] : (rnd() < 0.5 ? COAT[0] : COAT[1]), 0, hipY + 0.05, 0, undefined, [1, 1, BK.d]);
     bake(t, new THREE.BoxGeometry(0.05, torsoH * 0.9, 0.015), 0xb8912f, 0, torsoY, 0.135);
   }
   // РЕМЕНЬ с пряжкой (Task 39: детализация) — на бёдрах, у всех
-  bake(t, new THREE.BoxGeometry(torsoW + 0.035, 0.06, 0.245), 0x241a12, 0, hipY + 0.02, 0);
+  bake(t, new THREE.BoxGeometry(torsoW + 0.035, 0.06, 0.245), 0x241a12, 0, hipY + 0.02, 0, undefined, [1, 1, BK.d]);
   bake(t, new THREE.BoxGeometry(0.055, 0.045, 0.018), 0xb8912f, 0, hipY + 0.02, 0.125);
   // ШЕЯ (голова больше не «висит» над рубахой)
   bake(t, new THREE.CylinderGeometry(0.05, 0.06, 0.06, 6), traits.skin, 0, headY - headR - 0.015, 0);
@@ -650,6 +681,7 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
       mount.userData.wristMount = true;
     }
     const m = new THREE.Mesh(bakeGeom(at), CREW_MAT);
+    m.scale.set(BK.limb, 1, BK.limb);   // Task 81: телосложение — толщина рук
     m.position.set(sx, shoulderY, 0.01);
     if (mount) { m.add(mount); if (traits.hook !== side) wristMount = mount; }
     return m;
@@ -1140,6 +1172,7 @@ export interface CrewVisual {
     soldierCoats: number; aprons: number; straw: number;
     hooks: number; pegs: number; patches: number; parrots: number;
     bald: number; ponytails: number; glasses: number; undead: number;
+    builds: { thin: number; regular: number; stout: number; muscular: number };
   };
   update(dt: number, time: number, ship: CrewShipState): void;
   setVisible(v: boolean): void;
@@ -1186,7 +1219,7 @@ export interface CrewVisual {
    *  (модель игрока-мертвеца); profession — гардероб детальной;
    *  spy (Task 77) — состояние ПОДЗОРНОЙ ТРУБЫ капитана */
   captainInfo(): { isPlayer: boolean; skin: number; shirt: number; pants: number;
-    undead: boolean; profession: string; role: CrewRole;
+    undead: boolean; profession: string; role: CrewRole; build: BuildKind;
     spy: { phase: 'holster' | 'hold' | 'draw' | 'observe' | 'lower'; inHand: boolean; ext: number; hand: 'L' | 'R' } } | null;
 }
 
@@ -1221,10 +1254,12 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     soldierCoats: 0, aprons: 0, straw: 0,
     hooks: 0, pegs: 0, patches: 0, parrots: 0, bald: 0,
     ponytails: 0, glasses: 0, undead: 0,
+    builds: { thin: 0, regular: 0, stout: 0, muscular: 0 },
   };
   const rollKind = (role: CrewRole): Traits => {
     const tr = rollTraits(rot, role, kind);
     if (tr.torso === 'soldierCoat') ks.soldierCoats++;
+    if (tr.build) ks.builds[tr.build]++;   // Task 81: раскладка телосложений
     if (tr.torso === 'apron') ks.aprons++;
     if (tr.headwear === 'straw') ks.straw++;
     if (tr.hook !== 0) ks.hooks++;
@@ -1380,6 +1415,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
       if ((undead || capCurse) && !allCats) ks.undead++;
     }
     if (role === 'captain') { capFig = f; capIsPlayer = isPlayerCap; }
+    f.build = tr.build;   // Task 81: телосложение на фигуре (телеметрия)
     // Task 79: телеметрия captainInfo().undead — для ОБЕИХ моделей
     // (классика ставит флаг внутри buildFigure, детальной не хватало)
     if ((undead || capCurse) && !allCats) f.group.userData.undead = true;
@@ -1976,6 +2012,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
         undead: !!capFig.group.userData.undead,
         profession: capFig.detail ? capFig.detail.profession : 'classic',
         role: capFig.role,
+        build: capFig.build ?? 'regular',   // Task 81: телосложение капитана
         spy: sg,
       };
     },

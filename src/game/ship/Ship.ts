@@ -665,8 +665,14 @@ export class Ship {
     const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
     const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
     let thrust = 0;
-    if (!this.anchored && !this.sinking && this.mastsBroken < 2) {
-      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
+    // Task 81: тяга по УЦЕЛЕВШИМ МАЧТАМ — корабль с частью мачт
+    // ползёт медленнее (мачта = паруса = тяга), вовсе без мачт
+    // стоит: маневр под огнём деградирует постепенно, а не скачком
+    const mastTotal = Math.max(1, this.mastHP.length);
+    const mastFrac = 1 - this.mastsBroken / mastTotal;
+    const mastThrust = 0.25 + 0.75 * mastFrac * mastFrac;
+    if (!this.anchored && !this.sinking && this.mastsBroken < mastTotal) {
+      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0) * mastThrust;
     }
     if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45; // задний ход на вёслах
     // ГРЕБЛЯ (Alt+W/S): вёсла дают ход даже в полный штиль — но только
@@ -1072,8 +1078,12 @@ export class Ship {
     const damaged = sailEffMul < 0.5 ? 0.45 : sailEffMul < 0.85 ? 0.8 : 1.0;
     const windPower = Math.pow(this.wind.speed / 8.0, 1.6);
     let thrust = 0;
-    if (!this.anchored && this.mastsBroken < 2) {
-      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0);
+    // Task 81: та же формула по уцелевшим мачтам — для простой физики
+    const mastTotal = Math.max(1, this.mastHP.length);
+    const mastFrac = 1 - this.mastsBroken / mastTotal;
+    const mastThrust = 0.25 + 0.75 * mastFrac * mastFrac;
+    if (!this.anchored && this.mastsBroken < mastTotal) {
+      thrust = this.sailFrac * polar * windPower * this.preset.maxSpeed * 7.0 * damaged * (this.sailHP > 0 ? 1 : 0) * mastThrust;
     }
     if (this.reverseThrust && !this.anchored) thrust = -this.preset.maxSpeed * 0.45;
     if (this.preset.oars && !this.anchored) {

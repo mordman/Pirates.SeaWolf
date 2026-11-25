@@ -1,0 +1,7 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A1: spawnSquadron вернул эскадру | {"ships":["cog","fluyt","brig"],"theme":"war","n":3}
+OK   A2: все корабли эскадры видны снарядам (combat.others) | ships=3
+цель A: "cog:26м:249з"
+OK   A3: цель эскадры телепортирована на траверз | "cog:26м:249з"
+OK   A4: реальные залпы игрока наносят УРОН эскадре (корень бага) | залпов=20, hullFrac=0.5777099919607995

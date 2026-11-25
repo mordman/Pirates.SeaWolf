@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import type { PlayerAppearance, HeadwearKind, TorsoKind, PantsKind } from '@/game/core/settings';
+import type { PlayerAppearance, HeadwearKind, TorsoKind, PantsKind, BuildKind } from '@/game/core/settings';
 import {
   APPEARANCE_SKIN, APPEARANCE_SHIRT, APPEARANCE_PANTS,
-  HEADWEAR_LABELS, BEARD_LABELS, TORSO_LABELS, PANTS_LABELS,
-  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS,
+  HEADWEAR_LABELS, BEARD_LABELS, TORSO_LABELS, PANTS_LABELS, BUILD_LABELS,
+  HEADWEAR_KINDS, TORSO_KINDS, PANTS_KINDS, BUILD_KINDS,
 } from '@/game/core/settings';
 import { buildFigure } from '@/game/ship/crew';
 import { appearanceToTraits, randomAppearance } from '@/game/player/appearance';
@@ -162,6 +162,15 @@ export default function CharacterCreate({ initial, onApply, onClose }: {
 
           {/* контролы */}
           <div className="space-y-3.5">
+            <div>
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Телосложение</div>
+              {/* Task 81: ХУДОЙ / ОБЫЧНЫЙ / ПОЛНЫЙ / МУСКУЛИСТЫЙ —
+                  капитан и матросы различаются фигурой */}
+              <PillGroup<BuildKind>
+                options={BUILD_KINDS}
+                labels={BUILD_LABELS as Record<string, string>}
+                value={a.build} onPick={v => set('build', v)} />
+            </div>
             <div>
               <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-600/90">Кожа</div>
               <Swatches title="Кожа" colors={APPEARANCE_SKIN} value={a.skin} onPick={c => set('skin', c)} />
