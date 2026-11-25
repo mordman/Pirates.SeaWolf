@@ -3,7 +3,7 @@ import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pb
 import { makeHullTextures } from './hullDeco';
 import { buildFigurehead } from './figurehead';
 import { textureUrls } from '../assets/textures';
-import { PlankSystem, buildSkeleton, plankCutY } from './plankHull';
+import { PlankSystem, buildSkeleton, plankCutY, TRANSOM_Z_TOP } from './plankHull';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -1115,34 +1115,92 @@ function makeDeckTexture(baseColor: number, seed: number): THREE.Texture {
   return t;
 }
 
-/** Планширь: планка, закрывающая верхнюю кромку фальшборта */
+/** Планширь (Task 82: настоящий брус ЗАМКНУТОГО сечения — наружная
+ *  грань со свесом, слегка выпуклый верх, внутренняя грань; идёт по
+ *  седловатости фальшборта и перекрывает верхнюю кромку обшивки).
+ *  Прежде это была лента из двух вершин на шпацию без толщины: изнутри
+ *  и снизу она не рисовалась, а у кромки читалась щель.
+ *  На корме — кормовой планширь (таффрел) во всю ширину транца, на
+ *  плоском носу (пинасс) — носовая планка. */
 function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
-  const S = 26, L = P.length;
+  const S = 48, L = P.length;
   const pos: number[] = [], col: number[] = [], idx: number[] = [], uvs: number[] = [];
-  const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.25);
-  const cRail2 = new THREE.Color(P.colors.trim);
-  const push = (px: number, py: number, z: number, c: THREE.Color) => {
-    pos.push(px, py, z); col.push(c.r, c.g, c.b);
-    // UV как у корпуса: планки по длине (u вдоль корабля)
-    uvs.push(z / P.beam, py / P.beam);
+  const cTop = new THREE.Color(P.colors.trim).multiplyScalar(1.45);
+  const cSide = new THREE.Color(P.colors.trim).multiplyScalar(1.12);
+  // сечение бруса: свес наружу, ширина внутрь, высота вверх/вниз
+  const OUT = 0.12, IN = 0.30, HT = 0.06, HB = 0.07;
+  type V3 = [number, number, number];
+  const quad = (a: V3, b: V3, c: V3, d: V3, tint: THREE.Color) => {
+    const base = pos.length / 3;
+    const pts = [a, b, c, d].map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    const lu = pts[0].distanceTo(pts[1]) || 0.01, lv = pts[0].distanceTo(pts[3]) || 0.01;
+    const uvs4 = [[0, 0], [lu, 0], [lu, lv], [0, lv]];
+    for (let i = 0; i < 4; i++) {
+      pos.push(pts[i].x, pts[i].y, pts[i].z);
+      col.push(tint.r, tint.g, tint.b);
+      uvs.push(uvs4[i][0] / 0.6, uvs4[i][1] / 0.6);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
   };
-  for (let s = 0; s <= S; s++) {
-    const t = s / S;
-    const p = hullProfile(t, P);
-    const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
-    const y = p.bulwark;
-    // внутренняя и внешняя кромки планки (лёгкий свес наружу)
-    push(p.w - 0.26, y + 0.07, z, cRail);
-    push(p.w + 0.13, y + 0.015, z, cRail2);
-    push(-p.w + 0.26, y + 0.07, z, cRail);
-    push(-p.w - 0.13, y + 0.015, z, cRail2);
+  /** поперечный брус-коробка (таффрел/носовая планка) */
+  const crossBar = (xo: number, yb: number, yt: number, z0: number, z1: number) => {
+    const xm = -xo;
+    quad([xm, yt, z0], [xm, yt, z1], [xo, yt, z1], [xo, yt, z0], cTop);           // верх
+    quad([xm, yb, z0], [xo, yb, z0], [xo, yb, z1], [xm, yb, z1], cSide);          // низ
+    quad([xm, yb, z0], [xm, yt, z0], [xo, yt, z0], [xo, yb, z0], cSide);          // корма/нос (−z)
+    quad([xm, yb, z1], [xo, yb, z1], [xo, yt, z1], [xm, yt, z1], cSide);          // +z
+    quad([xo, yb, z0], [xo, yt, z0], [xo, yt, z1], [xo, yb, z1], cSide);          // борт
+    quad([xm, yb, z0], [xm, yb, z1], [xm, yt, z1], [xm, yt, z0], cSide);
+  };
+  for (const s of [1, -1] as const) {
+    // вершины сечения на шпации: [наружная-низ, наружная-верх,
+    // внутренняя-верх, внутренняя-низ]
+    const sec: V3[][] = [];
+    for (let i = 0; i <= S; i++) {
+      const t = i / S;
+      const p = hullProfile(t, P);
+      const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
+      const xo = s * (p.w + OUT);
+      // у штевня борт сходится в точку: внутренняя грань не заходит
+      // за диаметральную плоскость (иначе планшири бортов мёрцают)
+      const xi = s * Math.max(p.w - IN, 0);
+      sec.push([
+        [xo, p.bulwark - HB, z],
+        [xo, p.bulwark + HT * 0.55, z],
+        [xi, p.bulwark + HT, z],
+        [xi, p.bulwark - HB, z],
+      ]);
+    }
+    for (let i = 0; i < S; i++) {
+      const a = sec[i], b = sec[i + 1];
+      const f = s < 0;                    // штирборт — обратный порядок вершин
+      const q = (p1: V3, p2: V3, p3: V3, p4: V3, c: THREE.Color) =>
+        f ? quad(p1, p4, p3, p2, c) : quad(p1, p2, p3, p4, c);
+      q(a[0], a[1], b[1], b[0], cSide);          // наружная грань
+      q(a[1], a[2], b[2], b[1], cTop);           // верх
+      q(a[3], b[3], b[2], a[2], cSide);          // внутренняя грань
+      q(a[0], b[0], b[3], a[3], cSide);          // низ
+    }
+    // торцы бруса
+    const f = s < 0;
+    const q = (p1: V3, p2: V3, p3: V3, p4: V3, c: THREE.Color) =>
+      f ? quad(p1, p4, p3, p2, c) : quad(p1, p2, p3, p4, c);
+    const a0 = sec[0], aS = sec[S];
+    q(a0[0], a0[3], a0[2], a0[1], cSide);
+    q(aS[0], aS[1], aS[2], aS[3], cSide);
   }
-  for (let s = 0; s < S; s++) {
-    const a = s * 4;
-    // правый борт
-    idx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5);
-    // левый борт
-    idx.push(a + 2, a + 3, a + 6, a + 3, a + 7, a + 6);
+  // кормовой планширь: от крайней кормовой точки до верха стены транца
+  // (закрывает сверху карман между обшивкой и стеной)
+  {
+    const p = hullProfile(0.02, P);
+    crossBar(p.w + OUT, p.bulwark - HB, p.bulwark + HT,
+      -L / 2 - 0.03, TRANSOM_Z_TOP * L + 0.012 * L);
+  }
+  // плоский нос (пинасс): бортовые планшири не сходятся к штевню
+  const pw = hullProfile(1, P).w;
+  if (pw > 0.2) {
+    const p = hullProfile(1, P);
+    crossBar(pw + OUT, p.bulwark - HB, p.bulwark + HT, L / 2 - 0.012 * L, L / 2 + 0.03);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));

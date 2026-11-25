@@ -3959,6 +3959,43 @@ export class Game {
     };
   }
 
+  /** Task 82 отладка: «пипетка» — что видно в пикселе (px, py) окна?
+   *  Луч из камеры, пересечения с кораблём игрока (только меши); для
+   *  дощатых мешей — атрибуты доски hit-треугольника (aPlank/aPlankN),
+   *  чтобы сверить данные шейдера древесины с точкой попадания. */
+  debugPick(px: number, py: number, maxHits = 4) {
+    const rc = new THREE.Raycaster();
+    rc.params.Line.threshold = 0;
+    rc.params.Points.threshold = 0;
+    rc.setFromCamera(
+      new THREE.Vector2((px / window.innerWidth) * 2 - 1, 1 - (py / window.innerHeight) * 2),
+      this.rig.camera,
+    );
+    const grp = this.player.visual.group;
+    const inv = grp.matrixWorld.clone().invert();
+    const r3 = (v: THREE.Vector3) => [+v.x.toFixed(3), +v.y.toFixed(3), +v.z.toFixed(3)];
+    return rc.intersectObject(grp, true)
+      .filter(h => (h.object as THREE.Mesh).isMesh)
+      .slice(0, maxHits)
+      .map((h) => {
+        const m = h.object as THREE.Mesh;
+        const lp = h.point.clone().applyMatrix4(inv);
+        const g = m.geometry as THREE.BufferGeometry;
+        const aP = g?.attributes?.aPlank as THREE.BufferAttribute | undefined;
+        let plank: unknown = null;
+        if (aP && h.face) {
+          const i = g.index ? g.index.getX(h.face.a) : h.face.a;
+          const aN = g.attributes.aPlankN as THREE.BufferAttribute;
+          const comp = (a: THREE.BufferAttribute) => [0, 1, 2, 3].map(k => +a.getComponent(i, k).toFixed(4));
+          plank = { aPlank: comp(aP), aPlankN: comp(aN), tri: [h.face.a, h.face.b, h.face.c] };
+        }
+        return {
+          name: m.name, cls: m.userData?.class, dist: +h.distance.toFixed(2), local: r3(lp),
+          plank, mat: (m.material as THREE.Material)?.type,
+        };
+      });
+  }
+
   /** Task 80 E2E/отладка: войти в режим ПРОГУЛКИ ПО ПАЛУБЕ (как V)
    *  или выйти — без клавиатуры (headless-пробы трубы/оружия) */
   debugDeckWalk(on: boolean) {

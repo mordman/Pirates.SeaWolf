@@ -35,6 +35,7 @@
 // ============================================================
 import * as THREE from 'three';
 import { ShipPreset, hullProfile, hullHalfWidthAt, quarterFrontZ } from './buildShip';
+import { applyPlankShader, plankPaint } from './woodShader';
 import { mulberry32 } from './crew';
 
 export interface PlankRec {
@@ -54,6 +55,13 @@ export interface PlankRec {
   state: 0 | 1 | 2 | 3;
   hp: number;          // 100..0
   belowWL: boolean;
+  /** Task 82: форма доски в шаблоне (доли ширины w): [k0, k1] — во
+   *  сколько раз сужена НАРУЖНАЯ половина сечения у кормового/носового
+   *  торца (кромка настила следует обводу корпуса), [sh0, sh1] — сдвиг
+   *  всего сечения у торцов (ватервейс — параллелограмм по обводу) */
+  shape?: [number, number, number, number];
+  /** Task 82: seed доски для процедурной древесины (0..1, из id) */
+  seed?: number;
   /** каскад «панель вырвано» уже разыгран для этой доски */
   cascadeHit?: boolean;
   /** мировая точка (заполняет Ship при создании FX) */
@@ -87,6 +95,20 @@ const STRAKE_PITCH = 0.42;
  *  видимая линия нахлёста, как у настоящей клинкерной обшивки.
  *  Task 49: 0.20 → 0.09 — рельеф «чешуёк» заметно мягче */
 const LAP_TILT = 0.09;
+/** Task 82: насколько верхняя кромка верхнего пояса заходит ПОД
+ *  планширь (планширь перекрывает её на 4.5 см — щели под ним нет) */
+const RAIL_LAP = 0.015;
+/** Task 82: ширина/толщина ватервейса — тяжёлой доски вдоль борта
+ *  поверх настила (закрывает стык палубы с обшивкой) */
+const WATERWAY_W = 0.30;
+const WATERWAY_T = 0.05;
+/** Task 82: минимальная ширина суженной палубной доски у торца */
+const DECK_MIN_W = 0.10;
+/** Task 82: стена транца — шпация (доля L от кормы) и рая: z низа/верха
+ *  стены в долях L (верх отступает в корму — развал кормы) */
+const TRANSOM_T = 0.035;
+const TRANSOM_Z_BOT = -0.470;
+export const TRANSOM_Z_TOP = -0.484;
 /** ширина доски палубы */
 const DECK_W = 0.385;
 /** шаг колонок палубы: нахлёст 2.5 см поперёк */
@@ -250,7 +272,14 @@ export class PlankSystem {
     this.group.name = 'Hull_Planks';
     this.mat = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.88, metalness: 0.03,
+      // Task 82: обратные грани досок = внутренняя поверхность борта
+      // (фальшборт изнутри, стены проломов) — сквозь узкие щели у
+      // кромки настила видно дерево, а не море
+      side: THREE.DoubleSide,
     });
+    // Task 82: процедурная древесина — волокна, пазы, нагели, окраска
+    // поясов, порты, ватерлиния (атрибуты досок пишет rebuild)
+    applyPlankShader(this.mat, plankPaint(P));
     this.buildSides(P);
     this.buildDeck(P);
     this.buildQuarterdeck(P);
@@ -323,24 +352,39 @@ export class PlankSystem {
     let idN = 0;
     const L = P.length;
     const yCut = plankCutY(P);
-    const yTop = hullProfile(0.5, P).bulwark - 0.10;
     const rnd = mulberry32(this.seedOf(P) ^ 0x2f13);
     const zA = -L * 0.478, zB = L * 0.472;
     const zAxis = new THREE.Vector3(0, 0, 1);
+    // Task 82: верхний пояс идёт ПОД планширем по всей длине. Планширь
+    // следует седловатости фальшборта (у миделя ниже, к носу и корме
+    // выше), поэтому пояса «расходятся» к оконечностям: высота пояса k
+    // в шпации z равна y0 + k·pitch(z). Прежде верхний пояс обрывался
+    // на постоянной высоте bulwark(0.5) − 0.10, и между ним и планширем
+    // оставалась сквозная щель до 1.1 м — фальшборт просвечивал.
+    const y0 = yCut - 0.01 + STRAKE_W / 2;              // центр нижнего пояса
+    const topC = (z: number) =>
+      hullProfile((z + L / 2) / L, P).bulwark - RAIL_LAP - STRAKE_W / 2;
+    let topMax = -Infinity;
+    for (let i = 0; i <= 32; i++) {
+      topMax = Math.max(topMax, topC(THREE.MathUtils.lerp(zA, zB, i / 32)));
+    }
+    // число поясов: у самого высокого фальшборта шаг ≤ STRAKE_PITCH
+    // (нахлёст ≥ 6 см); у миделя шаг меньше — нахлёст больше
+    const nStr = Math.max(3, Math.ceil((topMax - y0) / STRAKE_PITCH) + 1);
     const qTilt = new THREE.Quaternion().setFromAxisAngle(zAxis, LAP_TILT);
     const N = new THREE.Vector3(), T = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const X = new THREE.Vector3(), Yv = new THREE.Vector3(), Zc = new THREE.Vector3();
     for (const s of [1, -1] as const) {
-      for (let k = 0; ; k++) {
-        const y = yCut - 0.01 + STRAKE_W / 2 + k * STRAKE_PITCH;
-        // верхний пояс прячется под планширем: допускаем выступ
-        if (y + STRAKE_W * 0.3 >= yTop && k > 0) break;
-        const below = y < 0.05;
-        const thick = below ? 0.105 : 0.09;
+      for (let k = 0; k < nStr; k++) {
+        // номинальный уровень пояса (шаг 0.42 — урон и аудиты) и его
+        // ФАКТИЧЕСКАЯ высота в шпации z
+        const yNom = y0 + k * STRAKE_PITCH;
+        const yAt = (z: number) => y0 + (k * (topC(z) - y0)) / (nStr - 1);
+        const thick = yAt(0) < 0.05 ? 0.105 : 0.09;
         // наружная плоскость пояса (линия хорд): отступ от обвода
         const offAt = (z: number) => {
-          const hw = hullHalfWidthAt(P, (z + L / 2) / L, y);
+          const hw = hullHalfWidthAt(P, (z + L / 2) / L, yAt(z));
           return Math.max(hw, 0.30) + thick * 0.30;
         };
         // разбежка стыков: у нечётных поясов первая доска короче
@@ -357,33 +401,40 @@ export class PlankSystem {
           const stepK = Math.min(step, maxStep);
           if (stepK < 0.45) break;
           const z1 = z0 + stepK;
-          // хорда P0→P1 по наружной плоскости пояса
+          // хорда P0→P1 по наружной плоскости пояса (с подъёмом по
+          // седловатости: концы доски лежат на поверхности корпуса)
           const x0 = s * offAt(z0), x1 = s * offAt(z1);
-          const zm = (z0 + z1) / 2;
-          const len = Math.hypot(x1 - x0, z1 - z0);
+          const ya = yAt(z0), yb = yAt(z1);
+          const zm = (z0 + z1) / 2, ym = (ya + yb) / 2;
+          const len = Math.hypot(x1 - x0, yb - ya, z1 - z0);
           // базис: длина — по хорде, наружу — нормаль обвода в середине
-          // (ортогонализация: N⊥Z всегда, хорда в плоскости XZ)
-          sideBasis(P, (zm + L / 2) / L, y, s, N, T);
-          Zc.set(x1 - x0, 0, z1 - z0).normalize();
+          // (ортогонализация: N⊥Z всегда)
+          sideBasis(P, (zm + L / 2) / L, ym, s, N, T);
+          // хорда: на штирборте — от носа К КОРМЕ (множитель s). Тогда
+          // ось Y доски (высота) смотрит ВВЕРХ на обоих бортах, и один
+          // наклон даёт одинаковый нахлёст «нижняя кромка наружу»
+          // (Task 82: прежде на штирборте он был зеркальным)
+          Zc.set((x1 - x0) * s, (yb - ya) * s, (z1 - z0) * s).normalize();
           X.copy(N).addScaledVector(Zc, -N.dot(Zc)).normalize();
           Yv.crossVectors(Zc, X);
           _m.makeBasis(X, Yv, Zc);
           q.setFromRotationMatrix(_m);
           q.multiply(qTilt);                       // внакрой: кромка наружу
           // центр: наклонённая наружная грань проходит по хорде
-          const center = new THREE.Vector3((x0 + x1) / 2, y, zm)
+          const center = new THREE.Vector3((x0 + x1) / 2, ym, zm)
             .addScaledVector(X, -Math.cos(LAP_TILT) * thick / 2 + (j % 2) * EDGE_ALT)
             .addScaledVector(Yv, -Math.sin(LAP_TILT) * thick / 2);
           const tone = 0.93 + rnd() * 0.14;   // Task 49: ±7% (было ±14% — «шахматы»)
           const color = new THREE.Color(P.colors.hull);
+          const below = ym < 0.05;
           if (below) {
-            const f = Math.min(1, (0.05 - y) / Math.max(0.8, P.draft * 0.45));
+            const f = Math.min(1, (0.05 - ym) / Math.max(0.8, P.draft * 0.45));
             color.lerp(new THREE.Color(0x33402a), f * 0.82);
           }
           idN++;
           this.records.push({
             id: `Plank_${s > 0 ? 'P' : 'S'}${String(k).padStart(2, '0')}_${String(idN).padStart(3, '0')}`,
-            cls: 0, side: s, y, z: zm, x: 0, len,
+            cls: 0, side: s, y: yNom, z: zm, x: 0, len,
             w: STRAKE_W, thick, quat: q.clone(),
             center,
             tone, color, state: 0, hp: 100, belowWL: below,
@@ -402,16 +453,31 @@ export class PlankSystem {
   // корабля (нос-корма). Колонки шириной 0.385 с шагом 0.36 —
   // нахлёст 2.5 см поперёк; по длине — микронахлёст стыков;
   // разбежка стыков между колонками. Кромка настила уходит ПОД
-  // обшивку борта (край колонки заправлен внутрь пояса).
+  // обшивку борта (край колонки заправлен внутрь пояса), вдоль борта
+  // поверх стыка — ватервейс (Task 82).
   // ============================================================
   private buildDeck(P: ShipPreset) {
     const L = P.length;
     const deckY = (z: number) => hullProfile((z + L / 2) / L, P).bulwark - 1.0;
     // главный настил: от квартердека (если есть) до сужения в носу;
-    // без квартердека — до самой кормы (вплотную к стене транца)
-    const zFrom = P.quarter ? quarterFrontZ(P) + 0.06 : -L * 0.458;
+    // без квартердека — от стены транца: стена наклонена (развальна),
+    // её положение на высоте палубы считаем по линии рая и заправляем
+    // кромку настила ПОД её доски
+    let zFrom: number;
+    if (P.quarter) {
+      zFrom = quarterFrontZ(P) + 0.06;
+    } else {
+      const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
+      const yTopC = hullProfile(TRANSOM_T, P).bulwark - RAIL_LAP - STRAKE_W / 2;
+      const f = THREE.MathUtils.clamp((deckY(-L * 0.47) - y0) / (yTopC - y0), 0, 1);
+      zFrom = THREE.MathUtils.lerp(TRANSOM_Z_BOT, TRANSOM_Z_TOP, f) * L + 0.025;
+    }
     const zTo = L * 0.44;
-    this.buildDeckArea(P, zFrom, zTo, deckY, 'D', 0.14);
+    // inset: зазор от обвода до кромки — на 4.5 см внутрь корпуса,
+    // т.е. кромка сидит ВНУТРИ толщины пояса обшивки (наружная грань
+    // пояса на +2.7 см от обвода, внутренняя на −6.3 см)
+    this.buildDeckArea(P, zFrom, zTo, deckY, 'D', 0.045);
+    this.buildWaterway(P, zFrom, zTo, deckY, 0.04);
   }
 
   // ============================================================
@@ -426,59 +492,110 @@ export class PlankSystem {
     const deckY = (z: number) => hullProfile((z + L / 2) / L, P).bulwark - 1.0;
     const floorY = (z: number) => deckY(z) + q;
     const sternZ = -L / 2 + Math.max(0.35, L * 0.012);
-    this.buildDeckArea(P, sternZ, quarterFrontZ(P) - 0.02, floorY, 'Q', 0.12);
+    // стенки надстройки: от hw − 0.15 до hw + 0.11 — кромка настила
+    // заканчивается внутри их толщины (inset 0.145)
+    this.buildDeckArea(P, sternZ, quarterFrontZ(P) - 0.02, floorY, 'Q', 0.145);
   }
 
   /** общий настил: продольные доски колонками с нахлёстом.
    *  Верхняя грань каждой доски — ХОРДА седловатости палубы
    *  (продольного изгиба): соседние доски колонки сходятся на
-   *  самой кривой, без ступеней на стыках у оконечностей. */
+   *  самой кривой, без ступеней на стыках у оконечностей.
+   *  Task 82: наружная кромка досок крайних колонок СУЖАЕТСЯ по
+   *  обводу корпуса (форма сечения в записи — shape). Прежде колонка
+   *  допускалась, если обвод в СЕРЕДИНЕ доски был шире её центра:
+   *  прямая доска у носа, где корпус сужается на 20–27 см/м, торчала
+   *  концами сквозь обшивку — на борту светились «плашки» палубы.
+   *  Теперь на 5 сечениях доски считается доступная ширина; кромка
+   *  идёт по хорде, заведённой внутрь на величину прогиба обвода. */
   private buildDeckArea(
     P: ShipPreset, zFrom: number, zTo: number,
-    yAt: (z: number) => number, tag: string, edgeMargin: number,
+    yAt: (z: number) => number, tag: string, inset: number,
   ) {
     const L = P.length;
     const rnd = mulberry32(this.seedOf(P) ^ (tag === 'D' ? 0x51d7 : 0x71a3));
+    const half = DECK_W / 2;
+    // предел НАРУЖНОЙ кромки: обвод корпуса на высоте палубы минус зазор
+    const limAt = (z: number) =>
+      hullHalfWidthAt(P, (z + L / 2) / L, yAt(z)) - inset;
     const midW = hullHalfWidthAt(P, 0.5, yAt(0));
     const nCols = Math.max(3, Math.floor((midW * 2 + 0.2) / DECK_STEP));
     const fullLen = 1.98;
     // поворот плашмя: толщина — вертикаль, ширина — поперёк, длина — вдоль
     const qFlat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 2));
     const qPitch = new THREE.Quaternion();
-    for (let c = 0; c < nCols; c++) {
-      const x = (c - (nCols - 1) / 2) * DECK_STEP;
+    const yAxis = new THREE.Vector3(0, 1, 0);
+    /** помещается ли доска колонки |x| = ax на участке [za, zb]:
+     *  возвращает сужение наружной половины у торцов [k0, k1]
+     *  (1 — полная ширина) либо null — не помещается */
+    const fit = (ax: number, za: number, zb: number): [number, number] | null => {
+      const inner = ax - half;              // внутренняя кромка (не сужается)
+      const n = 5;
+      const outs: number[] = [];
+      for (let i = 0; i <= n; i++) {
+        outs.push(Math.min(DECK_W, limAt(za + (zb - za) * i / n) - inner));
+      }
+      let e0 = outs[0], e1 = outs[n];
+      // обвод между торцами может отойти от хорды — кромку заводим
+      // внутрь на наибольшее отклонение
+      let sag = 0;
+      for (let i = 1; i < n; i++) {
+        sag = Math.max(sag, e0 + (e1 - e0) * i / n - outs[i]);
+      }
+      e0 -= sag; e1 -= sag;
+      if (Math.min(e0, e1) < DECK_MIN_W) return null;
+      return [Math.min(1, (2 * e0) / DECK_W - 1), Math.min(1, (2 * e1) / DECK_W - 1)];
+    };
+    // колонки — ОТ СЕРЕДИНЫ к бортам: первые записи настила — длинные
+    // полноразмерные доски (их смотрят аудиты и e2e)
+    const mid = (nCols - 1) / 2;
+    const order: number[] = [];
+    for (let d = 0; d < nCols; d++) {
+      order.push(d % 2 === 0 ? Math.ceil(mid) + d / 2 : Math.floor(mid) - (d - 1) / 2);
+    }
+    for (const c of order) {
+      const x = (c - mid) * DECK_STEP;
       const ax = Math.abs(x);
       const stagger = (Math.abs(c) % 2) * 0.95;
       let planLen = stagger > 0 ? Math.max(0.55, fullLen - stagger) : fullLen;
       let z0 = zFrom;
       let i = 0;
       while (z0 < zTo - 0.02) {
-        const lenK = Math.min(planLen, zTo - z0);
+        let lenK = Math.min(planLen, zTo - z0);
+        let kp = fit(ax, z0, z0 + lenK);
+        if (!kp) {
+          if (i === 0) {
+            // у кормы корпус уже — колонка начнётся дальше к носу
+            z0 += 0.4;
+            continue;
+          }
+          // к носу корпус сужается — укорачиваем доску, пока кромка
+          // не вместится (мин. длина 0.46)
+          while (!kp && lenK > 0.46) {
+            lenK = Math.max(0.46, lenK * 0.72);
+            kp = fit(ax, z0, z0 + lenK);
+          }
+          if (!kp) break;                   // колонка закончилась
+        }
         const z1 = z0 + lenK;
         const z = (z0 + z1) / 2;
-        const t = (z + L / 2) / L;
         const ym = (yAt(z0) + yAt(z1)) / 2;
-        const hw = hullHalfWidthAt(P, t, yAt(z));
-        // колонка существует там, где её кромка достаёт до борта
-        // (край уходит под обшивку — щели между палубой и бортом НЕТ)
-        if (lenK >= 0.5 && hw >= ax + edgeMargin) {
-          const tone = 0.94 + rnd() * 0.12;   // Task 49: ±6% (было ±12%)
-          // наклон по хорде седловатости (стык без ступени)
-          const pitch = Math.atan2(yAt(z1) - yAt(z0), z1 - z0);
-          const quat = qFlat.clone().multiply(
-            qPitch.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pitch));
-          this.records.push({
-            id: `Plank_${tag}${String(c).padStart(2, '0')}_${String(this.records.length).padStart(3, '0')}`,
-            cls: 1, side: x >= 0 ? 1 : -1, y: ym, z, x,
-            len: Math.hypot(z1 - z0, yAt(z1) - yAt(z0)), w: DECK_W, thick: 0.075,
-            quat,
-            // верхняя грань — по хорде; микровариация высоты соседних
-            // досок — вместо мерцания совпадающих граней в нахлёсте
-            center: new THREE.Vector3(x, ym - 0.0375 + ((c + i) % 2) * 0.0008, z),
-            tone, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
-            belowWL: false,
-          });
-        }
+        const tone = 0.94 + rnd() * 0.12;   // Task 49: ±6% (было ±12%)
+        // наклон по хорде седловатости (стык без ступени)
+        const pitch = Math.atan2(yAt(z1) - yAt(z0), z1 - z0);
+        const quat = qFlat.clone().multiply(qPitch.setFromAxisAngle(yAxis, pitch));
+        this.records.push({
+          id: `Plank_${tag}${String(c).padStart(2, '0')}_${String(this.records.length).padStart(3, '0')}`,
+          cls: 1, side: x >= 0 ? 1 : -1, y: ym, z, x,
+          len: Math.hypot(z1 - z0, yAt(z1) - yAt(z0)), w: DECK_W, thick: 0.075,
+          quat,
+          // верхняя грань — по хорде; микровариация высоты соседних
+          // досок — вместо мерцания совпадающих граней в нахлёсте
+          center: new THREE.Vector3(x, ym - 0.0375 + ((c + i) % 2) * 0.0008, z),
+          shape: [kp[0], kp[1], 0, 0],
+          tone, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
+          belowWL: false,
+        });
         // следующая доска колонки: стык с микронахлёстом
         z0 = z1 - END_LAP;
         planLen = fullLen;
@@ -488,19 +605,90 @@ export class PlankSystem {
   }
 
   // ============================================================
+  // ВАТЕРВЕЙС (Task 82): тяжёлая доска ВДОЛЬ борта поверх настила —
+  // закрывает стык палубы с обшивкой (на настоящих судах именно она
+  // держит воду и связывает палубный набор с обшивкой). Сечение —
+  // параллелограмм: наружная кромка следует обводу, внутренняя
+  // параллельна ей (shape: сдвиг сечения). Класс 1 (настил): та же
+  // окраска/урон, хранится в меше палубы.
+  // ============================================================
+  private buildWaterway(
+    P: ShipPreset, zFrom: number, zTo: number,
+    yAt: (z: number) => number, inset: number,
+  ) {
+    const L = P.length;
+    const rnd = mulberry32(this.seedOf(P) ^ 0x3b9d);
+    const W = WATERWAY_W, T = WATERWAY_T, half = W / 2;
+    // наружная кромка — по обводу на высоте ВЕРХА ватервейса
+    const outAt = (z: number) =>
+      hullHalfWidthAt(P, (z + L / 2) / L, yAt(z) + T) - inset;
+    const qFlat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 2));
+    const qPitch = new THREE.Quaternion();
+    const yAxis = new THREE.Vector3(0, 1, 0);
+    // x записей — уникальны с точностью до мм и не совпадают с сеткой
+    // колонок настила (аудиты группируют записи настила по x)
+    const used = new Set<number>();
+    for (let k = 0; k < 400; k++) used.add(k * 180);
+    for (let k = 1; k < 400; k++) used.add(-k * 180);
+    for (const s of [1, -1] as const) {
+      let z0 = zFrom;
+      let j = 0;
+      while (z0 < zTo - 0.02) {
+        const step = Math.min(1.6, zTo - z0);
+        // у оконечностей корпус сужается быстро — куски короче
+        const dhw = Math.abs(outAt(z0 + step) - outAt(z0)) / Math.max(step, 0.01);
+        const stepK = Math.min(step, Math.max(0.5, 0.2 / Math.max(0.05, dhw)));
+        const z1 = z0 + stepK;
+        const o0 = outAt(z0), o1 = outAt(z1);
+        // в носу ватервейс уже не помещается между обводом и
+        // диаметральной плоскостью — борта не должны пересекаться
+        if (Math.min(o0, o1) < half + 0.05) break;
+        const mo = (o0 + o1) / 2;
+        let xc = s * (mo - half);
+        for (let n = 0; n < 60; n++) {
+          const key = Math.round(xc * 1000);
+          if (!used.has(key)) { used.add(key); break; }
+          xc += s * 0.0015;
+        }
+        const ym = (yAt(z0) + yAt(z1)) / 2;
+        const pitch = Math.atan2(yAt(z1) - yAt(z0), z1 - z0);
+        const quat = qFlat.clone().multiply(qPitch.setFromAxisAngle(yAxis, pitch));
+        // сдвиг сечения (в долях ширины): наружная кромка — на обводе
+        const sh = (o: number) => (-s * 2 * (o - mo)) / W;
+        this.records.push({
+          id: `Plank_W${s > 0 ? 'P' : 'S'}_${String(this.records.length).padStart(3, '0')}`,
+          cls: 1, side: s, y: ym, z: (z0 + z1) / 2, x: xc,
+          len: Math.hypot(z1 - z0, yAt(z1) - yAt(z0)), w: W, thick: T,
+          quat, shape: [1, 1, sh(o0), sh(o1)],
+          center: new THREE.Vector3(xc, ym + T / 2 - 0.006 + (j % 2) * 0.0008, (z0 + z1) / 2),
+          tone: 0.9 + rnd() * 0.1, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
+          belowWL: false,
+        });
+        z0 = z1 - END_LAP;
+        j++;
+      }
+    }
+  }
+
+  // ============================================================
   // ТРАНЕЦ (задник): корма выше среза закрыта ДОЩАТОЙ стеной —
   // те же клинкерные пояса (шаг/высота/наклон как у бортов),
   // развал кормы: верхние пояса отступают в корму. Стык с бортами
   // заправлен ПОД их обшивку. Поперёк — доски со стыками.
+  // Task 82: верхний пояс доходит до планширя кормы (прежде стена
+  // обрывалась на 12 см ниже — под планширем светилась щель).
   // ============================================================
   private buildTransom(P: ShipPreset) {
     const L = P.length;
     const yCut = plankCutY(P);
-    const yTopW = hullProfile(0.035, P).bulwark - 0.12;
     const rnd = mulberry32(this.seedOf(P) ^ 0x9c2f);
-    const tWall = 0.035;
-    const zWallBot = -L * 0.470, zWallTop = -L * 0.484;
-    const nStr = Math.max(3, Math.ceil((yTopW - yCut) / STRAKE_PITCH));
+    const tWall = TRANSOM_T;
+    const zWallBot = TRANSOM_Z_BOT * L, zWallTop = TRANSOM_Z_TOP * L;
+    const y0 = yCut - 0.01 + STRAKE_W / 2;
+    const yTopC = hullProfile(tWall, P).bulwark - RAIL_LAP - STRAKE_W / 2;
+    // шаг поясов ≤ STRAKE_PITCH, верхний пояс — точно под планширем
+    const nStr = Math.max(3, Math.ceil((yTopC - y0) / STRAKE_PITCH) + 1);
+    const pitchT = (yTopC - y0) / (nStr - 1);
     const zAxis = new THREE.Vector3(1, 0, 0);        // ось наклона поясья
     const qTilt = new THREE.Quaternion().setFromAxisAngle(zAxis, LAP_TILT);
     // базис: наружу — в корму (−Z), вверх — +Y, длина доски — +X
@@ -512,8 +700,7 @@ export class PlankSystem {
     const qBase = new THREE.Quaternion().setFromRotationMatrix(_m);
     let idN = 0;
     for (let k = 0; k < nStr; k++) {
-      const y = yCut - 0.01 + STRAKE_W / 2 + k * STRAKE_PITCH;
-      if (y + STRAKE_W * 0.3 >= yTopW && k > 0) break;
+      const y = y0 + k * pitchT;
       const below = y < 0.05;
       const zk = THREE.MathUtils.lerp(zWallBot, zWallTop, k / Math.max(1, nStr - 1));
       const hwT = hullHalfWidthAt(P, tWall, y);
@@ -592,14 +779,33 @@ export class PlankSystem {
     const uv = new Float32Array(vCount * 2);
     const col = new Float32Array(vCount * 3);
     const idx = new Uint16Array(vCount);
+    // Task 82: параметры доски для шейдера древесины (на вершину)
+    const aPlank = new Float32Array(vCount * 4);
+    const aPlankN = new Float32Array(vCount * 4);
     const v = new THREE.Vector3();
+    const pn = new THREE.Vector3();
     let vo = 0, io = 0;
     for (const r of recs) {
       const tp = tpls[r.state];
       _m.compose(r.center, r.quat, _vScale.set(r.thick, r.w, r.len));
       const n = tp.pos.length / 3;
+      pn.set(1, 0, 0).applyQuaternion(r.quat);
+      if (r.seed === undefined) {
+        let h = 0;
+        for (let c = 0; c < r.id.length; c++) h = (h * 31 + r.id.charCodeAt(c)) | 0;
+        r.seed = ((h >>> 0) % 100003) / 100003;
+      }
       for (let i = 0; i < n; i++) {
         v.set(tp.pos[i * 3], tp.pos[i * 3 + 1], tp.pos[i * 3 + 2]);
+        const shp = r.shape;
+        if (shp) {
+          // Task 82: сужение наружной половины доски к торцу + сдвиг
+          // всего сечения (ватервейс). Шаблон: +Y после поворота
+          // плашмя → −X корабля, т.е. «наружу» для x ≥ 0 — это −Y
+          const t01 = v.z + 0.5;
+          if (v.y * (r.x >= 0 ? -1 : 1) > 0) v.y *= shp[0] + (shp[1] - shp[0]) * t01;
+          v.y += 0.5 * (shp[2] + (shp[3] - shp[2]) * t01);
+        }
         v.applyMatrix4(_m);
         pos[(vo + i) * 3] = v.x; pos[(vo + i) * 3 + 1] = v.y; pos[(vo + i) * 3 + 2] = v.z;
         uv[(vo + i) * 2] = tp.uv[i * 2] * r.len;
@@ -609,6 +815,9 @@ export class PlankSystem {
         col[(vo + i) * 3] = r.color.r * r.tone * cm;
         col[(vo + i) * 3 + 1] = r.color.g * r.tone * (tp.col[i * 3 + 1] ?? cm);
         col[(vo + i) * 3 + 2] = r.color.b * r.tone * (tp.col[i * 3 + 2] ?? cm);
+        const a = (vo + i) * 4;
+        aPlank[a] = r.w; aPlank[a + 1] = r.len; aPlank[a + 2] = r.seed; aPlank[a + 3] = r.cls;
+        aPlankN[a] = pn.x; aPlankN[a + 1] = pn.y; aPlankN[a + 2] = pn.z; aPlankN[a + 3] = r.tone;
       }
       for (let i = 0; i < n; i++) idx[io + i] = vo + i;
       vo += n; io += n;
@@ -617,6 +826,8 @@ export class PlankSystem {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('aPlank', new THREE.BufferAttribute(aPlank, 4));
+    g.setAttribute('aPlankN', new THREE.BufferAttribute(aPlankN, 4));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.computeVertexNormals();       // фасетные нормали: рёбра досок читаются
     mesh.geometry.dispose();
@@ -647,7 +858,9 @@ export class PlankSystem {
    *    транец (cls 2): (a,b) = (y, x);  полуразмеры (w/2, len/2) */
   private rectDist(r: PlankRec, a: number, b: number): number {
     const ha = r.w / 2, hb = r.len / 2;
-    const ca = r.cls === 1 ? r.x : r.y;   // палуба — по x; борт/транец — по y
+    // палуба — по x; борт/транец — по y ФАКТИЧЕСКОГО центра (Task 82:
+    // пояса борта следуют седловатости — их высота меняется по длине)
+    const ca = r.cls === 1 ? r.x : r.center.y;
     const cb = r.cls === 2 ? r.x : r.z;   // транец — по x; борт/палуба — по z (вдоль!)
     const da = Math.abs(a - ca) - ha;
     const db = Math.abs(b - cb) - hb;

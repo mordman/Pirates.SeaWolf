@@ -1,0 +1,15 @@
+
+> nextjs_tailwind_shadcn_ts@0.2.1 lint
+> eslint .
+
+
+/home/z/my-project/scripts/deadrig_check.mjs
+  5:18  warning  Expected an assignment or function call and instead saw an expression  @typescript-eslint/no-unused-expressions
+
+/home/z/my-project/src/app/crew/page.tsx
+  468:5  warning  Unused eslint-disable directive (no problems were reported from 'react-hooks/exhaustive-deps')
+
+✖ 2 problems (0 errors, 2 warnings)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+lint exit 0
