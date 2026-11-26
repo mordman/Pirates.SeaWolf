@@ -47,6 +47,11 @@ export class AIShip {
   /** Task 46: мишень полигона — НЕ вступает в бой сама (её режим
    *  задаёт игрок тумблером); пиратская эскадра на якоре — отвечает */
   isProvingTarget = false;
+  /** Task 85: АБОРДАЖ — решения ИИ отключены (корабль в сцепке,
+   *  позу ведёт модуль Boarding; физика fixedStep продолжается) */
+  frozen = false;
+  /** Task 85: кулдаун повторного абордажа игрока (после отбоя) */
+  boardCd = 0;
 
   constructor(ship: Ship, waypoints: THREE.Vector3[], state: AIState = 'route') {
     this.ship = ship;
@@ -88,6 +93,15 @@ export class AIShip {
     onMessage: (text: string) => void) {
     const s = this.ship;
     if (s.sunk || s.sinking) { s.crewEngage = false; return; }
+    // Task 85: АБОРДАЖ — корабль в сцепке: решения отключены, руль
+    // и паруса ведёт модуль Boarding (физика идёт отдельным
+    // fixedStep в game.ts). Стрелки продолжают отстреливаться.
+    if (this.frozen) {
+      if (this.boardCd > 0) this.boardCd -= dt;
+      s.crewEngage = this.state === 'combat';
+      return;
+    }
+    if (this.boardCd > 0) this.boardCd -= dt;
     // Task 44: матросы стреляют ТОЛЬКО когда корабль НАПАДАЕТ:
     // военный ИИ в бою / мишень полигона с ответным огнём.
     // Мирные (route/flee/patrol) и сдавшиеся — ружья молчат
