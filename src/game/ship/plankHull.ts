@@ -58,8 +58,10 @@ export interface PlankRec {
   /** Task 82: форма доски в шаблоне (доли ширины w): [k0, k1] — во
    *  сколько раз сужена НАРУЖНАЯ половина сечения у кормового/носового
    *  торца (кромка настила следует обводу корпуса), [sh0, sh1] — сдвиг
-   *  всего сечения у торцов (ватервейс — параллелограмм по обводу) */
-  shape?: [number, number, number, number];
+   *  всего сечения у торцов (ватервейс — параллелограмм по обводу),
+   *  [ki0, ki1] — сужение ВНУТРЕННЕЙ половины (центральная колонка
+   *  настила у штевня: корпус уже доски, клин сужается с двух сторон) */
+  shape?: [number, number, number, number, number?, number?];
   /** Task 82: seed доски для процедурной древесины (0..1, из id) */
   seed?: number;
   /** каскад «панель вырвано» уже разыгран для этой доски */
@@ -87,14 +89,14 @@ export function plankCutY(P: ShipPreset): number {
 
 // ---------- геометрия поясов/досок (метры) ----------
 /** высота доски поясья обшивки */
-const STRAKE_W = 0.48;
+export const STRAKE_W = 0.48;
 /** шаг поясов: МЕНЬШЕ высоты доски → нахлёст 6 см (внакрой, Task 49:
  *  ослаблен с 8 см — сплошная «чешуя» на рельефе убавлена) */
 const STRAKE_PITCH = 0.42;
 /** наклон поясья вокруг оси длины: нижняя кромка НАРУЖУ —
  *  видимая линия нахлёста, как у настоящей клинкерной обшивки.
  *  Task 49: 0.20 → 0.09 — рельеф «чешуёк» заметно мягче */
-const LAP_TILT = 0.09;
+export const LAP_TILT = 0.09;
 /** Task 82: насколько верхняя кромка верхнего пояса заходит ПОД
  *  планширь (планширь перекрывает её на 4.5 см — щели под ним нет) */
 const RAIL_LAP = 0.015;
@@ -102,13 +104,47 @@ const RAIL_LAP = 0.015;
  *  поверх настила (закрывает стык палубы с обшивкой) */
 const WATERWAY_W = 0.30;
 const WATERWAY_T = 0.05;
-/** Task 82: минимальная ширина суженной палубной доски у торца */
-const DECK_MIN_W = 0.10;
-/** Task 82: стена транца — шпация (доля L от кормы) и рая: z низа/верха
- *  стены в долях L (верх отступает в корму — развал кормы) */
-const TRANSOM_T = 0.035;
-const TRANSOM_Z_BOT = -0.470;
-export const TRANSOM_Z_TOP = -0.484;
+/** Task 82: ЕДИНАЯ линия кормового среза дощатой стены транца: z стены
+ *  на высоте y (в метрах, локально). Низ — на 1 см ЗА кормовым срезом
+ *  гладкого корпуса (стык перекрыт его торцом — без щели), верх — за
+ *  корму (развал/свес транца). Её используют стена транца, кормовые
+ *  кромки поясов бортов, кромка настила и таффрел — всё сходится в
+ *  одну линию без «карманов». Прежде стена стояла на 45–84 см ВПЕРЕДИ
+ *  среза (константы −0.470/−0.484·L): между ней и кормой оставался
+ *  открытый чёрный карман во всю высоту борта. */
+const TRANSOM_OVER_BOT = -0.01;  // низ стены относительно среза, м
+const TRANSOM_OVER_TOP = 0.02;   // свес верха за корму, доля L
+/** центр верхнего пояса стены транца (под планширем кормы) */
+export function transomTopY(P: ShipPreset): number {
+  return hullProfile(0.03, P).bulwark - RAIL_LAP - STRAKE_W / 2;
+}
+export function transomZ(P: ShipPreset, y: number): number {
+  const L = P.length;
+  const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
+  const f = THREE.MathUtils.clamp((y - y0) / (transomTopY(P) - y0), 0, 1);
+  const top = -L / 2 - L * (P.quarter ? TRANSOM_OVER_TOP * 0.6 : TRANSOM_OVER_TOP);
+  return THREE.MathUtils.lerp(-L / 2 + TRANSOM_OVER_BOT, top, f);
+}
+/** Task 82: ЕДИНОЕ число поясов борта и транца (шаг ≤ STRAKE_PITCH у
+ *  самого ВЫСОКОГО фальшборта — на носу): стена и борта делят высоту
+ *  на одинаковое число поясов, швы стены и бортов сходятся на углах */
+function strakeCount(P: ShipPreset, zA: number, zB: number): number {
+  const L = P.length;
+  const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
+  let topMax = -Infinity;
+  for (let i = 0; i <= 32; i++) {
+    topMax = Math.max(topMax,
+      hullProfile((THREE.MathUtils.lerp(zA, zB, i / 32) + L / 2) / L, P).bulwark
+      - RAIL_LAP - STRAKE_W / 2);
+  }
+  return Math.max(3, Math.ceil((topMax - y0) / STRAKE_PITCH) + 1);
+}
+/** высота пояса k У КОРМЫ (веер к topC на кормовом срезе) — общая
+ *  для бортов (кормовые кромки) и стены транца (её ряды) */
+function sternStrakeY(P: ShipPreset, nStr: number, k: number): number {
+  const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
+  return y0 + (k * (transomTopY(P) - y0)) / (nStr - 1);
+}
 /** ширина доски палубы */
 const DECK_W = 0.385;
 /** шаг колонок палубы: нахлёст 2.5 см поперёк */
@@ -353,7 +389,12 @@ export class PlankSystem {
     const L = P.length;
     const yCut = plankCutY(P);
     const rnd = mulberry32(this.seedOf(P) ^ 0x2f13);
-    const zA = -L * 0.478, zB = L * 0.472;
+    // Task 82: пояса доходят до штевней: у носа — до 0.495L, где их
+    // торцы прячутся под форштевень (прежде обрезались clamp'ом 0.30 —
+    // «плаха» 65 см шириной за 78 см до штевня); у плоского носа
+    // (пинасс) — до 0.497L, где стоит дощатая стена носа
+    const zA = -L * 0.478;
+    const zB = L * (P.flatBow ? 0.497 : 0.495);
     const zAxis = new THREE.Vector3(0, 0, 1);
     // Task 82: верхний пояс идёт ПОД планширем по всей длине. Планширь
     // следует седловатости фальшборта (у миделя ниже, к носу и корме
@@ -364,13 +405,10 @@ export class PlankSystem {
     const y0 = yCut - 0.01 + STRAKE_W / 2;              // центр нижнего пояса
     const topC = (z: number) =>
       hullProfile((z + L / 2) / L, P).bulwark - RAIL_LAP - STRAKE_W / 2;
-    let topMax = -Infinity;
-    for (let i = 0; i <= 32; i++) {
-      topMax = Math.max(topMax, topC(THREE.MathUtils.lerp(zA, zB, i / 32)));
-    }
     // число поясов: у самого высокого фальшборта шаг ≤ STRAKE_PITCH
-    // (нахлёст ≥ 6 см); у миделя шаг меньше — нахлёст больше
-    const nStr = Math.max(3, Math.ceil((topMax - y0) / STRAKE_PITCH) + 1);
+    // (нахлёст ≥ 6 см); у миделя шаг меньше — нахлёст больше.
+    // ЕДИНОЕ для бортов и стены транца (strakeCount) — швы сходятся
+    const nStr = strakeCount(P, zA, zB);
     const qTilt = new THREE.Quaternion().setFromAxisAngle(zAxis, LAP_TILT);
     const N = new THREE.Vector3(), T = new THREE.Vector3();
     const q = new THREE.Quaternion();
@@ -382,24 +420,36 @@ export class PlankSystem {
         const yNom = y0 + k * STRAKE_PITCH;
         const yAt = (z: number) => y0 + (k * (topC(z) - y0)) / (nStr - 1);
         const thick = yAt(0) < 0.05 ? 0.105 : 0.09;
-        // наружная плоскость пояса (линия хорд): отступ от обвода
+        // наружная плоскость пояса (линия хорд): отступ от обвода;
+        // у носа пояса СВОДЯТСЯ к форштевню (clamp 0.06, Task 82) —
+        // борта сходятся, как у настоящей обшивки в штевень
         const offAt = (z: number) => {
           const hw = hullHalfWidthAt(P, (z + L / 2) / L, yAt(z));
-          return Math.max(hw, 0.30) + thick * 0.30;
+          return Math.max(hw, 0.06) + thick * 0.30;
         };
         // разбежка стыков: у нечётных поясов первая доска короче
         const stagger = (k % 2) * 0.78;
         let planLen = stagger > 0 ? Math.max(0.5, 1.52 - stagger) : 1.52;
-        let z0 = zA;                  // кормовая кромка очередной доски
+        // кормовая кромка пояса — НА стене транца: пояс высоты y у
+        // кормы заканчивается на линии transomZ(y), заправленный под
+        // её доски на 1.2 см (Task 82: прежде все пояса обрывались на
+        // −0.478L — впереди стены оставалась щель высотой в борт)
+        let z0 = transomZ(P, sternStrakeY(P, nStr, k)) + 0.012;
         let j = 0;
         while (z0 < zB - 0.02) {
           const step = Math.min(planLen, zB - z0);
-          // у оконечностей корпус сужается быстро — РЕЗАТЬ короче,
-          // чтобы хорда следовала кривизне (как у настоящих корпусов)
+          // у оконечностей и на крутых обводах (вход пинасса в плоский
+          // нос) корпус сужается быстро — РЕЗАТЬ короче, чтобы хорда
+          // следовала кривизне (Task 82: порог кривизны ужат вдвое —
+          // провисание хорд на переходе было 0.10–0.15 м)
           const dhw = Math.abs(offAt(z0 + step) - offAt(z0)) / Math.max(step, 0.01);
-          const maxStep = Math.max(0.55, 0.26 / Math.max(0.05, dhw));
+          const maxStep = Math.max(0.42, 0.14 / Math.max(0.05, dhw));
           const stepK = Math.min(step, maxStep);
-          if (stepK < 0.45) break;
+          // Task 82: короткий ЗАМЫКАЮЩИЙ пояс у штевня ставим всегда
+          // (реальные пояса укорачиваются к оконечности). Прежний порог
+          // 0.45 ломал цикл на последнем шаге и оставлял дыру ~0.4 м
+          // перед штевнем (аудит флейта: 14 промахов на z=0.4775L)
+          if (stepK < 0.22) break;
           const z1 = z0 + stepK;
           // хорда P0→P1 по наружной плоскости пояса (с подъёмом по
           // седловатости: концы доски лежат на поверхности корпуса)
@@ -467,10 +517,10 @@ export class PlankSystem {
     if (P.quarter) {
       zFrom = quarterFrontZ(P) + 0.06;
     } else {
-      const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
-      const yTopC = hullProfile(TRANSOM_T, P).bulwark - RAIL_LAP - STRAKE_W / 2;
-      const f = THREE.MathUtils.clamp((deckY(-L * 0.47) - y0) / (yTopC - y0), 0, 1);
-      zFrom = THREE.MathUtils.lerp(TRANSOM_Z_BOT, TRANSOM_Z_TOP, f) * L + 0.025;
+      // Task 82: кромка настила — под доски стены транца НА ЕЁ высоте
+      // (единая линия transomZ; прежде — по старым константам стены,
+      // стоявшей на 45–84 см впереди кормового среза)
+      zFrom = transomZ(P, deckY(-L * 0.47)) + 0.025;
     }
     const zTo = L * 0.44;
     // inset: зазор от обвода до кромки — на 4.5 см внутрь корпуса,
@@ -491,7 +541,9 @@ export class PlankSystem {
     const q = P.quarter;
     const deckY = (z: number) => hullProfile((z + L / 2) / L, P).bulwark - 1.0;
     const floorY = (z: number) => deckY(z) + q;
-    const sternZ = -L / 2 + Math.max(0.35, L * 0.012);
+    // Task 82: кормовая кромка квартердека — на линии верха стены
+    // транца (у таффрела), а не на фиксированном −L/2+0.012L
+    const sternZ = transomZ(P, floorY(-L / 2)) + 0.02;
     // стенки надстройки: от hw − 0.15 до hw + 0.11 — кромка настила
     // заканчивается внутри их толщины (inset 0.145)
     this.buildDeckArea(P, sternZ, quarterFrontZ(P) - 0.02, floorY, 'Q', 0.145);
@@ -527,7 +579,10 @@ export class PlankSystem {
     const yAxis = new THREE.Vector3(0, 1, 0);
     /** помещается ли доска колонки |x| = ax на участке [za, zb]:
      *  возвращает сужение наружной половины у торцов [k0, k1]
-     *  (1 — полная ширина) либо null — не помещается */
+     *  (1 — полная ширина) либо null — не помещается. Доступная
+     *  ширина кромки должна быть ≥ ПОЛОВИНЫ доски (иначе k < 0 —
+     *  «складывание» сечения и кромка пробивает борт: Task 82,
+     *  прежний порог 0.10 давал проколы 11 см у штевня) */
     const fit = (ax: number, za: number, zb: number): [number, number] | null => {
       const inner = ax - half;              // внутренняя кромка (не сужается)
       const n = 5;
@@ -543,7 +598,7 @@ export class PlankSystem {
         sag = Math.max(sag, e0 + (e1 - e0) * i / n - outs[i]);
       }
       e0 -= sag; e1 -= sag;
-      if (Math.min(e0, e1) < DECK_MIN_W) return null;
+      if (Math.min(e0, e1) < half) return null;
       return [Math.min(1, (2 * e0) / DECK_W - 1), Math.min(1, (2 * e1) / DECK_W - 1)];
     };
     // колонки — ОТ СЕРЕДИНЫ к бортам: первые записи настила — длинные
@@ -592,7 +647,11 @@ export class PlankSystem {
           // верхняя грань — по хорде; микровариация высоты соседних
           // досок — вместо мерцания совпадающих граней в нахлёсте
           center: new THREE.Vector3(x, ym - 0.0375 + ((c + i) % 2) * 0.0008, z),
-          shape: [kp[0], kp[1], 0, 0],
+          // центральная колонка у штевня: корпус УЖЕ доски — клин
+          // сужается с ОБОИХ сторон (внутренняя кромка тоже по обводу)
+          shape: ax < 0.05
+            ? [kp[0], kp[1], 0, 0, kp[0], kp[1]]
+            : [kp[0], kp[1], 0, 0],
           tone, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
           belowWL: false,
         });
@@ -661,7 +720,9 @@ export class PlankSystem {
           len: Math.hypot(z1 - z0, yAt(z1) - yAt(z0)), w: W, thick: T,
           quat, shape: [1, 1, sh(o0), sh(o1)],
           center: new THREE.Vector3(xc, ym + T / 2 - 0.006 + (j % 2) * 0.0008, (z0 + z1) / 2),
-          tone: 0.9 + rnd() * 0.1, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
+          // тон ватервейса — в том же допуске ±7%, что у поясов обшивки
+          // (e2e v67 A4: разброс по записям ≤ 0.16; было 0.9–1.0)
+          tone: 0.93 + rnd() * 0.14, color: new THREE.Color(P.colors.deck), state: 0, hp: 100,
           belowWL: false,
         });
         z0 = z1 - END_LAP;
@@ -680,15 +741,12 @@ export class PlankSystem {
   // ============================================================
   private buildTransom(P: ShipPreset) {
     const L = P.length;
-    const yCut = plankCutY(P);
     const rnd = mulberry32(this.seedOf(P) ^ 0x9c2f);
-    const tWall = TRANSOM_T;
-    const zWallBot = TRANSOM_Z_BOT * L, zWallTop = TRANSOM_Z_TOP * L;
-    const y0 = yCut - 0.01 + STRAKE_W / 2;
-    const yTopC = hullProfile(tWall, P).bulwark - RAIL_LAP - STRAKE_W / 2;
-    // шаг поясов ≤ STRAKE_PITCH, верхний пояс — точно под планширем
-    const nStr = Math.max(3, Math.ceil((yTopC - y0) / STRAKE_PITCH) + 1);
-    const pitchT = (yTopC - y0) / (nStr - 1);
+    // Task 82: ряды стены — из ТОГО ЖЕ веера поясов, что у бортов
+    // (strakeCount + sternStrakeY): швы стены и бортов сходятся на
+    // кормовых углах; положение ряда — по ЕДИНОЙ линии transomZ(y)
+    const zB = L * (P.flatBow ? 0.497 : 0.495);
+    const nStr = strakeCount(P, -L * 0.478, zB);
     const zAxis = new THREE.Vector3(1, 0, 0);        // ось наклона поясья
     const qTilt = new THREE.Quaternion().setFromAxisAngle(zAxis, LAP_TILT);
     // базис: наружу — в корму (−Z), вверх — +Y, длина доски — +X
@@ -700,12 +758,14 @@ export class PlankSystem {
     const qBase = new THREE.Quaternion().setFromRotationMatrix(_m);
     let idN = 0;
     for (let k = 0; k < nStr; k++) {
-      const y = y0 + k * pitchT;
+      const y = sternStrakeY(P, nStr, k);
       const below = y < 0.05;
-      const zk = THREE.MathUtils.lerp(zWallBot, zWallTop, k / Math.max(1, nStr - 1));
-      const hwT = hullHalfWidthAt(P, tWall, y);
-      // полуширина стены: с запасом 5 см под обшивку бортов
-      const half = Math.max(hwT, 0.34) + 0.05;
+      const zk = transomZ(P, y);
+      const hwT = hullHalfWidthAt(P, 0.02, y);
+      // полуширина стены: концы заправлены ПОД обшивку бортов — на 2 см
+      // за обвод (торцы закрывают кормовые кромки поясов, но не торчат
+      // наружу сквозь них; Task 82: запас 5 см проступал «торцами»)
+      const half = Math.max(hwT, 0.34) + 0.02;
       const width = half * 2;
       const nSplit = Math.max(1, Math.ceil(width / 1.4));
       const segLen = width / nSplit;
@@ -799,11 +859,16 @@ export class PlankSystem {
         v.set(tp.pos[i * 3], tp.pos[i * 3 + 1], tp.pos[i * 3 + 2]);
         const shp = r.shape;
         if (shp) {
-          // Task 82: сужение наружной половины доски к торцу + сдвиг
-          // всего сечения (ватервейс). Шаблон: +Y после поворота
-          // плашмя → −X корабля, т.е. «наружу» для x ≥ 0 — это −Y
+          // Task 82: сужение НАРУЖНОЙ половины доски к торцу + сдвиг
+          // всего сечения (ватервейс) + сужение ВНУТРЕННЕЙ половины
+          // (клин центральной колонки у штевня). Шаблон: +Y после
+          // поворота плашмя → −X корабля, т.е. «наружу» для x ≥ 0 —
+          // это −Y
           const t01 = v.z + 0.5;
           if (v.y * (r.x >= 0 ? -1 : 1) > 0) v.y *= shp[0] + (shp[1] - shp[0]) * t01;
+          else if (shp.length > 4 && shp[4] !== undefined) {
+            v.y *= shp[4] + ((shp[5] ?? shp[4]) - shp[4]) * t01;
+          }
           v.y += 0.5 * (shp[2] + (shp[3] - shp[2]) * t01);
         }
         v.applyMatrix4(_m);
@@ -1046,14 +1111,23 @@ export function buildSkeleton(P: ShipPreset): THREE.Group {
     const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
     mk(box, color, mid.x, mid.y, mid.z, w, len, w * 1.4, q);
   };
+  // форштевень (Task 82): брус от киля вдоль носового среза, голова на
+  // 35 см выше планширя. Пояса бортов сводятся К НЕМУ (clamp 0.06 в
+  // buildSides) и прячут торцы ПОД его наружные грани. Цвет светлее
+  // обшивки — штевень ЧИТАЕТСЯ как брус (тёмный 0x2d2013 сливался с
+  // крашеным бортом, VLM видел «тупой срез без штевня»). Прежний
+  // штевень шёл к 0.9·bulwark при z 0.47L→0.52L — мимо торцов поясов
   const bowTop = hullProfile(1, P).bulwark;
-  dirBox(0x352718,
-    new THREE.Vector3(0, -P.draft * 0.5, L * 0.47),
-    new THREE.Vector3(0, bowTop * 0.9, L * 0.52), 0.26);
-  const sternTop = hullProfile(0, P).bulwark;
-  dirBox(0x352718,
-    new THREE.Vector3(0, -P.draft * 0.5, -L * 0.47),
-    new THREE.Vector3(0, sternTop * 0.8, -L / 2 - 0.02), 0.24);
+  dirBox(0x4a3322,
+    new THREE.Vector3(0, -P.draft * 0.62, L * 0.494),
+    new THREE.Vector3(0, bowTop + 0.35, L * 0.5 + 0.08), 0.38);
+  // ахтерштевень (Task 82): ЗА стеной транца, параллельно её кормовой
+  // грани (постоянный отступ 10 см от transomZ) — на нём висит руль.
+  // Прежний штевень шёл к −L/2−0.02 от −0.47L и ПРОТЫКАЛ стену
+  // насквозь у верхних поясов
+  dirBox(0x3a2a1a,
+    new THREE.Vector3(0, -P.draft * 0.62, transomZ(P, -P.draft * 0.62) - 0.10),
+    new THREE.Vector3(0, 0.05, transomZ(P, 0.05) - 0.10), 0.26);
 
   // шпангоуты: 12 станций × 2 борта × 3 яруса (киль→срез, срез→палуба,
   // палуба→фальшборт) — по касательной борта
@@ -1071,7 +1145,10 @@ export function buildSkeleton(P: ShipPreset): THREE.Group {
         sideBasis(P, t, ym, s, N, T);
         _m.makeBasis(N, T, Z);
         const q = new THREE.Quaternion().setFromRotationMatrix(_m);
-        const off = Math.max(hw(z, ym), 0.3) - inset;
+        // Task 82: у носа шпангоуты сводятся ВМЕСТЕ с обшивкой —
+        // прежний clamp 0.3 оставлял рамы шире поясов, и у штевня
+        // они проникали сквозь обшивку наружу
+        const off = Math.max(hw(z, ym) - inset, 0.04);
         mk(box, 0x4a3620, s * off, ym, z, 0.15, len, 0.16, q);
       };
       seg(-P.draft * 0.55, yCut, 0.13);

@@ -1853,6 +1853,13 @@ export class Ship {
         }
       }
     }
+    // Task 82: объёмные тросы этой мачты падают вместе с обвязкой
+    // (в счёт n не входят — снасть уже посчитана по линии)
+    if (rig.ropes) {
+      for (const rm of rig.ropes) {
+        if ((rm.userData.mast as number) === idx) rm.visible = false;
+      }
+    }
     // обрывки троса + пыль от лопнувших вант
     const gibs = Ship.gibs;
     for (const sp of snappedAt) {
@@ -1922,6 +1929,10 @@ export class Ship {
     // ванты с выбленками — на место (вместе с обвязкой)
     if (this.visual.detailRigs) {
       for (const dr of this.visual.detailRigs) dr.lines.visible = true;
+    }
+    // Task 82: объёмные тросы — на место
+    if (this.visual.rigging?.ropes) {
+      for (const rm of this.visual.rigging.ropes) rm.visible = true;
     }
     for (let i = 0; i < this.visual.masts.length; i++) {
       this.mastHP[i] = this.mastMaxHP;
