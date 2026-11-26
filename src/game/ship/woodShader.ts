@@ -52,7 +52,7 @@ export interface PlankPaint {
   hullCol: number; deckCol: number; draft: number;
 }
 
-const MAX_PORTS = 16;
+const MAX_PORTS = 32; // Task 84: жемчужина — 26 закрытых орудий (2 дека), прежний лимит 16 резал второй ряд портов
 const MAX_STRIPES = 4;
 
 /** схему окраски из пресета (по высотам hullDeco.makeHullTextures) */
@@ -193,6 +193,15 @@ if (uWoodOn > 0.5) {
     // читались только на некрашеном дереве)
     vec3 painted = pc * (0.78 + 0.30 * grain) * (0.92 + 0.14 * wpn) * mix(0.55, 1.0, seam) * tint;
     col = mix(col, painted, paint * mix(0.55, 1.0, seam));
+    // Task 84: ПОТЁКИ — дождевые ручьи под планширем/вельсом: узкая
+    // зона под верхней кромкой, внутри — вертикальные тёмные колонки
+    // (шум закреплён по горизонтали, тянется вниз): живая «убитая
+    // погодой» обшивка вместо стерильной краски
+    float dripZone = smoothstep(sheer - 1.85, sheer - 1.25, y)
+                   * (1.0 - smoothstep(sheer - 0.45, sheer - 0.15, y));
+    float dripCol = t82vnoise(vec2(lx * 2.1, 1.7));
+    float drip = dripZone * smoothstep(0.45, 0.8, dripCol) * 0.13;
+    col *= 1.0 - drip;
     // ПОРТЫ закрытых батарей: проём + рамка
     if (uPortN > 0.5) {
       vec2 lp = vec2(lx, y);

@@ -37,6 +37,10 @@ const CAT_COATS: { fur: number; light: number }[] = [
 ];
 /** глаза: зелёные / янтарные / голубые */
 const CAT_EYES = [0x7fbf3f, 0xd9a33c, 0x5aa0c8];
+/** Task 84: кот-МЕРТВЕЦ (проклятие «Чёрной жемчужины») — как экипаж
+ *  мертвецов: пепельно-зелёная шубка «гнили», тёмные провалы глазниц,
+ *  оскал, рёбра сквозь шерсть, порванное ухо, голый хвост-костяшка */
+const CAT_COAT_UNDEAD = { fur: 0x3a4038, light: 0x566158 };
 const CAT_HAT = 0x2b2018;       // треуголка капитана-кота
 const MOUSE_FUR = 0x8a8578;
 
@@ -76,27 +80,46 @@ function bakeGeom(t: Bake): THREE.BufferGeometry {
 /** запечь туловище кота (без ног и хвоста): корпус, грудка,
  *  голова, мордочка, уши, глаза; капитан — в треуголке */
 function bakeCatBody(t: Bake, fur: number, light: number, rnd: () => number,
-  captainHat = false, seated = false) {
+  captainHat = false, seated = false, undead = false) {
   const y0 = seated ? -0.05 : 0;
+  // Task 84: у мертвеца шубка «гниль» — пепельно-зелёная, брюхо бледное
+  const fC = undead ? CAT_COAT_UNDEAD.fur : fur;
+  const lC = undead ? CAT_COAT_UNDEAD.light : light;
   // корпус
-  bake(t, new THREE.BoxGeometry(BODY_W, 0.15, BODY_L), fur, 0, y0 + BACK_Y - 0.075, 0);
+  bake(t, new THREE.BoxGeometry(BODY_W, 0.15, BODY_L), fC, 0, y0 + BACK_Y - 0.075, 0);
   // грудка (шире и светлее)
-  bake(t, new THREE.BoxGeometry(BODY_W + 0.02, 0.16, 0.14), light, 0, y0 + BACK_Y - 0.08, 0.10);
+  bake(t, new THREE.BoxGeometry(BODY_W + 0.02, 0.16, 0.14), lC, 0, y0 + BACK_Y - 0.08, 0.10);
   // голова
-  bake(t, new THREE.BoxGeometry(0.13, 0.115, 0.13), fur, 0, y0 + HEAD_Y, 0.235);
+  bake(t, new THREE.BoxGeometry(0.13, 0.115, 0.13), fC, 0, y0 + HEAD_Y, 0.235);
   // мордочка
-  bake(t, new THREE.BoxGeometry(0.082, 0.05, 0.06), light, 0, y0 + HEAD_Y - 0.028, 0.305);
+  bake(t, new THREE.BoxGeometry(0.082, 0.05, 0.06), lC, 0, y0 + HEAD_Y - 0.028, 0.305);
   // носик
-  bake(t, new THREE.BoxGeometry(0.024, 0.018, 0.014), 0xc87a8a, 0, y0 + HEAD_Y - 0.012, 0.332);
-  // уши (конусы)
+  bake(t, new THREE.BoxGeometry(0.024, 0.018, 0.014), undead ? 0x39443c : 0xc87a8a, 0, y0 + HEAD_Y - 0.012, 0.332);
+  // уши (конусы); Task 84: у мертвеца одно ухо ПОРВАНО (клин короче)
   for (const s of [-1, 1]) {
-    bake(t, new THREE.ConeGeometry(0.03, 0.055, 4), fur,
+    const torn = undead && s < 0;
+    bake(t, new THREE.ConeGeometry(torn ? 0.02 : 0.03, torn ? 0.03 : 0.055, 4), fC,
       s * 0.045, y0 + HEAD_Y + 0.075, 0.225, new THREE.Euler(0.15, 0, s * -0.22));
   }
-  // глаза
-  const eye = CAT_EYES[Math.floor(rnd() * CAT_EYES.length)];
-  for (const s of [-1, 1]) {
-    bake(t, new THREE.BoxGeometry(0.017, 0.015, 0.01), eye, s * 0.036, y0 + HEAD_Y + 0.012, 0.297);
+  // глаза; Task 84: у мертвеца — ТЁМНЫЕ ПРОВАЛА глазниц (как у экипажа)
+  if (undead) {
+    for (const s of [-1, 1]) {
+      bake(t, new THREE.BoxGeometry(0.022, 0.019, 0.012), 0x0c0f0a, s * 0.036, y0 + HEAD_Y + 0.012, 0.297);
+    }
+    // оскал: ряд мелких зубов под носом
+    bake(t, new THREE.BoxGeometry(0.05, 0.012, 0.01), 0xd8d4c0, 0, y0 + HEAD_Y - 0.03, 0.318);
+  } else {
+    const eye = CAT_EYES[Math.floor(rnd() * CAT_EYES.length)];
+    for (const s of [-1, 1]) {
+      bake(t, new THREE.BoxGeometry(0.017, 0.015, 0.01), eye, s * 0.036, y0 + HEAD_Y + 0.012, 0.297);
+    }
+  }
+  // Task 84: рёбра проступают сквозь шерсть мертвеца (как у матросов)
+  if (undead) {
+    for (let ri = 0; ri < 3; ri++) {
+      bake(t, new THREE.BoxGeometry(BODY_W + 0.012, 0.014, 0.012), 0x9aa596,
+        0, y0 + BACK_Y + 0.015 - ri * 0.038, 0.02 + ri * 0.012);
+    }
   }
   // треуголка капитана-кота
   if (captainHat) {
@@ -125,15 +148,18 @@ function catSideLegGeom(side: number, fur: number, paws: number): THREE.BufferGe
 /** ФИГУРА ЭКИПАЖА-КОТА (CrewFigure-совместима): тот же интерфейс,
  *  что у матросов — роли/маршруты/смерть из crew.ts работают как
  *  есть. hitLo/hitH/midY — кошачьи размеры для попаданий и смыва */
-export function buildCatCrewFigure(role: CrewRole, seed: number, movable: boolean): CrewFigure {
+export function buildCatCrewFigure(role: CrewRole, seed: number, movable: boolean,
+  undead = false): CrewFigure {
   const rnd = mulberry32(seed);
   const group = new THREE.Group();
-  const coat = CAT_COATS[Math.floor(rnd() * CAT_COATS.length)];
-  const paws = rnd() < 0.45 ? 0xe3ddd0 : coat.light;
+  const coat = undead ? CAT_COAT_UNDEAD : CAT_COATS[Math.floor(rnd() * CAT_COATS.length)];
+  const paws = undead ? 0x47524a : (rnd() < 0.45 ? 0xe3ddd0 : coat.light);
   const t: Bake = { pos: [], col: [] };
-  bakeCatBody(t, coat.fur, coat.light, rnd, role === 'captain');
-  // хвост — в общий меш (у фигур экипажа хвост не анимируется)
-  bake(t, new THREE.CylinderGeometry(0.013, 0.02, 0.33, 5), coat.fur,
+  bakeCatBody(t, coat.fur, coat.light, rnd, role === 'captain', false, undead);
+  // хвост — в общий меш (у фигур экипажа хвост не анимируется);
+  // Task 84: у мертвеца хвост ГОЛЫЙ-костяшка — тонкий и тёмный
+  bake(t, new THREE.CylinderGeometry(undead ? 0.009 : 0.013, undead ? 0.012 : 0.02, 0.33, 5),
+    undead ? 0x31382f : coat.fur,
     0, BACK_Y + 0.09, -BODY_L / 2 - 0.04, new THREE.Euler(-1.0, 0, 0));
   const body = new THREE.Mesh(bakeGeom(t), CREW_MAT);
   group.add(body);
@@ -217,7 +243,7 @@ const clampN = (v: number, lo: number, hi: number) => v < lo ? lo : v > hi ? hi 
 /** Собрать «кошачью палубу»: 5 котов (показываются первые count),
  *  мыши заводятся сами, коты их ловят. onCatch — кличка по индексу */
 export function buildCats(P: ShipPreset, seed: number,
-  onCatch?: (catIdx: number) => void): CatsVisual {
+  onCatch?: (catIdx: number) => void, undead = false): CatsVisual {
   const group = new THREE.Group();
   const L = P.length;
   // палуба: главная палуба (квартердек котам не нужен — там штурвал)
@@ -249,10 +275,11 @@ export function buildCats(P: ShipPreset, seed: number,
   const buildPetCat = (): CatPet => {
     const rg = mulberry32(Math.floor(rnd() * 1e6) + 11);
     const catGroup = new THREE.Group();
-    const coat = CAT_COATS[Math.floor(rg() * CAT_COATS.length)];
-    const paws = rg() < 0.45 ? 0xe3ddd0 : coat.light;
+    // Task 84: на проклятом корабле корабельные коты — МЕРТВЕЦЫ
+    const coat = undead ? CAT_COAT_UNDEAD : CAT_COATS[Math.floor(rg() * CAT_COATS.length)];
+    const paws = undead ? 0x47524a : (rg() < 0.45 ? 0xe3ddd0 : coat.light);
     const t: Bake = { pos: [], col: [] };
-    bakeCatBody(t, coat.fur, coat.light, rg);
+    bakeCatBody(t, coat.fur, coat.light, rg, false, false, undead);
     catGroup.add(new THREE.Mesh(bakeGeom(t), CREW_MAT));
     // ноги: пивот в бедре (геометрия свисает вниз)
     const legs: THREE.Mesh[] = [];
@@ -267,9 +294,10 @@ export function buildCats(P: ShipPreset, seed: number,
       legs.push(m);
       catGroup.add(m);
     }
-    // хвост: пивот у основания, геометрия вверх
+    // хвост: пивот у основания, геометрия вверх; у мертвеца — голый
     const tt: Bake = { pos: [], col: [] };
-    bake(tt, new THREE.CylinderGeometry(0.012, 0.019, 0.34, 5), coat.fur, 0, 0.17, 0);
+    bake(tt, new THREE.CylinderGeometry(undead ? 0.008 : 0.012, undead ? 0.011 : 0.019, 0.34, 5),
+      undead ? 0x31382f : coat.fur, 0, 0.17, 0);
     const tail = new THREE.Mesh(bakeGeom(tt), CREW_MAT);
     tail.position.set(0, BACK_Y - 0.02, -BODY_L / 2 + 0.04);
     tail.rotation.x = -0.95;   // вверх и назад

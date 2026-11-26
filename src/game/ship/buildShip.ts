@@ -266,11 +266,16 @@ export const PRESETS: Record<string, ShipPreset> = {
     // голландца». 32 пушки: 18 на нижней палубе + 14 на верхней
     id: 'blackpearl', name: 'Чёрная жемчужина',
     length: 40, beam: 10, draft: 3.4, freeboard: 3.6,
-    masts: 3, gunsPerSide: 16, gunportRows: 2,
+    masts: 3, gunsPerSide: 16,
     mass: 640_000, maxSpeed: 10.6,
     hullHP: 430, sailHP: 220, maxCrew: 130, cargo: 160,
     colors: { hull: 0x141419, deck: 0x453c33, trim: 0x1e1e26, sail: 0x1a1a20 },
     flagKind: 'pirate', gallery: true, beakhead: true, quarter: 2.0,
+    // Task 84: rows 2 → 3 — ДВА закрытых орудийных дека (энциклопедия:
+    // «18 на нижней пушечной палубе и 14 на верхней»), на палубе —
+    // один неполный ряд. Прежде поровну палуба/дек давала 8 лафетов
+    // на палубе на борт, носовые — «к центру палубы» (жалоба игрока)
+    gunportRows: 3,
     category: 'war', shipClass: 'Легендарный галеон', year: 1693, country: 'Карибское море',
   },
 
@@ -594,6 +599,22 @@ function sailMaterial(baseColor: number, panels = 9): THREE.ShaderMaterial {
         float pseam2 = 1.0 - smoothstep(0.012, 0.05, min(fx, 1.0 - fx));
         col *= 1.0 - pseam * 0.26;
         col *= 0.96 + 0.04 * pseam2;
+        // Task 84: ПАНЕЛЬНЫЙ ТОН — каждое полотнище из своего рулона
+        // ткани (±2.5% яркости): живая «лоскутная» фактура полотна
+        float panel = hash12(vec2(floor(vUv.x * uSeamsN), 7.31));
+        col *= 0.975 + 0.05 * panel;
+        // Task 84: БОЛТ-РОП (ликпас) — трос, вшитый в шкаторину:
+        // чуть темнее кромка на самом краю полотна; БОУТЫ — усилительные
+        // накладки в углах (галсовый/шкотовый/ноковый) — там полотнище
+        // рвётся первым. edH — своя кромка (ed объявлен ниже по коду)
+        float edH = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+        float lik = 1.0 - smoothstep(0.002, 0.008, edH);
+        col *= 1.0 - lik * 0.10;
+        float corner = 0.0;
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(0.0, 0.0))));
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(1.0, 0.0))));
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(0.5, 1.0))));
+        col *= 1.0 - corner * 0.07;
         // старые горизонтальные швы (поперечные полотнища) — слабее
         float seams = smoothstep(0.035, 0.0, abs(fract(vUv.y * 5.0) - 0.5) - 0.46);
         col *= 1.0 - seams * 0.08;
@@ -804,17 +825,37 @@ export function gunLayout(P: ShipPreset): GunSlot[] {
   // у судов с квартердеком открытая батарея начинается ОТ его
   // передней кромки (под квартердеком орудий на палубе не ставят)
   const qFront = P.quarter ? quarterFrontZ(P) : -Infinity;
-  // распределение стволов по ярусам: поровну, остаток — верхним ярусам
+  // распределение стволов по ярусам. Task 84 (жалоба игрока: «на
+  // палубе должен быть только ОДИН ряд, всё остальное — ниже по
+  // бортам»): при закрытых батареях палубе достаётся лишь ~18–22%
+  // стволов (минимум 2) — НЕПОЛНЫЙ ряд в широком миделе; прежде
+  // стволы делились ПОРОВНУ между палубой и деками — палуба
+  // заряжалась 8–9 орудиями на борт, носовые уходили в сужение
+  // корпуса «к центру палубы». Остальное — в закрытые деки с
+  // портами (у жемчужины rows=3 → ДВА закрытых дека, как в
+  // энциклопедии: 18 нижняя + 14 верхняя)
   const counts = new Array<number>(tiers).fill(0);
-  for (let i = 0; i < N; i++) counts[i % tiers]++;
+  if (tiers === 1) {
+    counts[0] = N;
+  } else {
+    counts[0] = Math.max(2, Math.round(N * 0.2));
+    const closed = tiers - 1;
+    let rest = N - counts[0];
+    for (let i = 0; i < rest; i++) counts[1 + (i % closed)]++;
+  }
   const slots: GunSlot[] = [];
   for (let tier = 0; tier < tiers; tier++) {
     const n = counts[tier];
     if (n <= 0) continue;
     if (tier === 0) {
-      // открытая палуба: от квартердека (или кормы) до полубака
+      // открытая палуба: от квартердека (или кормы) до полубака;
+      // при закрытых батареях — КОРОЧЕ и только широкий мидель
+      // (z ≤ 0.12L): у носа корпус сужается, и лафеты «у борта»
+      // визуально уезжают к середине палубы
       const z0 = Math.max(-L * 0.22, qFront + Math.max(0.9, L * 0.025));
-      const z1 = P.castleH ? L * 0.18 : L * 0.24;
+      const z1 = tiers > 1
+        ? (P.castleH ? L * 0.08 : L * 0.12)
+        : (P.castleH ? L * 0.18 : L * 0.24);
       for (let i = 0; i < n; i++) {
         const z = THREE.MathUtils.lerp(z0, z1, n === 1 ? 0.5 : i / (n - 1));
         slots.push({ z, tier: 0, y: 0 }); // y палубы считает потребитель
@@ -1266,6 +1307,25 @@ function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
     const a0 = sec[0], aS = sec[S];
     q(a0[0], a0[3], a0[2], a0[1], cSide);
     q(aS[0], aS[1], aS[2], aS[3], cSide);
+    // Task 84: ТОП-ТИМБЕРСЫ — концы шпангоутов, выходящие над планширем
+    // (кницы, к которым швартуются и вяжут снасти): стойки ~2 м шаг,
+    // отстоят от таффрела и от штевня. Придают борту живой зубчатый
+    // силуэт настоящего парусника (VLM: «ровная труба» без них)
+    {
+      const step = Math.max(2, Math.round((S * 2.0) / L));
+      for (let i = 3; i < S - 3; i += step) {
+        const st = sec[i];
+        const z = st[0][2], xo = st[0][0], yb = st[1][1];
+        const h = 0.15, d = 0.07, xi2 = xo - s * 0.07, xo2 = xo + s * 0.012;
+        // наружная грань (x ≈ const)
+        q([xo2, yb, z - d], [xo2, yb + h, z - d], [xo2, yb + h, z + d], [xo2, yb, z + d], cSide);
+        // верх
+        q([xi2, yb + h, z - d], [xo2, yb + h, z - d], [xo2, yb + h, z + d], [xi2, yb + h, z + d], cTop);
+        // носовая и кормовая грани
+        q([xi2, yb, z + d], [xi2, yb + h, z + d], [xo2, yb + h, z + d], [xo2, yb, z + d], cSide);
+        q([xi2, yb + h, z - d], [xi2, yb, z - d], [xo2, yb, z - d], [xo2, yb + h, z - d], cSide);
+      }
+    }
   }
   // кормовой планширь (таффрел): замыкает верх стены транца — от 12 см
   // впереди линии верха стены до 30 см за корму (широкая кормовая
@@ -2252,8 +2312,13 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[], bo
       const N = 5;
       const tops: THREE.Vector3[] = [], bases: THREE.Vector3[] = [];
       for (let k = 0; k < N; k++) {
-        tops.push(new THREE.Vector3(0, m.h * (0.55 + k * 0.09), m.z));
-        bases.push(new THREE.Vector3(side * 2.6, 1.6, m.z - 2.0 + k * 1.0));
+        // Task 84: базы вант — на ПЛАНШИРЕ (вантпутенсы реального
+        // борта), не на фиксированном x=2.6 «в воздухе» у миделя
+        const zb = m.z - 2.2 + k * 0.86;
+        const tt = clamp2((zb + L / 2) / L, 0, 1);
+        const prof = hullProfile(tt, P);
+        tops.push(new THREE.Vector3(0, m.h * (0.56 + k * 0.075), m.z));
+        bases.push(new THREE.Vector3(side * (prof.w + 0.16), prof.bulwark + 0.04, zb));
       }
       for (let k = 0; k < N; k++) addLine(tops[k], bases[k]); // плотный веер вант
       for (let k = 0; k < N - 1; k++) {
@@ -2632,21 +2697,41 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
     // штаги к носу и корме
     addLine(mi, top.clone(), bowspritTip.clone());
     addLine(mi, top.clone(), new THREE.Vector3(0, 1.2, -L / 2 + 0.4));
-    // ванты к бортам
+    // ванты к бортам. Task 84: от ПЛАНШИРЯ — вантпутенсы на РЕАЛЬНОМ
+    // борту (прежде x=±2.6 у всех судов: у широких корпусов ванты
+    // «висели в воздухе» над палубой); 4 на борт, плюс ВЫБЛЕНКИ —
+    // поперечные ступени-лесенка между соседними вантами (в volume
+    // они идут тоньше — см. ниже)
     for (const side of [-1, 1]) {
+      const shrouds: { a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+      for (let k = 0; k < 4; k++) {
+        const zb = m.z - 2.2 + k * 1.15;
+        const tt = clamp2((zb + L / 2) / L, 0, 1);
+        const prof = hullProfile(tt, P);
+        const a = new THREE.Vector3(side * (prof.w + 0.16), prof.bulwark + 0.04, zb);
+        const b = new THREE.Vector3(0, m.h * (0.56 + k * 0.10), m.z);
+        shrouds.push({ a, b });
+        addLine(mi, a.clone(), b.clone());
+      }
       for (let k = 0; k < 3; k++) {
-        const zz = m.z - 1.5 + k * 1.5;
-        addLine(mi, new THREE.Vector3(side * 2.6, 1.6, zz),
-          new THREE.Vector3(0, m.h * (0.55 + k * 0.15), m.z));
+        for (let f = 0.18; f <= 0.80; f += 0.082) {
+          addLine(mi,
+            new THREE.Vector3().lerpVectors(shrouds[k].a, shrouds[k].b, f),
+            new THREE.Vector3().lerpVectors(shrouds[k + 1].a, shrouds[k + 1].b, f));
+        }
       }
     }
   }
-  // бакштаги к корме от грот-мачты
+  // бакштаги к корме от грот-мачты (Task 84: к ПЛАНШИРУ транца)
   if (masts.length >= 2) {
     const mainIdx = masts.length - 1 > 1 ? masts.length - 2 : 0;
     const main = masts[mainIdx];
-    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
-    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
+    const zStern = -L / 2 + 0.5;
+    const profS = hullProfile(clamp2((zStern + L / 2) / L, 0, 1), P);
+    for (const side of [-1, 1]) {
+      addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z),
+        new THREE.Vector3(side * (profS.w + 0.1), profS.bulwark + 0.04, zStern));
+    }
   }
   // концы с нагельных планок квартердека — к СВОЕЙ мачте
   // (вместе с ней рвутся — «тросы падают вместе с мачтой»)
@@ -2671,7 +2756,9 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
     dir.subVectors(l.b, l.a).normalize();
     const e = new THREE.Euler().setFromQuaternion(
       new THREE.Quaternion().setFromUnitVectors(up, dir));
-    const r = 0.033;
+    // Task 84: ВЫБЛЕНКИ тоньше (1.3 см против 6.6 см у несущих вант) —
+    // лесенка читается как ступени, а не как второй веер тросов
+    const r = len < 2.2 ? 0.013 : 0.033;
     bakeInto(perMast[l.mast], new THREE.BoxGeometry(r * 2, len, r * 2), cRope,
       (l.a.x + l.b.x) / 2, (l.a.y + l.b.y) / 2, (l.a.z + l.b.z) / 2, e);
   }

@@ -2085,6 +2085,7 @@ export class Game {
     const seed = Array.from(this.player.preset.id)
       .reduce((a, ch) => a + ch.charCodeAt(0) * 17, 5)
       + Math.round(this.player.preset.beam * 91);
+    // Task 84: на проклятом корабле (жемчужина) коты — МЕРТВЕЦЫ
     this.cats3d = buildCats(this.player.preset, seed, (idx) => {
       // кот поймал мышь — сообщение с кличкой (не чаще раза в 20 с)
       const now = this.time;
@@ -2092,7 +2093,7 @@ export class Game {
       this._lastCatMsg = now;
       const nm = this.catNames[idx] ?? 'Кот';
       this.pushMessage(`🐱 ${nm} поймал мышь!`);
-    });
+    }, this.player.crewUndeadOpt);
     this.cats3d.setCount(this.catCount);
     this.player.visual.group.add(this.cats3d.group);
   }
