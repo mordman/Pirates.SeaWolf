@@ -1,6 +1,7 @@
 // Task 82: отчёт «Анализ и улучшение 3D-моделей кораблей» (docx).
 // Обложка R1 (design-system), палитра DM-1, 3 секции (обложка /
 // содержание / тело), Times New Roman (русский), рисунки до/после,
+/* eslint-disable @typescript-eslint/no-require-imports */
 // таблицы аудита и e2e (результаты — из scripts/t82_results.json).
 // После генерации: add_toc_placeholders.py --auto, патч футера
 // PAGE → arabic, удаление пустых pgNumType, postcheck.py.

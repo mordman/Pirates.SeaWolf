@@ -1194,8 +1194,11 @@ function makeDeckTexture(baseColor: number, seed: number): THREE.Texture {
 function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
   const S = 48, L = P.length;
   const pos: number[] = [], col: number[] = [], idx: number[] = [], uvs: number[] = [];
-  const cTop = new THREE.Color(P.colors.trim).multiplyScalar(1.45);
-  const cSide = new THREE.Color(P.colors.trim).multiplyScalar(1.12);
+  // Task 83 (жалоба «перила стали белыми»): планширь — ПОД ЦВЕТ КОРАБЛЯ
+  // (hull), лишь едва светлее/темнее по граням; прежде — цветом trim с
+  // высветлением ×1.45/×1.12, что на солнце читалось белой лентой
+  const cTop = new THREE.Color(P.colors.hull).multiplyScalar(1.08);
+  const cSide = new THREE.Color(P.colors.hull).multiplyScalar(0.95);
   // сечение бруса: свес наружу, ширина внутрь, высота вверх/вниз
   const OUT = 0.12, IN = 0.30, HT = 0.06, HB = 0.07;
   type V3 = [number, number, number];
@@ -1470,7 +1473,7 @@ function buildCastles(P: ShipPreset): THREE.BufferGeometry {
   const t: BakedTarget = { pos: [], col: [], uv: [] };
   const cWall = new THREE.Color(P.colors.trim).multiplyScalar(1.15);
   const cWoodD = new THREE.Color(0x4a3420);
-  const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.35);
+  const cRail = new THREE.Color(P.colors.hull).multiplyScalar(1.08); // Task 83: перила — под цвет корпуса
   const ch = P.castleH || 0;
 
   const mkCastle = (t0: number, t1: number, extra: number) => {
@@ -1525,9 +1528,12 @@ function buildQuarterdeck(
 
   // окраска — В ТОН КОРПУСА (просьба игрока): надстройка красится той
   // же краской, что и борт; поручни/планшири — отделка цветом trim
+  // Task 83 (жалоба «кватердэк стал белым»): настил темнее (0.92 → 0.58)
+  // — плоская поверхность в полный солнечный свет читалась белым
+  // листом; поручни/стойки — цвет корпуса почти без высветления
   const cWall = new THREE.Color(P.colors.hull);
   const cWallD = new THREE.Color(P.colors.trim);
-  const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.92);
+  const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.58);
   const cCopper = new THREE.Color(0x9a6a3a);
   const cWoodPeg = new THREE.Color(0xb08a58);
   const t: BakedTarget = { pos: [], col: [], uv: [] };
@@ -1579,8 +1585,8 @@ function buildQuarterdeck(
   const parapetH = 0.14;             // бортик над настилом
   const balH = railH - parapetH;     // высота открытых перил над бортиком
   const cWallX = new THREE.Color(P.colors.hull);                    // обшивка — точный цвет корпуса
-  const cPost = new THREE.Color(P.colors.hull).multiplyScalar(1.3); // стойки — чуть светлее
-  const cHand = new THREE.Color(P.colors.hull).multiplyScalar(1.55); // поручень/планширь — светлее корпуса
+  const cPost = new THREE.Color(P.colors.hull).multiplyScalar(1.04); // стойки — в тон корпуса
+  const cHand = new THREE.Color(P.colors.hull).multiplyScalar(1.08); // поручень/планширь — едва светлее
   // гладкая «лента» вдоль кривой борта: непрерывная геометрия
   // (внешняя+внутренняя грани, верх, низ, торцы) — без швов-ступеней
   const smoothBand = (
@@ -3182,7 +3188,14 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
       // дуло в локальных осях орудия (ствол длиной 1.15, центр 0.62)
       gun.userData.muzzleX = side * (0.62 + 0.575);
       if (isDeck) {
-        gun.position.set(side * (prof.w * 0.9 - 0.15), prof.bulwark - 0.72, slot.z);
+        // Task 83 (жалоба «пушки посреди палубы»): лафет стоит У БОРТА на
+        // ЛОКАЛЬНОЙ ширине корпуса в этом месте (прежде x = w·0.9 − 0.15
+        // от мидель-ширины профиля — у носа, где корпус сужается, лафет
+        // уезжал почти на середину палубы). Дуло при этом выдается за
+        // обшивку: hw − 0.42 + 1.20 (ствол) ≈ hw + 0.78 наружу
+        const y = prof.bulwark - 0.72;
+        const hw = Math.max(0.45, hullHalfWidthAt(P, tt, y + 0.35));
+        gun.position.set(side * Math.max(0.3, hw - 0.42), y, slot.z);
       } else {
         // закрытая батарея: УБРАНО (дульный срез за обшивкой),
         // при открытии порта лафет ВЫЕЗЖАЕТ наружу — ствол выдаётся
