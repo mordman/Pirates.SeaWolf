@@ -423,6 +423,9 @@ export class Game {
     // гистерезис в update стартует от реального состояния, а не от 0,
     // иначе дальние острова «застревали» на полных моделях) + тайл рельефа
     this.world.setTreeVis(g.treeVisDistance);
+    // Task 90: СПРАЙТЫ-ИМОСТЕРЫ дальних деревьев — снять «фото»
+    // каждого 3D-вида (RenderTarget) и раздать билборды миру
+    this.world.enableTreeSprites((kind, geo) => this.makeTreeImpostor(kind, geo));
     this.world.terrain.setTileSize(g.terrainTileSize);
     // стрим рельефа: тайлы держим с запасом за дальностью видимости
     this.world.terrain.streamDist = g.drawDistance + 2200;
@@ -732,6 +735,9 @@ export class Game {
       if (res.trees) {
         if (this.settings.graphics.useGLBModels) this.glbParts.enableAll();
         this.applyWireframe(this.settings.graphics.wireframe);
+        // Task 90: слоты растительности пересобраны — построить
+        // спрайты заново (текстуры-снимки закэшированы по видам)
+        this.world.enableTreeSprites((kind, geo) => this.makeTreeImpostor(kind, geo));
       }
       const info = this.world.islandsInfo();
       const parts: string[] = [];
@@ -760,10 +766,67 @@ export class Game {
     if (prev.graphics.treeVisDistance !== g.treeVisDistance) {
       this.world.setTreeVis(g.treeVisDistance, this.player.position.x, this.player.position.z);
     }
+    // Task 90: СПРАЙТЫ ДАЛЬНИХ ДЕРЕВЬЕВ (вкл/выкл): немедленно
+    // перезаприменить уровни LOD (спрайт ↔ силуэт)
+    if (prev.graphics.treeSprites !== g.treeSprites) {
+      this.world.setTreeSprites(g.treeSprites);
+      this.pushMessage(g.treeSprites
+        ? 'Дальние деревья — спрайты-«фотографии» 3D (ближе — снова 3D)'
+        : 'Дальние деревья — плоские силуэты (спрайты выключены)');
+    }
     // Task 50: размер тайла рельефа («чанка») — пересборка сетки
     if (prev.graphics.terrainTileSize !== g.terrainTileSize) {
       this.world.terrain.setTileSize(g.terrainTileSize);
       this.pushMessage(`Рельеф: тайл ${g.terrainTileSize} м — пересборка`);
+    }
+  }
+
+  /** Task 90: кэш «фотографий» видов деревьев (по kind) */
+  private treeImpostorCache: Record<string, { tex: THREE.Texture; h: number; aspect: number } | null> = {};
+
+  /** Task 90: СПРАЙТ-ИМОСТЕР = «ФОТОГРАФИЯ» 3D-модели вида дерева.
+   *  Рендер геометрии (по vertex colors, без света — цвет как есть)
+   *  в маленький RenderTarget 256² с прозрачными полями; вид стоит
+   *  по центру, база на y=0. Возвращает текстуру + высоту h (мир,
+   *  для квадра билборда) и аспект w/h (пропорции кадра) */
+  private makeTreeImpostor(kind: string, geo: THREE.BufferGeometry):
+    { tex: THREE.Texture; h: number; aspect: number } | null {
+    if (this.treeImpostorCache[kind] !== undefined) return this.treeImpostorCache[kind];
+    try {
+      geo.computeBoundingBox();
+      const bb = geo.boundingBox!;
+      const h = (bb.max.y - bb.min.y) + 0.35;
+      const w = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) + 0.35;
+      const aspect = w / h;
+      const rt = new THREE.WebGLRenderTarget(256, 256);
+      const sc = new THREE.Scene();
+      const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      // вид в кадре: центр X/Z, база на y=0 (низ квадра = точка посадки)
+      mesh.position.set(-(bb.max.x + bb.min.x) / 2, -bb.min.y, -(bb.max.z + bb.min.z) / 2);
+      sc.add(mesh);
+      const cam = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 0.1, 1000);
+      cam.position.set(0, h / 2, 500);
+      cam.lookAt(0, h / 2, 0);
+      const prevRT = this.renderer.getRenderTarget();
+      const prevClear = new THREE.Color();
+      this.renderer.getClearColor(prevClear);
+      const prevAlpha = this.renderer.getClearAlpha();
+      this.renderer.setRenderTarget(rt);
+      this.renderer.setClearColor(0x000000, 0);
+      this.renderer.clear();
+      this.renderer.render(sc, cam);
+      this.renderer.setRenderTarget(prevRT);
+      this.renderer.setClearColor(prevClear, prevAlpha);
+      mat.dispose();
+      const res = { tex: rt.texture, h, aspect };
+      this.treeImpostorCache[kind] = res;
+      return res;
+    } catch {
+      // снятие не удалось (например, до создания контекста) — вид
+      // останется на прежнем дальнем LOD (плоский силуэт)
+      this.treeImpostorCache[kind] = null;
+      return null;
     }
   }
 
@@ -3315,7 +3378,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string; hittable: boolean; tactic: string; mastsBroken: number }[] }; __aiInfo?: () => { model: string; state: string; tactic: string; crewEngage: boolean; anchored: boolean; mastsBroken: number; masts: number; speed: number; dist: number; hullFrac: number; sunk: boolean }[]; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string; hittable: boolean; tactic: string; mastsBroken: number }[] }; __aiInfo?: () => { model: string; state: string; tactic: string; crewEngage: boolean; anchored: boolean; mastsBroken: number; masts: number; speed: number; dist: number; hullFrac: number; sunk: boolean }[]; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __treeLodInfo?: () => { spriteEnabled: boolean; spriteKinds: number; spriteSlots: number; farIslands: number; nearIslands: number; tiers: Record<string, number> }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -3739,6 +3802,8 @@ export class Game {
       }));
     // Task 56: правила экипажа (задержка выхода подмены — e2e)
     dbg.__crewRules = () => ({ ...CREW_RULES });
+    // Task 90: LOD растительности + спрайты-имостеры (e2e)
+    dbg.__treeLodInfo = () => this.world.treeLodInfo();
     // Task 77: телеметрия ТРУБЫ — состояние капитана + пост-процесс
     dbg.__spyglassInfo = () => ({
       on: this.spyglassOn,

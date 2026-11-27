@@ -1,0 +1,19 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A: спрайты включены, снимки видов деревьев построены | видов со спрайтами: 8, vis=2200
+FAIL B: «в перемешку» — близкий остров 3D, дальние острова спрайтами | last={"farIslands":29,"nearIslands":1,"lodSlots":0,"fullSlots":8,"hiddenSlots":224,"midSlots":0,"trisFull":0,"trisLod":0,"kinds":{"palm":{"full":136,"lod":12,"far":true},"ficus":{"full":216,"lod":8,"far":true},"jungle":{"full":138,"lod":8,"far":true},"bush":{"full":84,"lod":4,"far":true},"bamboo":{"full":80,"lod":8,"far":true},"rock":{"full":36,"lod":36,"far":true},"stump":{"full":136,"lod":136,"far":true},"boulder":{"full":60,"lod":60,"far":true}},"spriteEnabled":true,"spriteKinds":8,"spriteSlots":0,"tiers":{"0":0,"1":3,"2":3,"3":3,"4":3,"5":3,"6":3,"7":3,"8":3,"9":3,"10":3,"11":3,"12":3,"13":3,"14":3,"15":3,"16":3,"17":3,"18":3,"19":3,"20":3,"21":3,"22":3,"23":3,"24":3,"25":3,"26":3,"27":3,"28":3,"29":3},"vis":2200}
+FAIL C: далеко → спрайты, приблизились → снова 3D | 1700 м: tier=? (спрайт-слотов -1); 800 м: tier=0 (3D)
+FAIL D: настройка «Спрайты дальних деревьев»: выкл → силуэты, вкл → спрайты | выкл: слотов 0; вкл: слотов 0
+OK   E: простые матросы — абордажные партии классика/деталь по настройке | classic: детальных бойцов 0 (бойцов 14); detailed: 1
+OK   F: камера-следование за спиной: не крутится мышью, зум колесом | режим=deck; ошибка следования 0.000 рад; camYaw при мыши -3.142→-3.142; зум 5.4→3.48
+FAIL G: VLM — дальний остров виден, деревья (спрайты) на нём | 🚀 Initializing Z-AI SDK...
+🚀 Sending vision chat request...
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      
+
+3/7 ALL FAIL
+EXIT=1

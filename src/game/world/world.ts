@@ -830,7 +830,16 @@ export class World {
     lodGeo: THREE.BufferGeometry; // ДАЛЬНИЙ уровень (плоский силуэт, Task 45)
     glbGeo: THREE.BufferGeometry | null; // GLB-замена (если включена)
     tier: number;                 // текущий LOD-уровень: 0 полная / 1 mid / 2 flat / 3 скрыто
+    /** Task 90: СПРАЙТ-ИМОСТЕР вида (общий instanceMatrix с inst —
+     *  сломанные деревья исчезают и со спрайта); ДАЛЬНИЙ уровень
+     *  (tier 2): билборд-«фотография» 3D-модели вместо силуэта */
+    sprite?: THREE.InstancedMesh | null;
   }[] = [];
+  /** Task 90: спрайты-имостеры включены (настройка графики) */
+  treeSprites = true;
+  /** Task 90: кэши текстур/материалов спрайтов — по ВИДУ дерева */
+  private spriteTexCache: Record<string, { tex: THREE.Texture; h: number; aspect: number } | null> = {};
+  private spriteMatCache: Record<string, THREE.ShaderMaterial> = {};
   /** Task 50: LOD-уровни по островам (0..3; гистерезис в update) */
   private islLod: number[] = [];
   /** Task 50: ДАЛЬНОСТЬ ВИДИМОСТИ ДЕРЕВЬЕВ (м, от БЕРЕГА; настройка
@@ -1314,15 +1323,23 @@ export class World {
     for (const slot of this.vegSlots) {
       if (slot.islIdx !== islIdx) continue;
       slot.tier = tier;
+      // Task 90: СПРАЙТ-ИМОСТЕР на ДАЛЬНЕМ уровне — причём и ЗА
+      // treeVis (tier 3): пока ОСТРОВ виден своей группой (порог
+      // видимости мира), деревья не исчезают, а дешёвые спрайты
+      // держат растительность на любом удалении; выкл — скрыто
+      // как раньше. Замена на 3D — при приближении (tier 0/1)
+      const useSprite = this.treeSprites && !!slot.sprite && tier >= 2;
+      if (slot.sprite) slot.sprite.visible = useSprite;
       if (tier >= 3) {
         slot.inst.visible = false;
         continue;
       }
-      slot.inst.visible = true;
+      slot.inst.visible = !useSprite;
+      if (useSprite) continue;
       // Task 52 ФИКС «не работает упрощение»: на среднем уровне при
       // включённых GLB бралась ПОЛНАЯ glb-модель — «чем дальше, тем
       // проще» не работало (0-й и 1-й уровни были одинаковыми).
-      // Теперь: 0 = GLB/полная, 1 = low-poly 3D (midGeo), 2 = силуэт
+      // Теперь: 0 = GLB/полная, 1 = low-poly 3D (midGeo), 2 = спрайт/сильуэт
       const next = tier === 2 ? slot.lodGeo
         : tier === 1 ? slot.midGeo
         : (slot.glbGeo ?? slot.procGeo);
@@ -1330,6 +1347,45 @@ export class World {
         slot.inst.geometry = next;
       }
     }
+  }
+
+  /** Task 90: СПРАЙТЫ-ИМОСТЕРЫ ДЕРЕВЬЕВ. Снимок («фотография») каждой
+   *  3D-модели делает game.ts: рендер geometry в маленький
+   *  RenderTarget (256²). Здесь — по ВИДУ строится инстансный
+   *  БИЛБОРД-меш с тем же instanceMatrix (ломка синхронна), на
+   *  ДАЛЬНЕМ уровне (tier 2) он заменяет и силуэт, и full 3D.
+   *  Идемпотентно: повторный вызов строит только новые слоты
+   *  (после rebuildVegetation). null от фабрики → вид без спрайта */
+  enableTreeSprites(impostor: (kind: string, geo: THREE.BufferGeometry) =>
+    { tex: THREE.Texture; h: number; aspect: number } | null) {
+    let made = 0;
+    for (const slot of this.vegSlots) {
+      if (slot.sprite !== undefined) continue;
+      const shot = this.spriteTexCache[slot.kind] ??= impostor(slot.kind, slot.procGeo);
+      if (!shot) { slot.sprite = null; continue; }
+      const mat = this.spriteMatCache[slot.kind] ??= makeTreeSpriteMaterial(shot);
+      const mesh = new THREE.InstancedMesh(SPRITE_QUAD, mat, slot.inst.count);
+      // ОБЩИЙ буфер инстансов: breakTrees прячет дерево — пропадает
+      // и со спрайта (нужды в синхронизации нет вообще)
+      mesh.instanceMatrix = slot.inst.instanceMatrix;
+      mesh.frustumCulled = true;
+      mesh.computeBoundingSphere();
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.visible = this.treeSprites && slot.tier === 2;
+      mesh.userData.wire = 'veg';
+      slot.inst.parent?.add(mesh);
+      slot.sprite = mesh;
+      made++;
+    }
+    return made;
+  }
+
+  /** Task 90: настройка «спрайты дальних деревьев» (вкл/выкл):
+   *  немедленно перезаприменить текущие уровни LOD всех островов */
+  setTreeSprites(on: boolean) {
+    this.treeSprites = on;
+    for (let i = 0; i < this.islLod.length; i++) this.applyIslandLod(i, this.islLod[i]);
   }
 
   /** Телеметрия LOD растительности (E2E): сколько островов на
@@ -1340,6 +1396,7 @@ export class World {
     hiddenSlots: number; midSlots: number;
     trisFull: number; trisLod: number; kinds: Record<string, { full: number; lod: number; far: boolean }>;
     tiers: Record<string, number>; vis: number;
+    spriteEnabled: boolean; spriteKinds: number; spriteSlots: number;
   } {
     const kinds: Record<string, { full: number; lod: number; far: boolean }> = {};
     const tris = (g: THREE.BufferGeometry) =>
@@ -1364,6 +1421,11 @@ export class World {
       farIslands: this.islLod.filter(t => t > 0).length,
       nearIslands: this.islLod.filter(t => t === 0).length,
       lodSlots, fullSlots, hiddenSlots, midSlots, trisFull, trisLod, kinds,
+      // Task 90: спрайты-имостеры — включены ли, сколько видов
+      // снимками, сколько слотов сейчас ПОКАЗАНО спрайтами
+      spriteEnabled: this.treeSprites,
+      spriteKinds: Object.keys(this.spriteTexCache).filter(k => this.spriteTexCache[k]).length,
+      spriteSlots: this.vegSlots.filter(s => s.sprite && s.sprite.visible).length,
       tiers: this.islLod.reduce((a, t, i) => { a[i] = t; return a; }, {} as Record<string, number>),
       vis: this.treeVis,
     };
@@ -2596,4 +2658,60 @@ export class World {
     for (const fv of this.fishing) n += fv.boats.length;
     return n;
   }
+}
+
+// ============================================================
+// Task 90: СПРАЙТ-ИМОСТЕР ДЕРЕВА. Квад 1×1 (низ — в origin
+// инстанса); вершинный шейдер разворачивает его ПЛОСКОСТЬ к камере
+// (billboard) в view-space: xy-смещения от центра инстанса в
+// modelView. instanceMatrix даёт позицию и масштаб (повороты
+// игнорируются — «дерево всегда лицом»). Текстура — СНИМОК полной
+// 3D-модели вида (game.ts рендерит её в RenderTarget 256²),
+// вырез по альфе + общий туман сцены (fog: true).
+// ============================================================
+const SPRITE_QUAD = new THREE.PlaneGeometry(1, 1);
+function makeTreeSpriteMaterial(shot: { tex: THREE.Texture; h: number; aspect: number }): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      map: { value: shot.tex },
+      uH: { value: shot.h },
+      uAspect: { value: shot.aspect },
+      // плейсхолдеры тумана: renderer с fog:true заполняет сам
+      fogColor: { value: new THREE.Color(0x88aacc) },
+      fogNear: { value: 1 },
+      fogFar: { value: 1000 },
+      fogDensity: { value: 0.00025 },
+    },
+    vertexShader: `
+      uniform float uH;
+      uniform float uAspect;
+      varying vec2 vUv;
+      #include <fog_pars_vertex>
+      void main() {
+        vUv = uv;
+        vec4 c = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        float sy = length(vec3(instanceMatrix[1]));
+        float sx = length(vec3(instanceMatrix[0]));
+        float h = uH * sy;
+        float w = h * uAspect * (sx + sy) * 0.5;
+        vec4 mvPosition = modelViewMatrix * vec4(c.xyz, 1.0);
+        mvPosition.x += position.x * w;
+        mvPosition.y += (position.y + 0.5) * h;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `
+      uniform sampler2D map;
+      varying vec2 vUv;
+      #include <fog_pars_fragment>
+      void main() {
+        vec4 col = texture2D(map, vUv);
+        if (col.a < 0.42) discard;
+        gl_FragColor = vec4(col.rgb, 1.0);
+        #include <fog_fragment>
+        #include <colorspace_fragment>
+      }`,
+    side: THREE.DoubleSide,
+    fog: true,
+  });
 }

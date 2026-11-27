@@ -493,6 +493,18 @@ export default function SettingsPanel({ initial, onApply, onClose, onEditPlayer,
                   <input type="checkbox" checked={g.useGLBModels} onChange={e => update(d => { d.graphics.useGLBModels = e.target.checked; })}
                     className="h-4 w-4 accent-amber-500" />
                 </Row>
+                {/* Task 90: СПРАЙТЫ ДАЛЬНИХ ДЕРЕВЬЕВ (имостеры) */}
+                <Row label="Спрайты дальних деревьев" hint="«фотография» 3D-дерева одним квадом-билбордом: дальние острова рисуются спрайтами (быстрее), при приближении — снова полные 3D-модели">
+                  <input type="checkbox" checked={g.treeSprites} onChange={e => update(d => { d.graphics.treeSprites = e.target.checked; })}
+                    className="h-4 w-4 accent-amber-500" />
+                </Row>
+                <div className="mb-2 text-[10px] leading-relaxed text-stone-500">
+                  Снимки спрайтов игра делает сама: каждая 3D-модель дерева
+                  один раз фотографируется в текстуру (256²) и на дальнем
+                  уровне LOD подставляется билбордом. Порог подмены —
+                  65% от «дальности деревьев» ниже; сломанные деревья
+                  исчезают и со спрайтов.
+                </div>
                 <div className="mb-2 text-[10px] leading-relaxed text-stone-500">
                   Каталог ВСЕХ процедурных объектов игры с габаритами (Ш×В×Г, м) —
                   эталон для подгонки готовой GLB-модели под правильный размер.

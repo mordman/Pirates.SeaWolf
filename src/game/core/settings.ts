@@ -187,6 +187,10 @@ export interface GraphicsSettings {
   /** Task 52: модель экипажа — классические low-poly фигурки или
    *  ДЕТАЛЬНЫЕ (скелет/лицо/кисти/обувь/одежда, по описанию) */
   crewDetail: 'classic' | 'detailed';
+  /** Task 90: СПРАЙТЫ ДАЛЬНИХ ДЕРЕВЬЕВ (имостеры): «фотографии» 3D-
+   *  моделей одним квадом — дальние острова рисуются спрайтами,
+   *  при приближении (уровень LOD 0/1) — снова полные 3D-модели */
+  treeSprites: boolean;
   wireframe: WireframeSettings; // режим «треугольники без текстур» по категориям
   // ТЕКСТУРЫ/ШЕЙДЕРЫ РЕЛЬЕФА ПЕРЕЕХАЛИ в раздел assets (вкладка «Ресурсы», Task 37)
 }
@@ -313,10 +317,10 @@ export interface PhysicsSettings {
 }
 
 export const QUALITY_PRESETS: Record<QualityPreset, Omit<GraphicsSettings, 'preset' | 'wireframe'>> = {
-  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true, terrainTileSize: 600, treeVisDistance: 1400, crewDetail: 'classic' as const },
-  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 1800, crewDetail: 'classic' as const },
-  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 2200, crewDetail: 'classic' as const },
-  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  detailLod: 340, useGLBModels: true, terrainTileSize: 400, treeVisDistance: 2800, crewDetail: 'classic' as const },
+  low:    { drawDistance: 2600, waterDetail: 96,  waterChunkSize: 800,  waterLodStep: 2, shadows: false, shadowRes: 1024, pixelRatio: 1.0,  detailLod: 150, useGLBModels: true, terrainTileSize: 600, treeVisDistance: 1400, crewDetail: 'classic' as const, treeSprites: true },
+  medium: { drawDistance: 4000, waterDetail: 128, waterChunkSize: 900,  waterLodStep: 1, shadows: true,  shadowRes: 1024, pixelRatio: 1.25, detailLod: 210, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 1800, crewDetail: 'classic' as const, treeSprites: true },
+  high:   { drawDistance: 5600, waterDetail: 176, waterChunkSize: 900,  waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 1.5,  detailLod: 270, useGLBModels: true, terrainTileSize: 480, treeVisDistance: 2200, crewDetail: 'classic' as const, treeSprites: true },
+  ultra:  { drawDistance: 7800, waterDetail: 208, waterChunkSize: 1100, waterLodStep: 0, shadows: true,  shadowRes: 2048, pixelRatio: 2.0,  detailLod: 340, useGLBModels: true, terrainTileSize: 400, treeVisDistance: 2800, crewDetail: 'classic' as const, treeSprites: true },
 };
 
 export const DEFAULT_WIREFRAME: WireframeSettings = { water: false, ships: false, islands: false, vegetation: false };

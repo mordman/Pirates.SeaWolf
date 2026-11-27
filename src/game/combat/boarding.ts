@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Ship } from '../ship/Ship';
 import { hullProfile, quarterFrontZ } from '../ship/buildShip';
-import { rollTraits, mulberry32 } from '../ship/crew';
+import { rollTraits, mulberry32, buildFigure } from '../ship/crew';
 import type { CrewFigure } from '../ship/crew';
 import { buildDetailedFigure, setDetailPoseMode, animateCrewDetail, professionFor } from '../ship/crewDetailed';
 import type { DetailEnv } from '../ship/crewDetailed';
@@ -469,8 +469,15 @@ export class Boarding {
     const role: 'watch' | 'gunner' = this.rnd() < 0.5 ? 'watch' : 'gunner';
     const undead = !!s.crewUndeadOpt;
     const traits = rollTraits(rot, role, s.crewKind);
-    const fig = buildDetailedFigure(role, traits, (this.rnd() * 1e6) | 0, true, undead,
-      professionFor(role, s.crewKind, rot));
+    // Task 90: настройка «простые матросы» (crewDetail='classic')
+    // прежде ПРОБИВАЛАСЬ: абордажные партии строились всегда деталь-
+    // ными. Теперь вид — по флагу КОРАБЛЯ (crewDetailedOpt, как у
+    // экипажа на палубах); классика движется/падает модульной
+    // анимацией (позы 'combat' — только у .detail, guard'ы уже есть)
+    const fig = s.crewDetailedOpt
+      ? buildDetailedFigure(role, traits, (this.rnd() * 1e6) | 0, true, undead,
+        professionFor(role, s.crewKind, rot))
+      : buildFigure(role, traits, (this.rnd() * 1e6) | 0, true, undead);
     const f: Fighter = {
       fig, home, ship: s, plank: idx % this.planks.length,
       state: 'gather', deadT: 0, phase: this.rnd() * 6.28, posed: false, gone: false,
@@ -937,6 +944,9 @@ export class Boarding {
       planksDown: this.planks.filter(p => p.dropT >= 1).length,
       fightersA: this.fighters.filter(f => f.home === 'att' && f.state !== 'dead' && !f.gone).length,
       fightersD: this.fighters.filter(f => f.home === 'def' && f.state !== 'dead' && !f.gone).length,
+      // Task 90: сколько бойцов сейчас ДЕТАЛЬНЫЕ (настройка
+      // crewDetail: 'classic' → всегда 0)
+      detailedFighters: this.fighters.filter(f => f.fig.detail && f.state !== 'dead' && !f.gone).length,
       engaged: this.fighters.filter(f => f.state === 'engage' && !f.gone).length,
       fightT: Math.round(this.fightT * 10) / 10,
       // Task 87: телеметрия ТЯГИ КРЮЧЬЕВ (e2e-полигон): прогресс

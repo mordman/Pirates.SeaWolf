@@ -568,8 +568,14 @@ export class Lander {
     if (!this.active) return;
     // Task 80: сквозь трубу — чувствительность ещё ниже (кратность!)
     const sens = this.spyAiming ? 0.0009 : this.aiming ? 0.0016 : 0.0032;
-    this.camYaw -= inp.mouseDX * sens;
-    this.camPitch = THREE.MathUtils.clamp(this.camPitch + inp.mouseDY * sens, -0.5, 1.15);
+    // Task 90: КАМЕРА-СЛЕДОВАНИЕ (классический «вид сзади»): мышью
+    // камера больше НЕ КРУТИТСЯ — она держится за спиной капитана
+    // и плавно до-доворачивается за курсом (см. update). Мышь рулит
+    // только ПРИЦЕЛОМ (ПКМ: пистолет/труба), колесо — зум
+    if (this.aiming || this.spyAiming) {
+      this.camYaw -= inp.mouseDX * sens;
+      this.camPitch = THREE.MathUtils.clamp(this.camPitch + inp.mouseDY * sens, -0.5, 1.15);
+    }
     // колесо: в трубе — КРАТНОСТЬ (2×..8×, шаг ×1.2), иначе дистанция
     if (this.spyAiming) {
       if (inp.wheel) this.spyZoom = THREE.MathUtils.clamp(this.spyZoom * (inp.wheel > 0 ? 1 / 1.2 : 1.2), 2, 8);
@@ -944,6 +950,15 @@ export class Lander {
     }
     this.shotCd = Math.max(0, this.shotCd - dt);
     this.updateBullets(dt);
+    // Task 90: СЛЕДОВАНИЕ ЗА СПИНОЙ — камера плавно до-доворачивается
+    // за курсом капитана (yaw+π = ровно за спиной), по кратчайшей
+    // дуге; в прицеле (ПКМ) камеру ведёт мышь — там доворот выключен
+    if (!this.aiming && !this.spyAiming) {
+      const want = this.yaw + Math.PI;
+      let d = want - this.camYaw;
+      d = ((d + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      this.camYaw += d * Math.min(1, dt * 3.0);
+    }
     if (this.mode === 'deck') this.updateCameraDeck(dt);
     else this.updateCamera(dt);
   }
