@@ -65,6 +65,26 @@ export class AIShip {
     }
   }
 
+  /** Task 87: БЕЗОПАСНАЯ точка маршрута. Маршруты бывают ПУСТЫМИ
+   *  (спавн на якоре: галеон-«логово», мишень полигона), а wpIndex
+   *  мог быть отравлен NaN («% 0» на пустом массиве). Прямое
+   *  waypoints[wpIndex] давало undefined → distanceTo(undefined)
+   *  ронял КАЖДЫЙ кадр — и замораживал весь код ПОСЛЕ физики,
+   *  включая абордаж (нашёл по зависшей тяге тросов в e2e W) */
+  private waypoint(s: Ship): THREE.Vector3 {
+    const n = this.waypoints.length;
+    if (!n) return s.position;
+    const i = Number.isInteger(this.wpIndex) && this.wpIndex >= 0 && this.wpIndex < n
+      ? this.wpIndex : 0;
+    return this.waypoints[i] ?? s.position;
+  }
+
+  /** следующая путевая точка (безопасна на пустом маршруте) */
+  private nextWaypoint() {
+    const n = this.waypoints.length;
+    if (n > 0) this.wpIndex = (this.wpIndex + 1) % n;
+  }
+
   onSurrender(s: Ship) {
     this.state = 'surrender';
     s.sailTarget = 0;
@@ -195,9 +215,13 @@ export class AIShip {
         if (d < gap * 0.4) desiredSail = 0;
       } else {
         // ведущий погиб — маршрут остаётся своим (штурман не спит)
-        target = this.waypoints[this.wpIndex];
+        // Task 87: БЕЗОПАСНЫЙ путь: маршруты бывают ПУСТЫМИ (спавн на
+        // якоре), а wpIndex — отравлен NaN от «% 0»: waypoints[NaN] =
+        // undefined → distanceTo(undefined) ронял КАЖДЫЙ кадр и замо-
+        // раживал весь код ПОСЛЕ физики (включая абордаж!)
+        target = this.waypoint(s);
         if (s.position.distanceTo(target) < 70) {
-          this.wpIndex = (this.wpIndex + 1) % this.waypoints.length;
+          this.nextWaypoint();
         }
       }
     } else if (this.state === 'flee') {
@@ -207,9 +231,9 @@ export class AIShip {
       target = s.position.clone().addScaledVector(away, 400).addScaledVector(downwind, 200);
       desiredSail = 3;
     } else if (this.state === 'patrol') {
-      target = this.waypoints[this.wpIndex];
+      target = this.waypoint(s);
       if (s.position.distanceTo(target) < 60) {
-        this.wpIndex = (this.wpIndex + 1) % this.waypoints.length;
+        this.nextWaypoint();
       }
     } else if (this.state === 'combat') {
       // ==========================================================
@@ -266,12 +290,19 @@ export class AIShip {
         } else if (this.prevState) {
           this.state = this.prevState;
         } else {
-          this.state = 'patrol';
+          // Task 87: прежнего состояния НЕТ (в бой вошли напрямую —
+          // спавн на якоре/e2e-инъекция): «патруль» без маршрута
+          // невозможен (галеон-«логово» с пустыми waypoints падал
+          // КАЖДЫЙ кадр на distanceTo(undefined)) — лечь на якорь
+          this.state = 'anchored';
+          s.anchored = true;
+          this.returnFire = false;
+          this.anchorBreakT = 0;
         }
         this.gunTimer = 6;
       }
     } else {
-      target = this.waypoints[0];
+      target = this.waypoint(s);
     }
 
     // руление к цели. ВНИМАНИЕ: положительный руль = поворот ВПРАВО

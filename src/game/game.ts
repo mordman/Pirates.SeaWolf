@@ -2338,22 +2338,19 @@ export class Game {
     return null;
   }
 
-  /** Task 85: НАЧАТЬ АБОРДАЖ. byPlayer=true — штурмует игрок (E),
-   *  false — brawler-ИИ сам полез на борт. На время боя руль и
-   *  паруса ведёт модуль, ИИ цели замораживается. */
+  /** Task 85/87: НАЧАТЬ АБОРДАЖ. byPlayer=true — штурмует игрок (E),
+   *  false — brawler-ИИ сам полез на борт. На время боя корабли
+   *  ведёт модуль (крючья + тали), ИИ цели замораживается. Ход
+   *  обоих корпусов гасит сам модуль — тросы легли на планширь */
   startBoarding(ai: AIShip, byPlayer: boolean) {
     if (this.boarding || this.docked || this.player.sinking || ai.ship.sinking) return;
     const attacker = byPlayer ? this.player : ai.ship;
     const defender = byPlayer ? ai.ship : this.player;
     ai.frozen = true;
-    // цель-обороняющийся ложится в дрейф (паруса вниз) и ТЕРЯЕТ ХОД:
-    // крючья легли на планширь — корпус связан, инерция сбита.
-    // Атакующий-ИИ наоборот держит ход до упора
+    // цель-обороняющийся ложится в дрейф (паруса вниз)
     if (byPlayer) {
       ai.ship.sailTarget = 0;
       ai.ship.rudderTarget = 0;
-      ai.ship.velocity.multiplyScalar(0.25);
-      if (ai.ship.angular) ai.ship.angular.set(0, 0, 0);
     }
     // выход из режима прицела — капитан идёт на абордаж
     if (this.combat.aim.active) this.combat.toggleAim(this.combat.aim.side);
@@ -2364,6 +2361,7 @@ export class Game {
         saber: () => this.audio.saberSwing(),
         bell: () => this.audio.bell(),
       },
+      splash: (x, y, z, size) => this.particles.splash(x, y, z, size),
       sceneRoot: this.worldGroup,
       onEnd: (result: BoardingResult) => this.finishBoarding(ai, result),
     });
@@ -3212,14 +3210,6 @@ export class Game {
         // мишень полигона с ответным огнём — порты открыты
         if (this.pgTarget.ship.visual.gunPorts.length) this.pgTarget.ship.portsOpen = true;
       }
-      // Task 86: ФАЗА ПОДХОДА абордажа ведётся на КАЖДОМ шаге физики.
-      // При testWarp и задушенном fps кадр тянет до 4 с сим-времени:
-      // покадровый автопилот запаздывает на секунды, корабль про-
-      // скальзывает сцепку, модуль отменяет абордаж («не догнали»).
-      // Вызов ПОСЛЕ ai.update — команды модуля затирают команды ИИ.
-      if (this.boarding && this.boarding.phase === 'approach') {
-        this.boarding.update(STEP, this.time);
-      }
       this.shipCollisions();
       this.accum -= STEP;
       steps++;
@@ -3239,14 +3229,12 @@ export class Game {
         }
       }
     }
-    // абордаж: физика сцепки, мостки, бой (после шагов физики —
-    // позы кораблей уже посчитаны, updateVisual будет следовать).
-    // dt = СИМ-время кадра (сумма шагов): при warp и медленном fps
-    // бой идёт в темпе физики, а не каркасов рендера.
-    // ПОДХОД здесь не обновляется — он в подшагах физики выше
-    if (this.boarding && this.boarding.phase !== 'approach') {
-      this.boarding.update(steps * STEP, this.time);
-    }
+    // абордаж: тяга крючьев, сцепка, мостки, бой (после шагов
+    // физики — позы кораблей уже посчитаны). dt = СИМ-время кадра:
+    // при warp и медленном fps бой идёт в темпе физики, а не
+    // каркасов рендера. Task 87: фаза ПОДХОДА удалена — тросы
+    // тянут корабли напрямую, подшагового управления больше нет
+    this.boarding?.update(steps * STEP, this.time);
 
     // «зелёная вода» (Task 25): слишком большая волна накрыла палубу —
     // сообщить игроку (не чаще раза в 12 с)

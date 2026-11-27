@@ -5,39 +5,39 @@ import { rollTraits, mulberry32 } from '../ship/crew';
 import type { CrewFigure } from '../ship/crew';
 import { buildDetailedFigure, setDetailPoseMode, animateCrewDetail, professionFor } from '../ship/crewDetailed';
 import type { DetailEnv } from '../ship/crewDetailed';
+import { waveEnvelope } from '../water/waves';
 
 // ============================================================
-// Task 85: АБОРДАЖ. Полный цикл по ТЗ игрока: «корабль подплы-
-// вёт, вкидываются доски, матросы начинают воевать друг с дру-
-// гом; абордаж может быть по разным частям корабля — борта,
-// квартердэк».
+// Task 85/87: АБОРДАЖ. По ТЗ игрока (Task 87 — упрощение):
+// «не кружить и подплывать — матросы кидают верёвки с крючками,
+// подтягивают корабль, потом выкидываются абордажные доски; при
+// сильных волнах матрос может упасть с доски при переходе».
 //
 // Фазы:
-//   approach — авто-подход атакующего бортом к цели (руль/паруса
-//              ведёт модуль; цель в дрейфе);
-//   lash     — СЦЕПКА: корабли стягиваются в жёсткую пару (ИИ-
-//              корабль следует за кораблём игрока), крючья и
-//              МОСТКИ: два бортовых + квартердэк (по частям
-//              корабля!);
-//   fight    — абордажная команда перебегает по мосткам и рубит-
-//              ся саблями (боевая поза детальных фигур), экипажи
-//              тают; при экипаже ≤ 25% корабль спускает флаг
-//              (та же система сдачи, что от обстрела);
-//   ending   — мостки втягиваются, фигуры уходят, корабли
-//              расходятся.
+//   hooks — КОШКИ НА БОРТ: матросы забрасывают тросы с крюками,
+//           корабли стягиваются ТАЛАМИ борт-к-борту (без руления
+//           и кружения — позу тяги выбирают тросы);
+//   lash  — сцепка: крючья держат, вкидываются МОСТКИ: два
+//           бортовых + квартердэк (по частям корабля);
+//   fight — абордажная команда перебегает по мосткам и рубится
+//           саблями; на сильном волнении переходящего может
+//           СМЫТЬ ВОЛНОЙ с мостка (потеря экипажа); экипажи тают,
+//           при экипаже ≤ 25% корабль спускает флаг;
+//   ending — мостки втягиваются, корабли расходятся.
 //
 // Игрок может быть КАК атакующим (E у борта враждебного судна),
-// так и обороняющимся (brawler-ИИ сам лезет на абордаж). Механику
-// питает обычный счётчик ship.crew: картечь перед абордажем = преимущество.
+// так и обороняющимся (brawler-ИИ сам лезет на абордаж).
 // ============================================================
 
-export type BoardingPhase = 'approach' | 'lash' | 'fight' | 'ending' | 'finished';
+export type BoardingPhase = 'hooks' | 'lash' | 'fight' | 'ending' | 'finished';
 export type BoardingResult = 'won' | 'lost' | 'repelled' | 'aborted';
 
 export interface BoardingDeps {
   pushMessage(text: string): void;
   audio: { woodHit(): void; saber(): void; bell(): void };
-  /** контейнер мира (worldGroup) — мостки в координатах мира */
+  /** брызги (падение матроса за борт) */
+  splash(x: number, y: number, z: number, size: number): void;
+  /** контейнер мира (worldGroup) — тросы/мостки в координатах мира */
   sceneRoot: THREE.Group;
   /** завершение: снимает блокировки в game.ts */
   onEnd(result: BoardingResult, boarding: Boarding): void;
@@ -66,6 +66,15 @@ interface Plank {
   thrown: boolean;
 }
 
+/** Task 87: ТРОС С КРЮКОМ (кошка) — держит пару весь абордаж */
+interface Rope {
+  /** локальный z на планшире атакующего (совпадает с мостками) */
+  z: number;
+  mesh: THREE.Group;        // трос + крюк (в sceneRoot)
+  line: THREE.Mesh;         // цилиндр-трос (масштаб по Z = длина)
+  hook: THREE.Mesh;         // крюк на конце обороняющегося
+}
+
 interface Fighter {
   fig: CrewFigure;
   home: 'att' | 'def';
@@ -76,6 +85,8 @@ interface Fighter {
   phase: number;            // фазовый сдвиг анимаций
   posed: boolean;           // включена боевая поза
   gone: boolean;            // труп убран со сцены
+  /** Task 87: смыт волной с мостка (падает в МИР, не на палубу) */
+  washed: boolean;
 }
 
 const _v1 = new THREE.Vector3();
@@ -85,7 +96,7 @@ const _q1 = new THREE.Quaternion();
 const _Z = new THREE.Vector3(0, 0, 1);
 
 export class Boarding {
-  phase: BoardingPhase = 'approach';
+  phase: BoardingPhase = 'hooks';
   result: BoardingResult | null = null;
   readonly attacker: Ship;   // кто абордирует
   readonly defender: Ship;   // кого абордируют
@@ -93,7 +104,7 @@ export class Boarding {
   private rnd = mulberry32((Math.random() * 1e9) | 0);
   private simTime = 0;
 
-  /** сторона сцепа в системе АТАКУЮЩЕГО (x): там висят мостки */
+  /** сторона сцепа в системе АТАКУЮЩЕГО (x): там крючья и мостки */
   private side = 1;
   /** сцеп: подчинённый корабль = НЕ игрок; его поза жёстко следует
    *  за кораблём игрока (rel в системе мастера) */
@@ -103,19 +114,25 @@ export class Boarding {
   private relQuat = new THREE.Quaternion();
 
   private planks: Plank[] = [];
+  private ropes: Rope[] = [];
   private fighters: Fighter[] = [];
-  private group = new THREE.Group();   // мостки (в sceneRoot)
+  private group = new THREE.Group();   // тросы + мостки (в sceneRoot)
   private lashT = 0;                   // таймер фазы lash
-  private snapT = 0;                   // подтягивание в сцеп (часть approach)
-  private snapping = false;
   private fightT = 0;
   private tick = 0;                    // тик потерь
   private endT = 0;
-  private approachT = 0;
   private saberCd = 0;
   private created = 0;                 // бюджет фигур на весь абордаж
   private crewA0 = 0;                  // экипажи на старте (телеметрия)
   private crewD0 = 0;
+  // Task 87: тяга тал — сколько тянем (pullDur) и откуда (pull0*)
+  private pullT = 0;
+  private pullDur = 3;                 // с (≈ dist/12, зажато 2.2..6.5)
+  private pull0Pos = new THREE.Vector3();
+  private pull0Quat = new THREE.Quaternion();
+  /** сколько матросов смыто волной с мостков (телеметрия) */
+  private washed = 0;
+  private washMsgCd = 0;
 
   constructor(attacker: Ship, defender: Ship, deps: BoardingDeps) {
     this.attacker = attacker;
@@ -126,9 +143,22 @@ export class Boarding {
     this.crewA0 = attacker.crew;
     this.crewD0 = defender.crew;
     deps.sceneRoot.add(this.group);
-    deps.pushMessage(this.attacker.isPlayer
-      ? `Подходим к борту «${defender.preset.name}»…`
-      : `«${attacker.preset.name}» лезет на абордаж — отбиваться!`);
+    // сторона крючьев: где цель относительно атакующего
+    this.toLocal(attacker, defender.position, _v1);
+    const relDx = _v1.x, relDz = _v1.z;
+    this.side = Math.abs(relDx) > 3 ? Math.sign(relDx) : (relDz > 0 ? 1 : -1);
+    // тяга: тросы тянут из позы «как застали» в сцеп борт-в-борт
+    this.pull0Pos.copy(attacker.position);
+    this.pull0Quat.copy(attacker.quaternion);
+    const d0 = attacker.position.distanceTo(defender.position);
+    this.pullDur = clamp(d0 / 12, 2.2, 6.5);
+    // крючья легли на планширь — ход обоих корпусов сбит
+    attacker.velocity.multiplyScalar(0.35);
+    defender.velocity.multiplyScalar(0.35);
+    this.throwRopes();
+    deps.pushMessage(attacker.isPlayer
+      ? `Кошки на борт «${defender.preset.name}» — тали тянут!`
+      : `«${attacker.preset.name}» зацепил нас кошками — тали тянут!`);
   }
 
   // ---------- геометрия палуб/планширей ----------
@@ -183,7 +213,7 @@ export class Boarding {
       return;
     }
     switch (this.phase) {
-      case 'approach': this.updateApproach(dt); break;
+      case 'hooks': this.updateHooks(dt); break;
       case 'lash': this.updateLash(dt); break;
       case 'fight': this.updateFight(dt); break;
       case 'ending': this.updateEnding(dt); break;
@@ -196,86 +226,87 @@ export class Boarding {
     return (this.attacker.preset.beam + this.defender.preset.beam) / 2 + 2.6;
   }
 
-  private updateApproach(dt: number) {
-    this.approachT += dt;
+  /** Task 87: КРЮЧЬЯ И ТАЛЫ. Авто-подплывание УДАЛЕНО (жалоба
+   *  игрока: «не кружить и подплывать — упростить»): матросы сразу
+   *  забрасывают тросы с крюками, и корабли стягиваются тросами в
+   *  сцеп борт-в-борт. Поза выставляется напрямую (как выберут
+   *  тали), поэтому подводных камней подхода больше нет: ни знака
+   *  руля, ни левентика, ни коллизионных сфер третьих судов */
+  private updateHooks(dt: number) {
     const att = this.attacker, def = this.defender;
-    const cd = this.centerDist();
-
-    // цель ушла / не догнали — отбой. Task 86: бюджет поднят
-    // (60→120 с, 110→150 м): после фикса ЗНАКА руля подход с траверза
-    // сходится, но корабль в слабый ветер теряет ход в левентике и
-    // доворот ползёт — честный круг может занять и пару минут
-    const dist = att.position.distanceTo(def.position);
-    if (this.approachT > 120 || dist > 150) {
-      this.finish('aborted', 'Не догнали — абордаж отменён');
-      return;
-    }
-    // цель СПУСТИЛА ФЛАГ ещё на подходе (мушкетеры срезали команду):
-    // абордаж отменять не нужно — это победа, приз берётся как обычно
+    // цель СПУСТИЛА ФЛАГ ещё на тяге (мушкетеры срезали команду):
+    // это победа, приз берётся как обычно
     if (def.surrendered && !def.isPlayer) {
       this.finish('won', `«${def.preset.name}» спускает флаг! Экипаж сложил оружие.`);
       return;
     }
-
-    // сторона сцепа: где цель относительно атакующего
+    this.pullT = Math.min(this.pullDur, this.pullT + dt);
+    const k = this.pullT / this.pullDur;
+    const e = k * k * (3 - 2 * k);            // smoothstep — разгон/торможение тяги
+    // место атакующего: со стороны крючьев, курс параллельный цели
     this.toLocal(att, def.position, _v1);
-    const relDx = _v1.x, relDz = _v1.z;
-    this.side = Math.abs(relDx) > 3 ? Math.sign(relDx) : (relDz > 0 ? 1 : -1);
+    const relDz = _v1.z;
+    const cd = this.centerDist();
+    this.toWorld(def, _v2.set(-this.side * cd, 0, clamp(-relDz, -6, 6)), _v3);
+    att.position.lerpVectors(this.pull0Pos, _v3, e);
+    att.quaternion.slerpQuaternions(this.pull0Quat, def.quaternion, e);
+    // тросы под нагрузкой: ход обоих корпусов гасится
+    att.velocity.multiplyScalar(Math.max(0, 1 - dt * 2.0));
+    def.velocity.multiplyScalar(Math.max(0, 1 - dt * 1.5));
+    att.sailTarget = 0;
+    def.sailTarget = 0;
+    this.updateRopeMeshes();
+    if (this.pullT >= this.pullDur) this.beginLash();
+  }
 
-    if (this.snapping) {
-      // подтягивание талов: атакующий доезжает вплотную (цель почти стоит)
-      this.snapT = Math.min(1, this.snapT + dt / 1.15);
-      const k = 1 - Math.pow(1 - this.snapT, 2.2);   // ease-out
-      // место атакующего: со своей стороны, курс параллельный
-      this.toWorld(def, _v2.set(-this.side * cd, 0, clamp(-relDz, -6, 6)), _v3);
-      att.position.lerp(_v3, clamp(k * 0.55 + 0.15, 0, 1));
-      att.quaternion.slerp(def.quaternion, clamp(k * 0.55 + 0.15, 0, 1));
-      att.velocity.multiplyScalar(Math.max(0, 1 - dt * 1.6));
-      att.sailTarget = 0;
-      if (this.snapT >= 1) this.beginLash();
-      return;
+  /** вкидываются КОШКИ: тросы с крюками ×3 (по местам будущих мостков) */
+  private throwRopes() {
+    const A = this.attacker;
+    const LA = A.preset.length;
+    const qF = quarterFrontZ(A.preset);
+    const hasQ = (A.preset.quarter ?? 0) > 0;
+    const zs = [
+      LA * 0.20,                                   // борт, носовая половина
+      LA * 0.04,                                   // борт, мидель (между мачт)
+      hasQ ? Math.max(qF - LA * 0.14, -LA * 0.40)  // квартердэк
+        : -LA * 0.30,                              // нет надстройки — корма
+    ];
+    const ropeMat = new THREE.MeshStandardMaterial({
+      color: 0x6b5537, roughness: 0.95, metalness: 0.02,   // смолёный трос
+    });
+    const ironMat = new THREE.MeshStandardMaterial({
+      color: 0x2e2a26, roughness: 0.55, metalness: 0.7,    // кованный крюк
+    });
+    for (const z of zs) {
+      const g = new THREE.Group();
+      const line = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1, 6), ropeMat);
+      line.rotation.x = Math.PI / 2;             // ось цилиндра Y → Z (вдоль троса)
+      g.add(line);
+      const hook = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.1), ironMat);
+      g.add(hook);
+      this.group.add(g);
+      this.ropes.push({ z, mesh: g, line, hook });
     }
+    this.deps.audio.woodHit();
+  }
 
-    // авто-рулевой атакующего: доехать до точки «борт в борт»
-    this.toWorld(def, _v2.set(-this.side * cd * 0.92, 0, clamp(-relDz, -6, 6)), _v3);
-    const far = att.position.distanceTo(_v3);
-    const fwd = _v1.set(0, 0, 1).applyQuaternion(att.quaternion).normalize();
-    const toT = _v2.copy(_v3).sub(att.position).normalize();
-    const desiredYaw = Math.atan2(toT.x, toT.z);
-    const curYaw = Math.atan2(fwd.x, fwd.z);
-    let err = desiredYaw - curYaw;
-    while (err > Math.PI) err -= Math.PI * 2;
-    while (err < -Math.PI) err += Math.PI * 2;
-    // вплотную курс выравнивается параллельно цели
-    if (far < cd * 1.6) {
-      const fD = _v3.set(0, 0, 1).applyQuaternion(def.quaternion).normalize();
-      let err2 = Math.atan2(fD.x, fD.z) - curYaw;
-      while (err2 > Math.PI) err2 -= Math.PI * 2;
-      while (err2 < -Math.PI) err2 += Math.PI * 2;
-      err = err * 0.4 + err2 * 0.6;
-    }
-    // РУЛЬ. Task 86: ЗНАК! Положительный руль (штирборт) — вращение
-    // вокруг −Y (Ship.fixedStep: torque.y -= rudderAngle·…), т.е.
-    // atan2(fwd.x, fwd.z) УБЫВАЕТ. Чтобы ЗАКРЫТЬ err = desired − cur
-    // (err>0 → курс должен вырасти), нужен ОТРИЦАТЕЛЬНЫЙ руль. До
-    // фикса автопилот доворачивал ОТ цели: подход с траверза шёл
-    // расходящейся спиралью (полигон: 40 → 110 м за 30 с, отбой).
-    // Демпфер: +yawRate гасит набранное вращение (инерция рыскания
-    // иначе проскакивает курс и руль качается ±1).
-    const yawRate = att.angular ? att.angular.y : 0;
-    att.rudderTarget = clamp(-err * 1.9 + yawRate * 4.0, -1, 1);
-    const spd = att.speed();
-    // на разгоне — полные паруса (догнать борт, уходящий по инерции
-    // или под ветром), у цели — умерить, чтобы сцепка не проскочила
-    att.sailTarget = far > cd * 1.5 ? 3 : spd > 3.4 ? 1 : 2;
-
-    // условия сцепки: близко, курс похож, ход умеренный
-    if (dist < cd * 1.35 && Math.abs(err) < 0.55 && spd < 4.5) {
-      this.snapping = true;
-      this.snapT = 0;
-      def.sailTarget = 0;
-      def.rudderTarget = 0;
-      this.deps.pushMessage('Крючья на борт! Тали закрепить!');
+  /** тросы: планширь атакующего → планширь обороняющегося; концы
+   *  следуют за корпусами каждый кадр (натягиваются при тяге) */
+  private updateRopeMeshes() {
+    const A = this.attacker, D = this.defender;
+    const LD = D.preset.length;
+    for (const r of this.ropes) {
+      this.railPoint(A, r.z, this.side, 0.15, _v1);
+      this.toWorld(A, _v1, _v1);
+      this.toLocal(D, _v1, _v2);
+      const zD = clamp(_v2.z, -LD * 0.44, LD * 0.44);
+      this.railPoint(D, zD, -this.side, 0.15, _v3);
+      this.toWorld(D, _v3, _v2);
+      r.mesh.position.copy(_v1).add(_v2).multiplyScalar(0.5);
+      const len = Math.max(1, _v1.copy(_v2).sub(r.mesh.position).length());
+      r.mesh.quaternion.setFromUnitVectors(_Z, _v1.normalize());
+      r.line.scale.set(1, len, 1);
+      r.hook.position.z = len * 0.5 - 0.12;
     }
   }
 
@@ -299,8 +330,8 @@ export class Boarding {
     this.throwPlanks();
     this.deps.audio.bell();
     this.deps.pushMessage(this.attacker.isPlayer
-      ? `Мостки на борт «${this.defender.preset.name}»! В атаку, ребята!`
-      : 'Доски на наш борт — держать палубу!');
+      ? `Тали выбраны, борта сошлись! Мостки на борт «${this.defender.preset.name}»!`
+      : 'Тали выбраны — доски на наш борт, держать палубу!');
   }
 
   /** вкидываются мостки: борт ×2 + квартердэк (по разным частям корабля) */
@@ -347,6 +378,7 @@ export class Boarding {
 
   private updateLash(dt: number) {
     this.holdLash();
+    this.updateRopeMeshes();
     this.lashT += dt;
     // сброс мостков с интервалом
     for (let i = 0; i < this.planks.length; i++) {
@@ -430,6 +462,7 @@ export class Boarding {
     const f: Fighter = {
       fig, home, ship: s, plank: idx % this.planks.length,
       state: 'gather', deadT: 0, phase: this.rnd() * 6.28, posed: false, gone: false,
+      washed: false,
     };
     // старт: у мачты/люка (оттуда выходит партия)
     this.deckPoint(s, (this.rnd() - 0.5) * 1.2, L * (0.08 + this.rnd() * 0.1), _v1);
@@ -454,6 +487,7 @@ export class Boarding {
 
   private updateFight(dt: number) {
     this.holdLash();
+    this.updateRopeMeshes();
     this.updatePlankMeshes();
     this.fightT += dt;
 
@@ -586,6 +620,16 @@ export class Boarding {
   }
 
   private animCross(f: Fighter, dt: number) {
+    // Task 87: СИЛЬНОЕ ВЛЕЧЕНИЕ — мосток качает на волне, и пере-
+    // ходящего может СМЫТЬ ЗА БОРТ. Порог ≈3.3 м огибающей волн:
+    // полигон/штиль ≈1.2 м — никто не падает; 5 м — часто, шторм
+    // 6 м — каждый переход рулетка. Упавший = потеря экипажа
+    // (утонул): абордаж в свежую погоду дорожает
+    const env = waveEnvelope();
+    if (env > 3.3 && this.rnd() < (env - 3.3) * 0.18 * dt) {
+      this.washOff(f);
+      return;
+    }
     // перебежка по мостку: путь в системе АТАКУЮЩЕГО (фигура ещё
     // ребёнок его группы) — от своего планширя до планширя жертвы
     const p = this.planks[f.plank];
@@ -613,6 +657,28 @@ export class Boarding {
       g.position.copy(cp);
       g.userData.crossT = 0;
       f.state = 'engage';
+    }
+  }
+
+  /** Task 87: волна качнула мосток — матрос летит за борт. Фигура
+   *  снимается с корабля в МИР (падение мимо корпуса), команда
+   *  теряет бойца: утонул, как утонул бы в настоящем деле */
+  private washOff(f: Fighter) {
+    const g = f.fig.group;
+    this.toWorld(f.ship, g.position, _v1);
+    this.deps.sceneRoot.add(g);
+    g.position.copy(_v1);
+    g.rotation.set(0, g.rotation.y, 0);
+    f.state = 'dead';
+    f.washed = true;
+    f.deadT = 0;
+    const s = f.home === 'att' ? this.attacker : this.defender;
+    s.crew = Math.max(0, s.crew - 1);
+    this.washed++;
+    this.deps.splash(g.position.x, 0.4, g.position.z, 1.1);
+    if (this.simTime - this.washMsgCd > 4) {
+      this.washMsgCd = this.simTime;
+      this.deps.pushMessage('Волна качнула мосток — матроса смыло за борт!');
     }
   }
 
@@ -656,6 +722,18 @@ export class Boarding {
   private animDead(f: Fighter, dt: number) {
     f.deadT += dt;
     const g = f.fig.group;
+    // Task 87: смытый волной с мостка — падает в МИР (мимо палубы),
+    // кувыркается и уходит под воду
+    if (f.washed) {
+      g.position.y -= dt * 2.8;
+      g.rotation.z += dt * 2.2;
+      g.rotation.x += dt * 1.4;
+      if (g.position.y < -1.4 || f.deadT > 2.5) {
+        this.deps.sceneRoot.remove(g);
+        f.gone = true;
+      }
+      return;
+    }
     // падение (0.55 с) лицом вперёд; затем труп «уходит под палубу»
     if (f.deadT < 0.55) {
       g.rotation.x = (f.deadT / 0.55) * Math.PI * 0.46;
@@ -680,6 +758,7 @@ export class Boarding {
 
   private updateEnding(dt: number) {
     this.holdLash();
+    this.updateRopeMeshes();
     this.endT += dt;
     // мостки втягиваются к атакующему
     for (const p of this.planks) {
@@ -700,7 +779,10 @@ export class Boarding {
 
   private cleanup() {
     for (const f of this.fighters) {
-      if (!f.gone) f.ship.visual.group.remove(f.fig.group);
+      if (f.gone) continue;
+      // смытые висят в МИРЕ, остальные — на палубах своих кораблей
+      if (f.washed) this.deps.sceneRoot.remove(f.fig.group);
+      else f.ship.visual.group.remove(f.fig.group);
     }
     this.fighters = [];
     for (const p of this.planks) {
@@ -709,6 +791,12 @@ export class Boarding {
       for (const c of p.cleats) c.geometry.dispose();
     }
     this.planks = [];
+    for (const r of this.ropes) {
+      this.group.remove(r.mesh);
+      r.line.geometry.dispose();
+      r.hook.geometry.dispose();
+    }
+    this.ropes = [];
     this.deps.sceneRoot.remove(this.group);
     // корабли расходятся: подчинённому толчок от мастера
     const away = _v1.copy(this.slave.position).sub(this.master.position).setY(0).normalize();
@@ -735,12 +823,13 @@ export class Boarding {
       fightersD: this.fighters.filter(f => f.home === 'def' && f.state !== 'dead' && !f.gone).length,
       engaged: this.fighters.filter(f => f.state === 'engage' && !f.gone).length,
       fightT: Math.round(this.fightT * 10) / 10,
-      // Task 86: телеметрия ПОДХОДА (e2e-полигон: видно, жив ли сб-
-      // лижающийся проход — время подхода, подтягивание талов,
-      // ход атакующего)
-      approachT: Math.round(this.approachT * 10) / 10,
-      snapping: this.snapping,
-      attSpd: Math.round(this.attacker.speed() * 100) / 100,
+      // Task 87: телеметрия ТЯГИ КРЮЧЬЕВ (e2e-полигон): прогресс
+      // тяги 0..1, число тросов, волнение (м) и сколько матросов
+      // смыто волной с мостков (полигон/штиль: 0 всегда)
+      pullP: Math.round((this.pullT / this.pullDur) * 100) / 100,
+      ropes: this.ropes.length,
+      washed: this.washed,
+      sea: Math.round(waveEnvelope() * 10) / 10,
       lashDist: Math.round(this.attacker.position.distanceTo(this.defender.position) * 10) / 10,
       defenderSurrendered: this.defender.surrendered,
       attackerSurrendered: this.attacker.surrendered,

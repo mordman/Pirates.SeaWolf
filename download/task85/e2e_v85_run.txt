@@ -2,19 +2,21 @@
 [agent-browser] launched browser
 OK   A: полигон активен, мишень на якоре, абордажа нет | proving=true, warp=240, мишень 16/20 чел., 40 м, state=anchored
 OK   B1: подсказка «E — АБОРДАЖ» у мишени полигона | {"can":true,"kind":"assault","name":"Флейт «Морская корова»","hudCan":true,"hudKind":"assault","hudName":"Флейт «Морская корова»"}
-OK   B2: клавиша E запускает абордаж | phase=approach
-OK   C1: вкинуты 3 мостка (борта ×2 + квартердэк) | planks=3/3, d=12.1 м, approach=15.2 с
-OK   C2: корабли сцеплены борт-в-борт | d=12.1 м
-OK   D1: абордажные партии на палубах (≥8 бойцов, схватки) | A=7 D=2 engaged=9
+OK   B2: клавиша E запускает абордаж (кошки летят) | phase=lash, ropes=3, pull=1
+OK   C1: 3 троса-кошки + 3 мостка (борта ×2 + квартердэк) | ropes=3, planks=3/3, d=12.3 м, pull=1
+OK   C2: корабли стянуты талами борт-в-борт | d=12.3 м
+OK   D1: абордажные партии на палубах (≥8 бойцов, схватки) | A=7 D=2 engaged=8
 OK   D2: экипаж мишени тает (бой идёт) | crewD=5 (было 16), финал=?
 OK   D3: панель полигона видит абордаж (hud.boarding/итог) | hud=бой, итог=—
+OK   D4: штиль полигона — никто с мостка не упал (washed=0) | washed=0
 OK   E1: победа — проверка абордажа пройдена (won) | res=won, crew=5
 OK   E2: полигон жив: мишень не утонула, ИИ разморожен, режим включён | sunk=false, frozen=false, proving=true
 OK   F: «⟳ Восстановить» вернул экипаж мишени (повтор проверки) | crew 5 → 16, res=won
-OK   G: VLM — сцепка/мостки/бойцы видны | yes×2: 1) YES — two ships (Шлюп «Бриз» and Флейт «Морская корова») are locked side-by-side (\"на абордаж\", 60 vs 10).\n2) NO — no visible planks/boards bridging the h
+OK   G: VLM — сцепка/тросы/мостки/бойцы видны | yes×2: 1) YES — a second ship (the enemy \"Морская корова\") is locked side-by-side with the Шлюп «Бриз».\n2) NO — no visible planks or taut ropes bridging the hulls; 
 OK   H: brawler-ИИ начал абордаж игрока | бой прошёл между опросами — ИИ сдался
 OK   I: оборона выиграна — ИИ-атакующий сдался, разморожен | res=won, sur=true, frozen=false
 OK   J: проигрыш абордажа — экран смерти «захвачен» | dead=true, reason=captured
+OK   W: сильные волны — матроса смыло с мостка (washed≥1) | washed=7, sea=5 м
 
-15/15 ALL OK
+17/17 ALL OK
 EXIT=0

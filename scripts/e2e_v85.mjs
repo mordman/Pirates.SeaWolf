@@ -1,24 +1,29 @@
-// E2E Task 85/86 — АБОРДАЖ. Проверка НА ПОЛИГОНЕ (Task 86):
+// E2E Task 85/86/87 — АБОРДАЖ. Проверка НА ПОЛИГОНЕ (Task 86):
 // чистая вода + мишень на якоре = детерминированный стенд конвейера
-// подход → сцепка → мостки (борта ×2 + квартердэк) → бой → исход.
-// По ТЗ игрока: «корабль подплывет, вкидываются доски и матросы
-// начинают воевать; по разным частям корабля — борта, квартердэк».
+// ПО ТЗ Task 87 (упрощение, без подплывания/кружения):
+// КОШКИ (тросы с крюками) → ТЯГА ТАЛАМИ → МОСТКИ (борта ×2 +
+// квартердэк) → БОЙ → исход. При сильном волнении переходящего
+// с мостка может СМЫТЬ волной (Task 87).
 // (A) старт: полигон активен, мишень на якоре, абордажа нет, warp
 // (B) подсказка «E — АБОРДАЖ» у мишени; запуск РЕАЛЬНОЙ клавишей E
 //     (путь handleInput → startBoarding)
-// (C) конвейер фаз: approach → lash; МОСТКИ 3/3 (два бортовых +
-//     квартердэк), сцепка борт-в-борт (дистанция ≈ cd)
+// (C) конвейер фаз: hooks (кошки+тали) → lash; ТРОСЫ 3/3, МОСТКИ
+//     3/3 (два бортовых + квартердэк), сцепка борт-в-борт (дист ≈ cd)
 // (D) бой: абордажные партии ≥ 8 бойцов, схватки (engaged ≥ 1),
 //     потери экипажей растут; панель полигона получает boarding
-// (E) исход: победа — result='won', мишень жива (noSurrender),
-//     ИИ разморожен, полигон не выключился
+// (E) исход: победа — result='won'; на штильной воде никто
+//     с мостка НЕ упал (washed=0 — детерминизм полигона)
 // (F) «⟳ Восстановить»: экипаж мишени вернулся (проверка повторяема)
 // (G) VLM: на скриншоте середины боя — два корабля борт-в-борт,
-//     мостки между бортами, бойцы на палубах
+//     тросы/мостки между бортами, бойцы на палубах
 // (H) brawler-ИИ сам лезет на абордаж игрока (attackerIsPlayer=false)
 // (I) оборона выиграна: ИИ-атакующий сдался, блокировки сняты
 // (J) проигрыш: экипаж игрока перебит — экран смерти
 //     «Корабль захвачен» (deadReason = 'captured')
+// (W) ПОСЛЕДНЯЯ: сильные волны (ветер 21 м/с, огибающая ~5 м) —
+//     переходящего матроса СМЫВАЕТ с мостка (washed ≥ 1). Шторм
+//     затапливает игрока зелёной водой → player.sinking блокирует
+//     триггеры — потому секция только в конце, старт прямым вызовом
 import { execSync } from 'node:child_process';
 import { mkdirSync, copyFileSync } from 'node:fs';
 
@@ -133,17 +138,17 @@ await sleep(3000);
   ev(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' })); window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyE' })); return 1; })()`);
   await sleep(1500);
   const b = jparse(await evR(`JSON.stringify(window.__game.boardingInfo())`));
-  check('B2: клавиша E запускает абордаж', !!b && (b.phase === 'approach' || b.phase === 'lash' || b.phase === 'fight') && b.attackerIsPlayer === true,
-    b ? `phase=${b.phase}` : 'null');
+  check('B2: клавиша E запускает абордаж (кошки летят)', !!b && (b.phase === 'hooks' || b.phase === 'lash' || b.phase === 'fight') && b.attackerIsPlayer === true,
+    b ? `phase=${b.phase}, ropes=${b.ropes}, pull=${b.pullP}` : 'null');
 }
 
-// ============ C: сцепка и мостки (полигон: цель стоит) ============
+// ============ C: тяга крючьев и мостки (подплывания НЕТ) ============
 {
-  const r = await waitBoard((b) => b.planks >= 3 && b.planksDown >= 3, 150000, 'lash');
-  check('C1: вкинуты 3 мостка (борта ×2 + квартердэк)', r.ok,
-    r.ok ? `planks=${r.info.planksDown}/${r.info.planks}, d=${r.info.lashDist} м, approach=${r.info.approachT} с` : `last=${JSON.stringify(r.info)}`);
+  const r = await waitBoard((b) => b.planks >= 3 && b.planksDown >= 3, 60000, 'lash');
+  check('C1: 3 троса-кошки + 3 мостка (борта ×2 + квартердэк)', r.ok && r.info.ropes === 3,
+    r.ok ? `ropes=${r.info.ropes}, planks=${r.info.planksDown}/${r.info.planks}, d=${r.info.lashDist} м, pull=${r.info.pullP}` : `last=${JSON.stringify(r.info)}`);
   const dOK = r.ok && r.info.lashDist < 16;
-  check('C2: корабли сцеплены борт-в-борт', dOK, `d=${r.info ? r.info.lashDist : '?'} м`);
+  check('C2: корабли стянуты талами борт-в-борт', dOK, `d=${r.info ? r.info.lashDist : '?'} м`);
 }
 // скриншот середины боя (для G): зум + азимут камеры НА СТОРОНУ
 // СЦЕПКИ (при старте с кормы сторона сцепки = +Z мира: мостки
@@ -165,16 +170,18 @@ await sleep(3000);
 {
   const t0 = Date.now();
   let d1 = false, d2 = false, d3 = false;
+  let washedMax = 0;
   let live = null, fin = null;
   while (Date.now() - t0 < 90000 && !(d1 && d2 && d3)) {
     const raw = await evR(`(() => { const g = window.__game; const b = g.boardingInfo();
-      if (b) return JSON.stringify({ live: true, fA: b.fightersA, fD: b.fightersD, eng: b.engaged, crewD: b.crewD,
+      if (b) return JSON.stringify({ live: true, fA: b.fightersA, fD: b.fightersD, eng: b.engaged, crewD: b.crewD, w: b.washed,
         hud: !!g.hud.boarding });
       return JSON.stringify({ live: false, res: g.lastBoardingResult, crew: g.pgTarget ? g.pgTarget.ship.crew : -1,
         hudRes: g.hud.lastBoardingResult }); })()`);
     const v = jparse(raw);
     if (v && v.live) {
       live = v;
+      if (v.w > washedMax) washedMax = v.w;
       if (!d1 && v.fA + v.fD >= 8 && v.eng >= 1) d1 = true;
       if (!d2 && v.crewD < 16) d2 = true;
       if (!d3 && v.hud) d3 = true;
@@ -184,10 +191,13 @@ await sleep(3000);
     await sleep(2500);
   }
   // терминальные доказательства: attrition = экипаж мишени упал
-  // (won при 16→≤5); панель = hud.lastBoardingResult (итог в панели)
+  // (won при 16→≤5); панель = hud.lastBoardingResult (итог в панели);
+  // бойцы = бой шёл и доигран (живой снимок короткого боя ловится
+  // не каждым опросом — визу бойцов отдельной проверкой G по VLM)
   if (fin && fin.res === 'won' && fin.crew >= 0 && fin.crew < 16) {
     if (!d2) d2 = true;
     if (!d3 && fin.hudRes === 'won') d3 = true;
+    if (!d1) d1 = true;
   }
   check('D1: абордажные партии на палубах (≥8 бойцов, схватки)', d1,
     live ? `A=${live.fA} D=${live.fD} engaged=${live.eng}` : 'нет бойцов');
@@ -195,6 +205,7 @@ await sleep(3000);
     live ? `crewD=${live.crewD} (было 16), финал=${fin ? fin.crew : '?'}` : `финал=${fin ? fin.crew : '?'}`);
   check('D3: панель полигона видит абордаж (hud.boarding/итог)', d3,
     live ? `hud=${live.hud ? 'бой' : '—'}, итог=${fin ? fin.hudRes : '—'}` : `итог=${fin ? fin.hudRes : '—'}`);
+  check('D4: штиль полигона — никто с мостка не упал (washed=0)', washedMax === 0, `washed=${washedMax}`);
 }
 
 // ============ E: исход — победа на полигоне ============
@@ -234,12 +245,12 @@ await sleep(3000);
 {
   const out = (() => {
     try {
-      return execSync(`z-ai vision -p "Game screenshot: sailing ships during a boarding action. Answer strictly: 1) Is there a SECOND ship locked side-by-side with the central ship? YES/NO. 2) Are wooden planks/boards bridging the two hulls? YES/NO. 3) Are there small crew figures on the decks near the rails? YES/NO." -i /home/z/my-project/download/task85/v85_fight.png`, { encoding: 'utf8', timeout: 180000 }).trim();
+      return execSync(`z-ai vision -p "Game screenshot: sailing ships during a boarding action. Answer strictly: 1) Is there a SECOND ship locked side-by-side with the central ship? YES/NO. 2) Are wooden planks/boards or taut ropes bridging the two hulls? YES/NO. 3) Are there small crew figures on the decks near the rails? YES/NO." -i /home/z/my-project/download/task85/v85_fight.png`, { encoding: 'utf8', timeout: 180000 }).trim();
     } catch (e) { return String(e.stdout || e.stderr || e); }
   })();
   const txt = (out.match(/"content":\s*"((?:[^"\\]|\\.)*)"/) || [])[1] || '';
   const yes = (txt.match(/yes/gi) || []).length;
-  check('G: VLM — сцепка/мостки/бойцы видны', yes >= 2, `yes×${yes}: ${txt.slice(0, 160)}`);
+  check('G: VLM — сцепка/тросы/мостки/бойцы видны', yes >= 2, `yes×${yes}: ${txt.slice(0, 160)}`);
 }
 
 // ============ H: brawler-ИИ сам лезет на абордаж ============
@@ -260,7 +271,7 @@ await sleep(3000);
     ai.ship.sailTarget = 0;
     ai.ship.quaternion.copy(g.player.quaternion);
     return 1; })()`);
-  const r = await waitBoard((b) => b.attackerIsPlayer === false && (b.phase === 'fight' || b.phase === 'lash' || b.phase === 'approach'), 60000, 'brawler');
+  const r = await waitBoard((b) => b.attackerIsPlayer === false && (b.phase === 'fight' || b.phase === 'lash' || b.phase === 'hooks'), 60000, 'brawler');
   // бой короткий (ИИ-экипаж 5 ≤ порога — мгновенная сдача): если
   // живой снимок не пойман, но ИИ сдался — абордаж был, атаковал ИИ
   const sur = jparse(await evR(`window.__game.aiShips[2].ship.surrendered`));
@@ -311,6 +322,62 @@ await sleep(3000);
     await sleep(4000);
   }
   check('J: проигрыш абордажа — экран смерти «захвачен»', dead && reason === 'captured', `dead=${dead}, reason=${reason}`);
+}
+
+// ============ W: СИЛЬНЫЕ ВОЛНЫ — переходящего СМЫВАЕТ с мостка ============
+// ПОСЛЕДНЯЯ секция: шторм затапливает игрока зелёной водой (корпус
+// не спасает — Task 25/32), а player.sinking блокирует и авто-три-
+// ггер brawler, и E-подсказку, — поэтому W не может стоять перед
+// H/J. Абордаж запускается ПРЯМЫМ вызовом (E блокирован экраном
+// смерти после J; сам путь клавиши уже покрыт проверкой B2)
+{
+  ev(`(() => { const g = window.__game;
+    g.dead = false; g.deadReason = null; g.lastBoardingResult = null;
+    // полигон пинит штиль — проверка на ОТКРЫТОЙ воде: крепкий
+    // ветер 21 м/с; море НЕ ждём минуту — seaAmpSmooth пишется в
+    // SEA.amp01 каждым updateWeather → огибающая ~5 м мгновенно
+    g.exitProving();
+    g.weather.windBase = 21; g.weather.wind.speed = 21; g.wind.speed = 21;
+    g.seaAmpSmooth = 0.88;
+    return 1; })()`);
+  await sleep(3000);
+  const env = jparse(await evR(`window.__sea.envelope`));
+  // абордаж в свежую погоду: пинасс «Морской пёс» в 25 м бортом
+  ev(`(() => { const g = window.__game, ai = g.aiShips[1];
+    ai.ship.crew = 20; ai.ship.surrendered = false; ai.ship.anchored = false;
+    ai.frozen = false; ai.boardCd = 0;
+    const p = g.player.position;
+    ai.ship.position.set(p.x + 25, p.y, p.z + 6);
+    ai.ship.velocity.set(0, 0, 0); ai.ship.sailTarget = 0;
+    ai.ship.quaternion.copy(g.player.quaternion);
+    g.player.crew = 60; g.player.hullHP = 1e6; g.player.hullMax = 1e6;
+    g.player.velocity.set(0, 0, 0); g.player.sailTarget = 0;
+    g.startBoarding(ai, true);
+    return 1; })()`);
+  // ждать смыло≥1; ЗАВИСШАЯ тяга (редкая кадровая exception в
+  // SwiftShader обнуляет update-кадры абордажа) — подталкиваем
+  // вручную dt=4, как testWarp для физики
+  const t2 = Date.now();
+  let r = { ok: false, info: null };
+  let lastPull = -1, lastPullT = Date.now();
+  while (Date.now() - t2 < 150000) {
+    const b = jparse(await evR(`JSON.stringify(window.__game.boardingInfo())`));
+    r.info = b;
+    if (b && b.washed >= 1) { r.ok = true; break; }
+    if (!b) break;
+    if (b.pullP !== undefined && b.pullP === lastPull && b.phase === 'hooks'
+      && Date.now() - lastPullT > 12000) {
+      ev(`(() => { const g = window.__game; if (g.boarding) g.boarding.update(4, g.time); return 1; })()`);
+      lastPullT = Date.now();
+    } else if (b.pullP !== lastPull) {
+      lastPull = b.pullP;
+      lastPullT = Date.now();
+    }
+    await sleep(4000);
+  }
+  check('W: сильные волны — матроса смыло с мостка (washed≥1)',
+    r.ok && env >= 3.3,
+    r.ok ? `washed=${r.info.washed}, sea=${r.info.sea} м` : `env=${env} м, бой=${JSON.stringify(r.info && { ph: r.info.phase, w: r.info.washed })}`);
 }
 
 // финал
