@@ -14,7 +14,7 @@ OK   D4: штиль полигона — никто с мостка не упа�
 OK   E1: победа — проверка абордажа пройдена (won) | res=won, crew=5
 OK   E2: полигон жив: мишень не утонула, ИИ разморожен, режим включён | sunk=false, frozen=false, proving=true
 OK   F: «⟳ Восстановить» вернул экипаж мишени (повтор проверки) | crew 5 → 16, res=won
-OK   G: VLM — сцепка/тросы/мостки/бойцы видны | yes×2: 1) YES — a second ship (the \"Морская корова\" target) is lying alongside the player's sloop, hulls close together.\n2) NO — no visible planks or taut boarding 
+OK   G: VLM — сцепка/тросы/мостки/бойцы видны | yes×2: 1) YES — a second vessel (the \"Морская корова\" flute) is alongside the central ship.\n2) NO — what appears between the hulls are small rowing boats/ships' boa
 OK   H: brawler-ИИ начал абордаж игрока | бой прошёл между опросами — ИИ сдался
 OK   I: оборона выиграна — ИИ-атакующий сдался, разморожен | res=won, sur=true, frozen=false
 OK   J: проигрыш абордажа — экран смерти «захвачен» | dead=true, reason=captured
