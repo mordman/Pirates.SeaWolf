@@ -993,7 +993,40 @@ export default function Home() {
             )}
             {hud.canBoard && hud.boardedName && hud.boardKind === 'prize' && (
               <div className="pointer-events-none rounded-lg border border-emerald-700 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
-                <b>E</b> — взять приз: {hud.boardedName} (сдался)
+                <b>{keyLabel(settings.controls.boarding)}</b> — взять приз: {hud.boardedName} (сдался)
+              </div>
+            )}
+            {hud.canBoard && hud.boardedName && hud.boardKind === 'assault' && (
+              <div className="pointer-events-none rounded-lg border border-red-700 bg-[#1f0a0a]/90 px-5 py-2 text-sm text-red-200 shadow-lg animate-pulse">
+                <b>{keyLabel(settings.controls.boarding)}</b> — <b>АБОРДАЖ</b>: {hud.boardedName} (кошки на борт, мостки, бой на палубах)
+              </div>
+            )}
+            {hud.boarding && (
+              <div className="pointer-events-none rounded-lg border border-red-800 bg-[#1f0808]/95 px-6 py-2.5 text-sm text-red-100 shadow-xl">
+                {hud.boarding.phase === 'hooks' && (
+                  <span className="font-serif font-bold">🪝 {hud.boarding.attackerIsPlayer
+                    ? `Кошки на борту «${hud.boarding.defender}» — тали тянут…`
+                    : `«${hud.boarding.attacker}» зацепил нас крюками — тали тянут!`}</span>
+                )}
+                {hud.boarding.phase === 'lash' && (
+                  <span className="font-serif font-bold">🪝 Сцепка! Мостки на борт — {hud.boarding.planksDown}/{hud.boarding.planks} досок</span>
+                )}
+                {hud.boarding.phase === 'fight' && (
+                  <span className="font-serif font-bold">
+                    ⚔ АБОРДАЖ: наши <span className="text-emerald-300">{hud.boarding.crewA}</span>
+                    {' '}против{' '}
+                    <span className="text-red-300">{hud.boarding.crewD}</span>
+                    {' '}· бойцов {hud.boarding.fightersA + hud.boarding.fightersD}
+                  </span>
+                )}
+                {hud.boarding.phase === 'ending' && (
+                  <span className="font-serif font-bold text-amber-200">
+                    {hud.boarding.result === 'won' && '🏆 Противник сбросил флаг!'}
+                    {hud.boarding.result === 'repelled' && 'Абордаж отбит…'}
+                    {hud.boarding.result === 'lost' && 'Мы проиграли бой…'}
+                    {hud.boarding.result === 'aborted' && 'Отбой абордажа…'}
+                  </span>
+                )}
               </div>
             )}
             {hud.canBoard && hud.boardedName && hud.boardKind === 'assault' && (
@@ -1400,7 +1433,8 @@ export default function Home() {
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / действие</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / высадка / причал</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.boarding)}</b> — АБОРДАЖ: кошки на борт, тали тянут, мостки, бой на палубах</div>
               <div><b className="text-amber-200">Мышь</b> — наведение в прицеле</div>
               <div><b className="text-amber-200">Колесо</b> — зум</div>
               <div><b className="text-amber-200">ЛКМ</b> — выстрел орудия</div>
@@ -1417,7 +1451,7 @@ export default function Home() {
               <p><b className="text-amber-200">Мореходство:</b> против ветра (левентик) корабль почти не идёт — лавируйте галсами.
               Лучший ход — галфвинд (ветер в борт). В шторм рифите паруса.</p>
               <p className="mt-1.5"><b className="text-amber-200">Добыча:</b> дырявьте торговцам паруса книппелями, корпус — ядрами,
-              команду — картечью. Сдавшийся корабль — это приз: подойдите и нажмите E.</p>
+              команду — картечью. Сдавшийся корабль — это приз: подойдите и нажмите {keyLabel(settings.controls.boarding)}.</p>
             </div>
           </div>
         </div>

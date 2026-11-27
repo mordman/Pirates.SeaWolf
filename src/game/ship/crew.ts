@@ -686,7 +686,11 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     if (mount) { m.add(mount); if (traits.hook !== side) wristMount = mount; }
     return m;
   };
-  for (const side of [-1, 1] as const) {
+  // Task 88: порядок [1, −1] — маунт у кисти (рука без крюка)
+  // достаётся ПОСЛЕДНЕЙ обработанной руке (side −1 = ПРАВАЯ рука
+  // персонажа, фигурка смотрит в +Z): сабля/пистолет/труба капитана
+  // теперь в ПРАВОЙ руке (заказ игрока), крюк — на левой
+  for (const side of [1, -1] as const) {
     if (movable && role !== 'helmsman') {
       const m = mkArmMesh(side);
       if (side < 0) armL = m; else armR = m;

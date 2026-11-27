@@ -364,7 +364,11 @@ export class Boarding {
         cleats.push(cl);
       }
       this.group.add(g);
-      this.railPoint(A, z, this.side, 0.28, _v1);
+      // Task 88: крепление ЗАГЛУБЛЕНО на корпус (outward −1.15, было
+      // +0.28 НАРУЖУ): раньше мосток висел в воздухе в зазоре между
+      // корпусами, не касаясь кораблей; теперь ложится ЧЕРЕЗ планшири
+      // на палубы — длина выросла с ~3.2 до ~6 м
+      this.railPoint(A, z, this.side, -1.15, _v1);
       this.planks.push({ aLocal: _v1.clone(), mesh: g, beam, cleats, dropT: 0, thrown: false });
     }
   }
@@ -419,9 +423,10 @@ export class Boarding {
       // начало: планшир атакующего
       this.toWorld(A, p.aLocal, _v1);
       // конец: та же мировая точка на планшире обороняющегося
+      // (Task 88: заглублено НА корпус — outward −1.15)
       this.toLocal(D, _v1, _v2);
       const zD = clamp(_v2.z, -LD * 0.44, LD * 0.44);
-      this.railPoint(D, zD, -this.side, 0.28, _v3);
+      this.railPoint(D, zD, -this.side, -1.15, _v3);
       this.toWorld(D, _v3, _v2);
       // анимация сброса: мосток вылетает сверху и «клацает»
       const drop = 1 - Math.pow(1 - p.dropT, 2);
@@ -631,17 +636,19 @@ export class Boarding {
       return;
     }
     // перебежка по мостку: путь в системе АТАКУЮЩЕГО (фигура ещё
-    // ребёнок его группы) — от своего планширя до планширя жертвы
+    // ребёнок его группы) — от внутреннего конца мостка на своей
+    // палубе до внутреннего конца на палубе жертвы (Task 88: путь
+    // продлён вместе с доской — до заглублённых концов)
     const p = this.planks[f.plank];
     const g = f.fig.group;
     const zA = p.aLocal.z;
     const start = _v1.set(
-      this.side * Math.max(0.8, this.halfW(this.attacker, zA) - 0.55),
+      this.side * Math.max(0.9, this.halfW(this.attacker, zA) - 1.15),
       p.aLocal.y - 0.06, zA);
     // конец мостка: планширь обороняющегося (в системе атакующего)
     this.toLocal(this.defender, this.toWorld(this.attacker, p.aLocal, _v2), _v3);
     const zD = clamp(_v3.z, -this.defender.preset.length * 0.44, this.defender.preset.length * 0.44);
-    this.railPoint(this.defender, zD, -this.side, 0.28, _v2);
+    this.railPoint(this.defender, zD, -this.side, -1.15, _v2);
     const end = this.toLocal(this.attacker, this.toWorld(this.defender, _v2, _v2), _v2);
     const len = Math.max(1, start.distanceTo(end));
     const t = clamp((g.userData.crossT as number) ?? 0, 0, 1) + (1.8 * dt) / len;

@@ -5,8 +5,8 @@
 // квартердэк) → БОЙ → исход. При сильном волнении переходящего
 // с мостка может СМЫТЬ волной (Task 87).
 // (A) старт: полигон активен, мишень на якоре, абордажа нет, warp
-// (B) подсказка «E — АБОРДАЖ» у мишени; запуск РЕАЛЬНОЙ клавишей E
-//     (путь handleInput → startBoarding)
+// (B) подсказка «G — АБОРДАЖ» у мишени; запуск РЕАЛЬНОЙ клавишей G
+//     (Task 88: абордаж — своя клавиша c.boarding, E не перегружена)
 // (C) конвейер фаз: hooks (кошки+тали) → lash; ТРОСЫ 3/3, МОСТКИ
 //     3/3 (два бортовых + квартердэк), сцепка борт-в-борт (дист ≈ cd)
 // (D) бой: абордажные партии ≥ 8 бойцов, схватки (engaged ≥ 1),
@@ -114,10 +114,10 @@ await sleep(3000);
     s ? `proving=${s.proving}, warp=${s.warp}, мишень ${s.tgt.crew}/${s.tgt.max} чел., ${s.tgt.dist} м, state=${s.tgt.state}` : 'нет телеметрии');
 }
 
-// ============ B: подсказка E-АБОРДАЖ + запуск клавишей E ============
+// ============ B: подсказка G-АБОРДАЖ + запуск клавишей G ============
 {
   // игрок с КОРМЫ мишени, носом на неё (как реальный игрок перед
-  // нажатием E: сближающийся проход по курсу — без разворота на 90°
+  // нажатием G: сближающийся проход по курсу — без разворота на 90°
   // в левентике; ветер бейдевинд-галфвинд — паруса работают)
   ev(`(() => { const g = window.__game; const t = g.pgTarget.ship;
     const q = t.quaternion; const L = Math.hypot(2*(q.x*q.z + q.w*q.y), 1 - 2*(q.x*q.x + q.y*q.y)) || 1;
@@ -131,14 +131,15 @@ await sleep(3000);
   const h = jparse(await evR(`(() => { const g = window.__game; const c = g.canBoard(); return JSON.stringify({
     can: !!c, kind: c && c.kind, name: c && c.ai.ship.preset.name,
     hudCan: g.hud.canBoard, hudKind: g.hud.boardKind, hudName: g.hud.boardedName }); })()`));
-  check('B1: подсказка «E — АБОРДАЖ» у мишени полигона',
+  check('B1: подсказка «G — АБОРДАЖ» у мишени полигона',
     !!h && h.can === true && h.kind === 'assault' && /флейт|мишен|fluyt/i.test(h.name || ''),
     JSON.stringify(h));
-  // РЕАЛЬНАЯ клавиша E → startBoarding через handleInput
-  ev(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' })); window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyE' })); return 1; })()`);
+  // Task 88: абордаж — СВОЯ клавиша G (c.boarding, по умолчанию
+  // KeyG; E осталась прицелом/высадкой/причалом)
+  ev(`(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyG' })); window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyG' })); return 1; })()`);
   await sleep(1500);
   const b = jparse(await evR(`JSON.stringify(window.__game.boardingInfo())`));
-  check('B2: клавиша E запускает абордаж (кошки летят)', !!b && (b.phase === 'hooks' || b.phase === 'lash' || b.phase === 'fight') && b.attackerIsPlayer === true,
+  check('B2: клавиша G (настройка c.boarding) запускает абордаж', !!b && (b.phase === 'hooks' || b.phase === 'lash' || b.phase === 'fight') && b.attackerIsPlayer === true,
     b ? `phase=${b.phase}, ropes=${b.ropes}, pull=${b.pullP}` : 'null');
 }
 
@@ -149,6 +150,26 @@ await sleep(3000);
     r.ok ? `ropes=${r.info.ropes}, planks=${r.info.planksDown}/${r.info.planks}, d=${r.info.lashDist} м, pull=${r.info.pullP}` : `last=${JSON.stringify(r.info)}`);
   const dOK = r.ok && r.info.lashDist < 16;
   check('C2: корабли стянуты талами борт-в-борт', dOK, `d=${r.info ? r.info.lashDist : '?'} м`);
+}
+
+// ============ K: Task 88 — депрессия прицела + сабля в ПРАВОЙ руке ============
+{
+  // прицел можно опустить НИЖЕ горизонта: элевация уходит в минус,
+  // вектор прицеливания смотрит вниз (близкая цель ниже линии стволов)
+  const dep = jparse(await evR(`(() => { const g = window.__game; g.combat.aim.elevation = -0.08;
+    const v = { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; },
+      normalize() { const l = Math.hypot(this.x, this.y, this.z) || 1; this.x /= l; this.y /= l; this.z /= l; return this; } };
+    g.combat.aimDirection(v); return JSON.stringify({ el: g.combat.aim.elevation, y: +v.y.toFixed(3) }); })()`));
+  check('K1: депрессия прицела — можно целиться ниже корпуса (y<0)',
+    !!dep && dep.el < 0 && dep.y < 0, JSON.stringify(dep));
+  // сабля капитана — маунт у ПРАВОЙ руки (−X, armL; фигурка смотрит в +Z)
+  const sab = jparse(await evR(`(() => { const g = window.__game; const L = g.lander;
+    if (!L || !L.fig) return JSON.stringify({ err: 'no lander' });
+    const onArmL = !!(L.saberG && L.saberG.parent && L.saberG.parent.parent === L.fig.armL);
+    const onArmR = !!(L.pistolG && L.pistolG.parent && L.pistolG.parent.parent === L.fig.armL);
+    return JSON.stringify({ saber: onArmL, pistol: onArmR, mount: !!L.fig.wristMount }); })()`));
+  check('K2: сабля/пистолет в ПРАВОЙ руке капитана (маунт −X)',
+    !!sab && sab.saber === true && sab.pistol === true, JSON.stringify(sab));
 }
 // скриншот середины боя (для G): зум + азимут камеры НА СТОРОНУ
 // СЦЕПКИ (при старте с кормы сторона сцепки = +Z мира: мостки

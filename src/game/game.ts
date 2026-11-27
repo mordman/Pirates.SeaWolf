@@ -2309,10 +2309,11 @@ export class Game {
   }
 
   // ---------- абордаж/приз ----------
-  /** Task 85: цель у борта. 'prize' — сдавшееся судно (E — забрать
-   *  приз), 'assault' — живой противник (E — АБОРДАЖ: подход,
-   *  мостки, бой на палубах). Абордируем ЛЮБОЕ непотопленное судно —
-   *  морская пиратская песочница, торговцы тоже жертвы. */
+  /** Task 85: цель у борта. 'prize' — сдавшееся судно (G — забрать
+   *  приз), 'assault' — живой противник (G — АБОРДАЖ: кошки, талы,
+   *  мостки, бой на палубах; Task 88 — своя клавиша c.boarding).
+   *  Абордируем ЛЮБОЕ непотопленное судно — морская пиратская
+   *  песочница, торговцы тоже жертвы. */
   canBoard(): { ai: AIShip; kind: 'prize' | 'assault' } | null {
     if (this.docked || this.player.sinking || this.boarding) return null;
     // Task 86: ПРОВЕРКА АБОРДАЖА НА ПОЛИГОНЕ — мишень на якоре
@@ -2656,7 +2657,12 @@ export class Game {
     // мышь ОТ СЕБЯ (вверх экрана, mouseDY<0) — стволы ПОДНИМАЮТСЯ
     if (this.combat.aim.active) {
       this.combat.aim.azimuth = clamp(this.combat.aim.azimuth - inp.mouseDX * 0.0022, -0.62, 0.62);
-      this.combat.aim.elevation = clamp(this.combat.aim.elevation - inp.mouseDY * 0.0016, 0.01, 0.24);
+      // Task 88: ДЕПРЕССИЯ ПРИЦЕЛА — вниз до −0.10 рад (≈ −6°):
+      // близкая цель и ватерлиния НИЖЕ линии стволов; раньше элевация
+      // была зажата в [0.01, 0.24] (только вверх) — в упор стрелять
+      // по корпусу было нечем. Дальность — симуляция траектории,
+      // отрицательная элевация обрабатывается штатно
+      this.combat.aim.elevation = clamp(this.combat.aim.elevation - inp.mouseDY * 0.0016, -0.10, 0.24);
     }
 
     // борта; «правый борт» ещё и взаимодействие
@@ -2682,14 +2688,19 @@ export class Game {
       this.toggleSpyglass();
     }
     if (inp.pressed(c.aimStarboard)) {
+      if (canDockHere && !this.combat.aim.active && !boardTarget) {
+        this.dock();
+      } else if (!boardTarget) {
+        this.combat.toggleAim(1);
+      }
+    }
+    // Task 88: АБОРДАЖ/приз — СВОЯ клавиша (по умолчанию G, настройка
+    // «Управление»). Раньше висел на E вместе с прицелом правого
+    // борта, высадкой и причалом — E была перегружена
+    if (inp.pressed(c.boarding)) {
       if (boardTarget) {
-        // Task 85: у борта — приз (сдался) или АБОРДАЖ (живой)
         if (boardTarget.kind === 'prize') this.takePrize(boardTarget.ai);
         else this.startBoarding(boardTarget.ai, true);
-      } else if (canDockHere && !this.combat.aim.active) {
-        this.dock();
-      } else {
-        this.combat.toggleAim(1);
       }
     }
 
