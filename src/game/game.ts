@@ -14,6 +14,7 @@ import { CombatSystem, AMMO_INFO, AmmoType, setHullDamageMul } from './combat/co
 import { Boarding, type BoardingResult } from './combat/boarding';
 import { World, heightAt, VILLAGES, type PortDef } from './world/world';
 import { Lander } from './player/lander';
+import { GullMode } from './player/gull';
 import { appearanceToTraits } from './player/appearance';
 import { GLBPartSystem } from './glb/glbParts';
 import { buildLandFolk, folkCountFor, type LandFolk } from './world/islandFolk';
@@ -136,6 +137,8 @@ export interface HudState {
   boat: { phase: string; t: number; dist: number; speed: number; row: number } | null;
   /** ВЫСАДКА (Task 36): моряк на берегу — третье лицо/оружие/прицел */
   land: { active: boolean; mode: string; weapon: string; weaponLabel: string; aiming: boolean; nearBoat: boolean; nearWheel: boolean; canLand: boolean; hint: string } | null;
+  /** Task 91: режим чайки (null — не вселялись/уже вышли) */
+  gull: { dist: number; speed: number; leash: number; leashWarn: boolean } | null;
 }
 
 // ---------- товары (рынок в порту) ----------
@@ -325,6 +328,8 @@ export class Game {
   /** ВЫСАДКА НА ОСТРОВ (Task 36): моряк на берегу — третье лицо,
    *  WASD+мышь, сабля/пистолет */
   lander: Lander | null = null;
+  /** Task 91: режим чайки (вселение с B, полёт над кораблём) */
+  gullMode: GullMode | null = null;
 
   private msgId = 1;
   messages: HudMessage[] = [];
@@ -987,6 +992,15 @@ export class Game {
       // Task 89: удар саблей капитана на палубе — по чужим
       // абордажным бойцам (мировая точка + радиус)
       boardHit: (x, y, z, r) => this.boarding ? this.boarding.playerKill(x, z, r) : 0,
+    });
+
+    // Task 91: РЕЖИМ ЧАЙКИ — вселение с клавиши (controls.gull, B):
+    // полёт над своим кораблём, поводок 100 м (дальше — разворот)
+    this.gullMode = new GullMode({
+      worldGroup: this.worldGroup,
+      camera: this.rig.camera,
+      ship: this.player,
+      msg: (t) => this.pushMessage(t),
     });
 
     // корабельные коты — палуба игрока (если уже куплены)
@@ -2530,6 +2544,22 @@ export class Game {
     const c = this.settings.controls;
     const bl = this.boatLaunch;
 
+    // === Task 91: РЕЖИМ ЧАЙКИ — полёт над кораблём (поводок 100 м).
+    //     B/X — вернуться; вселиться можно только с корабля (не пешком) ===
+    if (this.gullMode && this.gullMode.active) {
+      this.gullMode.handleInput({
+        isDown: (code) => inp.isDown(code),
+        mouseDX: inp.mouseDX, mouseDY: inp.mouseDY, wheel: inp.wheelDelta,
+      });
+      if (inp.pressed(c.gull) || inp.pressed('KeyX')) {
+        this.gullMode.end();
+        this.rig.snap();
+        this.pushMessage('Чайка свободна — капитан снова за штурвалом!');
+      }
+    } else if (!(this.lander && this.lander.active) && inp.pressed(c.gull)) {
+      this.gullMode?.start();
+    }
+
     // === НА БЕРЕГУ / НА ПАЛУБЕ ПЕШКОМ (Task 36/40): третье лицо,
     //     WASD+мышь, сабля/пистолет; управление кораблём отключено ===
     if (this.lander && this.lander.active) {
@@ -2906,7 +2936,7 @@ export class Game {
       portInfo: null, oars: null, gunPorts: null, figureOn: 'figure.stock', decoOn: 'deco.none',
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
       fps: 60, dayF: 1,
-      proving: false, target: null, boat: null, land: null,
+      proving: false, target: null, boat: null, land: null, gull: null,
     };
   }
 
@@ -3378,7 +3408,7 @@ export class Game {
     }
 
     // телеметрия для отладки/E2E: window.__sea
-    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string; hittable: boolean; tactic: string; mastsBroken: number }[] }; __aiInfo?: () => { model: string; state: string; tactic: string; crewEngage: boolean; anchored: boolean; mastsBroken: number; masts: number; speed: number; dist: number; hullFrac: number; sunk: boolean }[]; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __treeLodInfo?: () => { spriteEnabled: boolean; spriteKinds: number; spriteSlots: number; farIslands: number; nearIslands: number; tiers: Record<string, number> }; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
+    const dbg = window as unknown as { __sea: Record<string, unknown>; __seaPatchSettings?: (patch: Record<string, unknown>) => string; __seaDebrisInfo?: () => { alive: number; byKind: Record<string, number>; tints: Record<string, number>; tinted: number }; __flotsamInfo?: () => { alive: number; chests: number; sacks: number; gold: number; items: { kind: string; x: number; z: number }[] }; __chimneyInfo?: () => { pipes: number; near: number }; __fortInfo?: () => { found: boolean; parts: number; embrasures: number }; __crewModelInfo?: () => { setting: string; player: { detailed: boolean; figures: number; tris: number; detailJoints: number }; near: number; far: number }; __squadronInfo?: () => { total: number; ships: { model: string; leader: boolean; speed: number; pos: number[]; heading: number; state: string; hittable: boolean; tactic: string; mastsBroken: number }[] }; __aiInfo?: () => { model: string; state: string; tactic: string; crewEngage: boolean; anchored: boolean; mastsBroken: number; masts: number; speed: number; dist: number; hullFrac: number; sunk: boolean }[]; __crewRules?: () => { replacement: boolean; marksmen: boolean; emergenceDelay: number }; __treeLodInfo?: () => { spriteEnabled: boolean; spriteKinds: number; spriteSlots: number; farIslands: number; nearIslands: number; tiers: Record<string, number> }; __gullInfo?: () => { active: boolean; dist: number; speed: number; leash: number; heading: number; camPitch: number; pos: number[] } | null; __undeadShips?: () => string[]; __spyglassInfo?: () => { on: boolean; fov: number; zoom: number; fx: { rt: boolean; w: number; h: number; uTime: number; uBlend: number; blend: number }; captain: { phase: string; inHand: boolean; ext: number; hand: string } | null; hud: boolean } };
     const sailsV = this.player.visual.sails.sails;
     let furlSum = 0, furlMin = 1, furlMax = 0;
     for (const sv of sailsV) {
@@ -3548,6 +3578,16 @@ export class Game {
         ? { total: this.lairFolk.total, shown: this.lairFolk.shown, dead: this.lairFolk.dead }
         : null,
       treesBroken: this.world.treesBroken,
+      // Task 91: РЕЖИМ ЧАЙКИ (полёт над кораблём, поводок 100 м)
+      gull: this.gullMode?.active
+        ? (() => {
+            const d = this.gullMode!.distToShip();
+            return {
+              dist: +d.toFixed(0), speed: +this.gullMode!.speed.toFixed(1),
+              leash: +this.gullMode!.leash.toFixed(2), leashWarn: this.gullMode!.leash >= 1,
+            };
+          })()
+        : null,
       // Task 36: ВЫСАДКА — состояние моряка на берегу
       land: this.lander
         ? (() => {
@@ -3804,6 +3844,16 @@ export class Game {
     dbg.__crewRules = () => ({ ...CREW_RULES });
     // Task 90: LOD растительности + спрайты-имостеры (e2e)
     dbg.__treeLodInfo = () => this.world.treeLodInfo();
+    // Task 91: режим чайки (e2e)
+    dbg.__gullInfo = () => this.gullMode ? {
+      active: this.gullMode.active,
+      dist: +this.gullMode.distToShip().toFixed(1),
+      speed: +this.gullMode.speed.toFixed(1),
+      leash: +this.gullMode.leash.toFixed(2),
+      heading: +this.gullMode.heading.toFixed(2),
+      camPitch: +this.gullMode.camPitch.toFixed(2),
+      pos: [+this.gullMode.pos.x.toFixed(1), +this.gullMode.pos.y.toFixed(1), +this.gullMode.pos.z.toFixed(1)],
+    } : null;
     // Task 77: телеметрия ТРУБЫ — состояние капитана + пост-процесс
     dbg.__spyglassInfo = () => ({
       on: this.spyglassOn,
@@ -3918,6 +3968,9 @@ export class Game {
 
     // ВЫСАДКА (Task 36): моряк на берегу — третье лицо, оружие
     this.lander?.update(dt, this.time, this.shift, (code) => this.input.isDown(code));
+
+    // Task 91: чайка над кораблём (полёт + камера за спиной)
+    this.gullMode?.update(dt, this.time);
 
     // корабельные коты: бродят/бегают/ловят мышей (только игрок)
     this.cats3d?.update(dt, this.time, {
@@ -4124,8 +4177,9 @@ export class Game {
     if (this.input.isDown('ArrowRight')) arrX += 1;
     if (this.input.isDown('ArrowUp')) arrY -= 1;
     if (this.input.isDown('ArrowDown')) arrY += 1;
-    // НА БЕРЕГУ: камеру ведёт Lander (третье лицо/прицел)
-    if (!this.lander?.active) {
+    // НА БЕРЕГУ: камеру ведёт Lander (третье лицо/прицел);
+    // Task 91: в режиме чайки камеру ведёт GullMode
+    if (!this.lander?.active && !this.gullMode?.active) {
       this.rig.update(dt, {
         active: this.combat.aim.active,
         side: this.combat.aim.side,

@@ -568,14 +568,13 @@ export class Lander {
     if (!this.active) return;
     // Task 80: сквозь трубу — чувствительность ещё ниже (кратность!)
     const sens = this.spyAiming ? 0.0009 : this.aiming ? 0.0016 : 0.0032;
-    // Task 90: КАМЕРА-СЛЕДОВАНИЕ (классический «вид сзади»): мышью
-    // камера больше НЕ КРУТИТСЯ — она держится за спиной капитана
-    // и плавно до-доворачивается за курсом (см. update). Мышь рулит
-    // только ПРИЦЕЛОМ (ПКМ: пистолет/труба), колесо — зум
-    if (this.aiming || this.spyAiming) {
-      this.camYaw -= inp.mouseDX * sens;
-      this.camPitch = THREE.MathUtils.clamp(this.camPitch + inp.mouseDY * sens, -0.5, 1.15);
-    }
+    // Task 91: КАМЕРА «КАК В ИГРАХ»: МЫШЬ вращает камеру (азимут/
+    // тангаж) ВСЕГДА — камера за спиной капитана, смотрит на него;
+    // капитан до-доворачивается ЛИЦОМ за камерой (см. update:
+    // «борода смотрит прямо» — вперёд, от игрока), WASD двигает
+    // относительно камеры, колесо — зум
+    this.camYaw -= inp.mouseDX * sens;
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + inp.mouseDY * sens, -0.5, 1.15);
     // колесо: в трубе — КРАТНОСТЬ (2×..8×, шаг ×1.2), иначе дистанция
     if (this.spyAiming) {
       if (inp.wheel) this.spyZoom = THREE.MathUtils.clamp(this.spyZoom * (inp.wheel > 0 ? 1 / 1.2 : 1.2), 2, 8);
@@ -770,12 +769,8 @@ export class Lander {
       p.x = nx; p.z = nz;
       const push = this.deps.world.collideLand(p.x, p.z, 0.42);
       if (push) { p.x += push.dx; p.z += push.dz; }
-      const wantYaw = this.aiming
-        ? Math.atan2(-Math.sin(this.camYaw), -Math.cos(this.camYaw))
-        : Math.atan2(dx, dz);
-      let dY = wantYaw - this.yaw;
-      dY = Math.atan2(Math.sin(dY), Math.cos(dY));
-      this.yaw += dY * Math.min(1, dt * 12);
+      // Task 91: yaw капитана ведёт КАМЕРА (см. update) — лицо всегда
+      // по взгляду камеры («борода смотрит прямо»); A/D — стрейф
       this.walkPhase += dt * (running ? 11 : 7.2);
       this.stepDustCd -= dt;
       const hNow = heightAt(p.x, p.z);
@@ -950,14 +945,16 @@ export class Lander {
     }
     this.shotCd = Math.max(0, this.shotCd - dt);
     this.updateBullets(dt);
-    // Task 90: СЛЕДОВАНИЕ ЗА СПИНОЙ — камера плавно до-доворачивается
-    // за курсом капитана (yaw+π = ровно за спиной), по кратчайшей
-    // дуге; в прицеле (ПКМ) камеру ведёт мышь — там доворот выключен
-    if (!this.aiming && !this.spyAiming) {
-      const want = this.yaw + Math.PI;
-      let d = want - this.camYaw;
+    // Task 91: КАПИТАН ПОВОРАЧИВАЕТСЯ ЗА КАМЕРОЙ: мышь крутит камеру,
+    // фигура до-доворачивается лицом в её направление взгляда
+    // (camYaw+π — «борода смотрит прямо»), по кратчайшей дуге,
+    // темп 12/с — как в классических играх с видом сзади. В трубе
+    // (ПКМ) капитан стоит как стоял — крутится только обзор
+    if (!this.spyAiming) {
+      const want = this.camYaw + Math.PI;
+      let d = want - this.yaw;
       d = ((d + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-      this.camYaw += d * Math.min(1, dt * 3.0);
+      this.yaw += d * Math.min(1, dt * 12);
     }
     if (this.mode === 'deck') this.updateCameraDeck(dt);
     else this.updateCamera(dt);
@@ -1015,14 +1012,8 @@ export class Lander {
       nx = THREE.MathUtils.clamp(nx, -lim, lim);
       p.x = nx;
       p.z = nz;
-      // разворот: лицом по движению; на прицеле — за камерой
-      const awx = -Math.sin(this.camYaw), awz = -Math.cos(this.camYaw);
-      const wantYaw = this.aiming
-        ? Math.atan2(awx * ch - awz * sh, awx * sh + awz * ch)
-        : Math.atan2(lx, lz);
-      let dY = wantYaw - this.yaw;
-      dY = Math.atan2(Math.sin(dY), Math.cos(dY));
-      this.yaw += dY * Math.min(1, dt * 12);
+      // Task 91: yaw ведёт камера (лицом за её взглядом) — здесь
+      // только шаг; A/D — стрейф вдоль борта
       this.walkPhase += dt * (running ? 10 : 6.6);
     } else {
       this.walkPhase += dt * 1.6;

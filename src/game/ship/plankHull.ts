@@ -296,6 +296,15 @@ export interface PlankDamageResult {
   cascade: boolean;       // вырвало панель обшивки (≥6 в зоне)
 }
 
+/** Task 91: кусок внутренностей корабля (ломается, когда пролом
+ *  обшивки открывает доступ внутрь корпуса) */
+export type InteriorKind = 'rib' | 'beam' | 'barrel' | 'crate';
+export interface InteriorRec {
+  kind: InteriorKind;
+  x: number; y: number; z: number;   // центр (координаты корабля)
+  broken: boolean;
+}
+
 export class PlankSystem {
   readonly group = new THREE.Group();          // 'Hull_Planks'
   readonly records: PlankRec[] = [];
@@ -303,6 +312,12 @@ export class PlankSystem {
   private meshes: THREE.Mesh[] = [];           // [порт, штирборт, палуба, транец]
   private recsByMesh: PlankRec[][] = [];
   private brokenBelowWL: PlankRec[] = [];
+  // Task 91: ВНУТРЕННОСТИ (шпангоуты/бимсы/бочки/ящики) — видны
+  // сквозь проломы обшивки, ломаются вместе с дырами
+  private interior: InteriorRec[] = [];
+  private interiorMeshes: Partial<Record<InteriorKind, THREE.InstancedMesh>> = {};
+  private interiorOrig: Partial<Record<InteriorKind, Float32Array>> = {};
+  private iDummy = new THREE.Object3D();
 
   constructor(P: ShipPreset) {
     this.group.name = 'Hull_Planks';
@@ -320,6 +335,8 @@ export class PlankSystem {
     this.buildDeck(P);
     this.buildQuarterdeck(P);
     this.buildTransom(P);
+    // Task 91: внутренности — шпангоуты/бимсы/груз в трюме
+    this.buildInterior(P);
     this.group.userData.planks = this.records;
     this.group.userData.plankById = (id: string) => this.plankById(id);
   }
@@ -374,6 +391,14 @@ export class PlankSystem {
     }
     this.brokenBelowWL.length = 0;
     this.rebuildAll();
+    // Task 91: внутренности — матрицы из исходных копий
+    for (const r of this.interior) r.broken = false;
+    for (const k of Object.keys(this.interiorMeshes) as InteriorKind[]) {
+      const m = this.interiorMeshes[k]!;
+      const orig = this.interiorOrig[k]!;
+      (m.instanceMatrix.array as Float32Array).set(orig);
+      m.instanceMatrix.needsUpdate = true;
+    }
   }
 
   // ============================================================
@@ -1055,7 +1080,149 @@ export class PlankSystem {
       res.cascade = true;
     }
     for (const mi of dirty) this.rebuild(mi);
+    // Task 91: пролом ОТКРЫЛ корпус — снаряд/осколки бьют и по
+    // ВНУТРЕННОСТЯМ: ломаем шпангоуты/бимсы/груз в зоне дыры
+    if (res.broken.length > 0) {
+      const hitY = cands[0].r.cls === 1 ? cands[0].r.y : y;
+      this.breakInterior(hitY, z, 1.35 + R_TEAR);
+    }
     return res;
+  }
+
+  // ============================================================
+  // Task 91: ВНУТРЕННОСТИ КОРПУСА — «потроха» за обшивкой:
+  // ШПАНГОУТЫ (пары вертикальных рам по шпациям), БИМСЫ (попереч-
+  // ные балки), БОЧКИ и ЯЩИКИ в трюме. Инстансы (4 InstancedMesh),
+  // ломка = сжатие матрицы куска (как деревья мира). Видны сквозь
+  // пробоины; снаружи не торчат — спрятаны в обводах.
+  // ============================================================
+  private buildInterior(P: ShipPreset) {
+    const L = P.length;
+    const yTop = plankCutY(P) - 0.12;
+    const yFloor = -P.draft * 0.45;            // «пол» трюма над днищем
+    const wood = new THREE.MeshStandardMaterial({
+      color: 0x6b4a2f, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide,
+    });
+    const cargo = new THREE.MeshStandardMaterial({
+      color: 0x8a6a42, roughness: 0.85, metalness: 0.02, side: THREE.DoubleSide,
+    });
+    // сначала ПОДСЧЁТ (меши создаются под фактическое число
+    // кусков), потом расстановка. Геометрии у видов ЕДИНИЧНЫЕ
+    // (box 1³, цилиндр r=0.5 h=1) — фактический размер передаёт
+    // МАСШТАБ инстанса
+    const step = 1.35;
+    const nSt = Math.max(4, Math.floor(L * 0.8 / step));
+    const zs: number[] = [];
+    for (let i = 0; i < nSt; i++) zs.push(-L * 0.40 + (i + 0.5) * (L * 0.80 / nSt));
+    const ribs = zs.length * 2;
+    const beams = Math.ceil(zs.length / 2);
+    const rows = 3;
+    const barrels = Math.floor(zs.length * 0.8) * rows;
+    const crates = Math.floor(zs.length * 0.7) * rows;
+    const mk = (kind: InteriorKind, geo: THREE.BufferGeometry, mat: THREE.Material, n: number) => {
+      const m = new THREE.InstancedMesh(geo, mat, n);
+      m.frustumCulled = false;
+      m.castShadow = false;
+      m.receiveShadow = false;
+      m.userData.wire = 'ship';
+      this.group.add(m);
+      this.interiorMeshes[kind] = m;
+      this.interiorOrig[kind] = new Float32Array(n * 16);
+    };
+    mk('rib', RIB_GEO, wood, ribs);
+    mk('beam', BEAM_GEO, wood, beams);
+    mk('barrel', BARREL_GEO, cargo, barrels);
+    mk('crate', CRATE_GEO, cargo, crates);
+    // расстановка
+    const kindIdx: Record<string, number> = { rib: 0, beam: 0, barrel: 0, crate: 0 };
+    const place = (kind: InteriorKind, x: number, y: number, z: number,
+      sx: number, sy: number, sz: number, ry = 0) => {
+      const m = this.interiorMeshes[kind]!;
+      const i = kindIdx[kind]++;
+      if (i >= m.count) return;
+      this.iDummy.position.set(x, y, z);
+      this.iDummy.quaternion.setFromAxisAngle(UP_AXIS, ry);
+      this.iDummy.scale.set(sx, sy, sz);
+      this.iDummy.updateMatrix();
+      m.setMatrixAt(i, this.iDummy.matrix);
+      this.interior.push({ kind, x, y, z, broken: false });
+    };
+    for (const z of zs) {
+      const t = (z + L / 2) / L;
+      const w = hullProfile(t, P).w;
+      const h = yTop - yFloor;
+      // ШПАНГОУТ: пара вертикальных рам у каждого борта
+      for (const s of [1, -1] as const) {
+        place('rib', s * (w - 0.13), (yTop + yFloor) / 2, z, 0.13, h, 0.15);
+      }
+      // БИМС: поперечная балка через каждые 2 шпации
+      if ((zs.indexOf(z) & 1) === 0) {
+        place('beam', 0, yTop - 0.10, z, (w - 0.1) * 2, 0.12, 0.14);
+      }
+      // ГРУЗ: бочка/ящик в трёх рядах (борт-центр-борт), шахматкой
+      const i = zs.indexOf(z);
+      for (let r = 0; r < rows; r++) {
+        const x = (r - 1) * Math.min(1.1, w * 0.55);
+        if (Math.abs(x) > w - 0.45) continue;
+        const isB = ((i + r) & 1) === 0;
+        if (isB) place('barrel', x, yFloor + 0.31, z + 0.18 * (r - 1), 0.52, 0.62, 0.52, r === 1 ? 0 : 0.09);
+        else place('crate', x, yFloor + 0.24, z, 0.5, 0.48, 0.5, (i % 3) * 0.13);
+      }
+    }
+    // исходные матрицы (для reset) + счётчики по видам
+    for (const k of Object.keys(this.interiorMeshes) as InteriorKind[]) {
+      const m = this.interiorMeshes[k]!;
+      m.count = kindIdx[k];                       // фактическое число
+      (this.interiorOrig[k]! as Float32Array).set(m.instanceMatrix.array as Float32Array);
+      m.instanceMatrix.needsUpdate = true;
+      m.computeBoundingSphere?.();
+    }
+    this.group.userData.interior = this.interior;
+  }
+
+  /** Task 91: сломать внутренности в зоне пролома (y, z; радиус r) */
+  breakInterior(y: number, z: number, r: number): number {
+    let n = 0;
+    const byKind: Record<string, THREE.InstancedMesh | undefined> = this.interiorMeshes;
+    const kindIdx: Record<string, number> = {};
+    for (const rec of this.interior) {
+      if (rec.broken) continue;
+      if (Math.abs(rec.z - z) > r || Math.abs(rec.y - y) > r + 0.9) continue;
+      rec.broken = true;
+      const m = byKind[rec.kind];
+      if (!m) continue;
+      const i = kindIdx[rec.kind] ?? 0;
+      kindIdx[rec.kind] = i + 1;
+      // найти ИНДЕКС куска: interior писался в порядке меша — считаем
+      // по последнему place() (проще: ищем ближайший к rec по позиции)
+      // → индекс = порядок в this.interior только при одиночной
+      // расстановке; надёжнее держать отдельный счётчик при place.
+      // Здесь: полным перебором — кусков ≤ пары сотен, редкое событие.
+      let idx = -1;
+      const arr = m.instanceMatrix.array as Float32Array;
+      for (let j = 0; j < m.count; j++) {
+        const o = j * 16;
+        if (Math.hypot(arr[o + 12] - rec.x, arr[o + 13] - rec.y, arr[o + 14] - rec.z) < 0.06) { idx = j; break; }
+      }
+      if (idx >= 0) {
+        this.iDummy.position.set(rec.x, -60, rec.z);
+        this.iDummy.quaternion.identity();
+        this.iDummy.scale.setScalar(0.001);
+        this.iDummy.updateMatrix();
+        m.setMatrixAt(idx, this.iDummy.matrix);
+        m.instanceMatrix.needsUpdate = true;
+      }
+      n++;
+    }
+    return n;
+  }
+
+  /** Task 91: телеметрия внутренностей (e2e) */
+  interiorInfo() {
+    const by = { rib: 0, beam: 0, barrel: 0, crate: 0 };
+    let broken = 0;
+    for (const r of this.interior) { by[r.kind]++; if (r.broken) broken++; }
+    return { pieces: this.interior.length, broken, by };
   }
 }
 
@@ -1219,3 +1386,12 @@ export function buildSkeleton(P: ShipPreset): THREE.Group {
   group.add(mesh);
   return group;
 }
+
+
+// Task 91: общие константы/геометрии внутренностей (единичные,
+// размер передаётся масштабом инстанса)
+const UP_AXIS = new THREE.Vector3(0, 1, 0);
+const RIB_GEO = new THREE.BoxGeometry(1, 1, 1);
+const BEAM_GEO = new THREE.BoxGeometry(1, 1, 1);
+const BARREL_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const CRATE_GEO = new THREE.BoxGeometry(1, 1, 1);

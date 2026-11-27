@@ -991,6 +991,15 @@ export default function Home() {
                 <b>E</b> — высадиться на берег (сабля, пистолет, джунгли)
               </div>
             )}
+            {hud.gull && (
+              <div className="pointer-events-none rounded-lg border border-sky-700 bg-[#08131f]/90 px-5 py-2 text-sm text-sky-200 shadow-lg">
+                🕊 <b>РЕЖИМ ЧАЙКИ</b> — WASD полёт, мышь — курс, колесо — камера ·{' '}
+                {hud.gull.leashWarn
+                  ? <span className="font-bold text-amber-300">разворот на корабль (поводок 100 м)!</span>
+                  : <span>до корабля {hud.gull.dist} м · {hud.gull.speed} м/с</span>}
+                {' '}· <b>{keyLabel(settings.controls.gull)}</b>/X — вернуться
+              </div>
+            )}
             {hud.canBoard && hud.boardedName && hud.boardKind === 'prize' && (
               <div className="pointer-events-none rounded-lg border border-emerald-700 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
                 <b>{keyLabel(settings.controls.boarding)}</b> — взять приз: {hud.boardedName} (сдался)

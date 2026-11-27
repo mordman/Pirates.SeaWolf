@@ -215,6 +215,7 @@ export interface ControlsSettings {
   deckWalk: string;       // Task 40: прогуляться по палубе (капитан)
   spyglass: string;       // Task 51: подзорная труба капитана (T)
   boarding: string;       // Task 88: абордаж / взять приз у борта (отдельно от E)
+  gull: string;           // Task 91: вселиться в чайку / вернуться на корабль
   ammo: [string, string, string, string];
   mouseCapture: boolean;  // Task 50: перехват мыши (pointer lock) — клик по морю захватывает курсор, мышь крутит камеру
 }
@@ -359,6 +360,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
     // Task 88: абордаж/приз — СВОЯ клавиша (G): раньше висел на E
     // вместе с прицелом правого борта, высадкой и причалом
     boarding: 'KeyG',
+    gull: 'KeyB',
     spyglass: 'KeyT',
     ammo: ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
     mouseCapture: true,   // Task 50: перехват мыши включён по умолчанию
@@ -769,6 +771,7 @@ export const CONTROL_LABELS: Record<keyof ControlsSettings, string> = {
   aimPort: 'Прицел: левый борт',
   aimStarboard: 'Прицел: правый борт / высадка / причал',
   boarding: 'АБОРДАЖ / взять приз у борта (кошки, талы, мостки)',
+  gull: 'ВСЕЛИТЬСЯ В ЧАЙКУ / вернуться на корабль (полёт над судном)',
   fire: 'Залп (Пробел; E+Пробел — правый борт, Q+Пробел — левый)',
   repair: 'Ремонт / откачка',
   map: 'Карта',

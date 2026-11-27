@@ -1,0 +1,8 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A: камера-классика: мышь вращает камеру, капитан лицом за ней, зум колесом | мышь: camYaw 0→-1.984; ошибка лица 0.00 рад; зум 5.4→3.48
+FAIL B: чайка: вселение, поводок 100 м с разворотом на корабль, выход | старт 19.7 м; утащена 116.9 м (leash 1); вернулась к 104 м; после B active=false
+OK   C: внутренности: построены, ломаются с проломом, рендер реагирует, reset чинит | кусков 109 (рёбер 42 бочек 28); после залпов: сломано внутр. 37, досок s3 248, sideOpen 1; пиксельный диф 6.60%; после reset: 0/0
+
+2/3 ALL FAIL
+EXIT=1
