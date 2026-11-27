@@ -1,0 +1,24 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A: полигон активен, мишень на якоре, абордажа нет | proving=true, warp=240, мишень 16/20 чел., 40 м, state=anchored
+OK   B1: подсказка «G — АБОРДАЖ» у мишени полигона | {"can":true,"kind":"assault","name":"Флейт «Морская корова»","hudCan":true,"hudKind":"assault","hudName":"Флейт «Морская корова»"}
+OK   B2: клавиша G (настройка c.boarding) запускает абордаж | phase=lash, ropes=3, pull=1
+OK   C1: 3 троса-кошки + 3 мостка (борта ×2 + квартердэк) | ropes=3, planks=3/3, d=12.3 м, pull=1
+OK   C2: корабли стянуты талами борт-в-борт | d=12.3 м
+OK   K1: депрессия прицела — можно целиться ниже корпуса (y<0) | {"el":-0.08,"y":-0.08}
+OK   K2: сабля/пистолет в ПРАВОЙ руке капитана (маунт −X) | {"saber":true,"pistol":true,"mount":true}
+OK   D1: абордажные партии на палубах (≥8 бойцов, схватки) | нет бойцов
+OK   D2: экипаж мишени тает (бой идёт) | финал=5
+OK   D3: панель полигона видит абордаж (hud.boarding/итог) | итог=won
+OK   D4: штиль полигона — никто с мостка не упал (washed=0) | washed=0
+OK   E1: победа — проверка абордажа пройдена (won) | res=won, crew=5
+OK   E2: полигон жив: мишень не утонула, ИИ разморожен, режим включён | sunk=false, frozen=false, proving=true
+OK   F: «⟳ Восстановить» вернул экипаж мишени (повтор проверки) | crew 5 → 16, res=won
+OK   G: VLM — сцепка/тросы/мостки/бойцы видны | yes×2: 1) YES — a second vessel (the \"Морская корова\" flute) is alongside the central ship.\n2) NO — what appears between the hulls are small rowing boats/ships' boa
+OK   H: brawler-ИИ начал абордаж игрока | бой прошёл между опросами — ИИ сдался
+OK   I: оборона выиграна — ИИ-атакующий сдался, разморожен | res=won, sur=true, frozen=false
+OK   J: проигрыш абордажа — экран смерти «захвачен» | dead=true, reason=captured
+OK   W: сильные волны — матроса смыло с мостка (washed≥1) | washed=7, sea=5.2 м
+
+19/19 ALL OK
+EXIT=0

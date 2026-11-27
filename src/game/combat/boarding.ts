@@ -133,9 +133,12 @@ export class Boarding {
   /** сколько матросов смыто волной с мостков (телеметрия) */
   private washed = 0;
   private washMsgCd = 0;
+<<<<<<< HEAD
   // Task 89: капитан на палубе — переходы по мосткам и удары саблей
   private crossCd = 0;                 // кулдаун стыка (анти-пинг-понг)
   private captainKills = 0;            // чужих бойцов срубил капитан
+=======
+>>>>>>> origin/main
 
   constructor(attacker: Ship, defender: Ship, deps: BoardingDeps) {
     this.attacker = attacker;
@@ -458,11 +461,15 @@ export class Boarding {
   }
 
   private spawnFighter(home: 'att' | 'def', idx: number) {
+<<<<<<< HEAD
     // Task 89: бюджет 40 (было 26) + ВОЗВРАТ слота при уборке трупа
     // (animDead): в длинном бою партия защиты выгорала — подкрепле-
     // ния исчерпали бюджет, палуба пустела и рубить становилось
     // некого (капитан не мог участвовать)
     if (this.created >= 40) return;
+=======
+    if (this.created >= 26) return;
+>>>>>>> origin/main
     const s = home === 'att' ? this.attacker : this.defender;
     const L = s.preset.length;
     const rot = mulberry32((this.rnd() * 1e9) | 0);
@@ -502,7 +509,10 @@ export class Boarding {
     this.updateRopeMeshes();
     this.updatePlankMeshes();
     this.fightT += dt;
+<<<<<<< HEAD
     this.crossCd = Math.max(0, this.crossCd - dt);
+=======
+>>>>>>> origin/main
 
     // потери: тик раз в ~1.4 с
     this.tick -= dt;
@@ -535,6 +545,7 @@ export class Boarding {
     if (this.fightT > 95) this.finish('repelled', 'Абордаж захлебнулся — отход!');
   }
 
+<<<<<<< HEAD
   /** один обмен ударами. Task 89: СЛАБЕЙШАЯ сторона теряет бойца
    *  КАЖДЫЙ обмен, СИЛЬНЕЙШАЯ — с вероятностью 0.08..0.32 (растёт
    *  с равенством сил): абордаж стоит крови ОБЕИМ командам (жалоба
@@ -558,13 +569,28 @@ export class Boarding {
     if (s.crew <= 0) return;
     s.crew = Math.max(0, s.crew - 1);
     const pool = this.fighters.filter(f => f.home === home && f.state !== 'dead' && !f.gone);
+=======
+  /** один обмен ударами: слабейшая сторона теряет человека */
+  private exchangeBlow() {
+    const rA = (0.55 + this.rnd()) * Math.max(1, this.attacker.crew) * quality(this.attacker);
+    const rD = (0.55 + this.rnd()) * Math.max(1, this.defender.crew) * quality(this.defender);
+    const loserHome = rA > rD ? 'def' : 'att';
+    const loserShip = loserHome === 'att' ? this.attacker : this.defender;
+    loserShip.crew = Math.max(0, loserShip.crew - 1);
+    // гибнет боец проигравшей стороны (в гуще схватки)
+    const pool = this.fighters.filter(f => f.home === loserHome && f.state !== 'dead' && !f.gone);
+>>>>>>> origin/main
     if (pool.length) {
       const victim = pool[(this.rnd() * pool.length) | 0];
       victim.state = 'dead';
       victim.deadT = 0;
     }
+<<<<<<< HEAD
     // видимая гибель на своей палубе (экипаж в целом редеет)
     s.crew3d.smallArmsKill(1, s.position, s.quaternion);
+=======
+    this.deps.audio.saber();
+>>>>>>> origin/main
   }
 
   /** проверка исхода; true — бой окончен */
@@ -753,7 +779,11 @@ export class Boarding {
     f.deadT += dt;
     const g = f.fig.group;
     // Task 87: смытый волной с мостка — падает в МИР (мимо палубы),
+<<<<<<< HEAD
     // кувыркается и уходит под воду; слот бюджета возвращается
+=======
+    // кувыркается и уходит под воду
+>>>>>>> origin/main
     if (f.washed) {
       g.position.y -= dt * 2.8;
       g.rotation.z += dt * 2.2;
@@ -761,7 +791,10 @@ export class Boarding {
       if (g.position.y < -1.4 || f.deadT > 2.5) {
         this.deps.sceneRoot.remove(g);
         f.gone = true;
+<<<<<<< HEAD
         this.created = Math.max(0, this.created - 1); // Task 89: вернуть слот
+=======
+>>>>>>> origin/main
       }
       return;
     }
@@ -773,11 +806,15 @@ export class Boarding {
       if (f.deadT > 7.5) {
         f.ship.visual.group.remove(g);
         f.gone = true;
+<<<<<<< HEAD
         this.created = Math.max(0, this.created - 1); // Task 89: вернуть слот
+=======
+>>>>>>> origin/main
       }
     }
   }
 
+<<<<<<< HEAD
   // ---------- Task 89: капитан в абордаже ----------
 
   /** СТЫК МОСТКА для капитана: если на корабле s (своём или чужом)
@@ -862,6 +899,8 @@ export class Boarding {
     return { x: this.side * (this.halfW(this.attacker, z) - 0.5), z };
   }
 
+=======
+>>>>>>> origin/main
   // ---------- завершение ----------
 
   private finish(result: BoardingResult, msg: string) {
@@ -949,10 +988,13 @@ export class Boarding {
       lashDist: Math.round(this.attacker.position.distanceTo(this.defender.position) * 10) / 10,
       defenderSurrendered: this.defender.surrendered,
       attackerSurrendered: this.attacker.surrendered,
+<<<<<<< HEAD
       // Task 89: капитан на палубе — z мостков (локально атакующего,
       // для переходов) и сколько чужих бойцов срубил капитан
       plankZ: this.planks.map(p => Math.round(p.aLocal.z * 10) / 10),
       captainKills: this.captainKills,
+=======
+>>>>>>> origin/main
     };
   }
 }

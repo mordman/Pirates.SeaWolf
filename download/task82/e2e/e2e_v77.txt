@@ -1,0 +1,51 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   0: игра загрузилась
+
+===== A: детальный капитан: T → труба в руке → к глазу =====
+{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":2.021,"uBlend":0,"blend":0},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"R"},"hud":false}
+OK   A1: до подъёма — труба В РУКЕ (hold, Task 79), эффект выключен | phase=hold, inHand=true, blend=0, fov=55
+OK   A2: капитан детальный, труба при нём (profession=captain)
+{"r":true,"d1":{"on":true,"fov":19.42,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":2.671,"uBlend":0.703,"blend":0.703},"captain":{"phase":"draw","inHand":true,"ext":0,"hand":"R"},"hud":true},"d2":{"on":true,"fov":14.15,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":3.021,"uBlend":0.946,"blend":0.946},"captain":{"phase":"draw","inHand":true,"ext":0.12,"hand":"R"},"hud":true},"d3":{"on":true,"fov":13.77,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":3.621,"uBlend":0.997,"blend":0.997},"captain":{"phase":"observe","inHand":true,"ext":0.9,"hand":"R"},"hud":true},"d4":{"on":true,"fov":13.77,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":5.021,"uBlend":1,"blend":1},"captain":{"phase":"observe","inHand":true,"ext":1,"hand":"R"},"hud":true}}
+OK   A3: T поднимает трубу (возврат true, фаза draw) | phase=draw
+OK   A4: ВЫХВАТ — труба ПЕРЕКОЧЁВЫВАЕТ в кисть (inHand, draw) | phase=draw, inHand=true
+OK   A5: у ГЛАЗА — фаза observe, рука с трубой правая | phase=observe, hand=R
+OK   A6: КОЛЕНА выдвинуты (ext → 1) | ext=1
+OK   A7: FOV сузился (×4 ≈ 13.75°) | fov=13.77°
+OK   A8: СТЕКЛО — пост-процесс включён (blend≈1, RT живой) | blend=1, rt 1280×577
+OK   A9: HUD: труба поднята
+{"t1":5.221,"t2":5.721}
+OK   A10: ЗЕРНО стекла живое (uTime растёт) | uTime 5.221 → 5.721
+{"d1":{"on":false,"fov":51.23,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":6.521,"uBlend":0.232,"blend":0.232},"captain":{"phase":"lower","inHand":true,"ext":0.09,"hand":"R"},"hud":false},"d2":{"on":false,"fov":54.95,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":7.121,"uBlend":0.012,"blend":0.012},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"R"},"hud":false},"d3":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":8.321,"uBlend":0,"blend":0},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"R"},"hud":false}}
+OK   A11: повторное T — фаза lower (складывает) | phase=lower
+OK   A12: ТРУБА ВОЗВРАЩАЕТСЯ В РУКУ (hold, Task 79: как пистолет) | phase=hold, inHand=true, ext=0
+OK   A13: СТЕКЛО выключено, FOV вернулся (55°) | blend=0, fov=55
+OK   A14: ПОВТОРНЫЙ подъём работает (observe) | phase=observe
+
+===== B: /crew — поза «Труба», фазы, колена =====
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+{"profession":"captain","pose":"deck","pistolPhase":null,"pistolInHand":false,"spyPhase":"hold","spyInHand":true,"spyExt":0,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.204,0.914,0.317],"axis":[-0.121,-0.927,0.357],"head":[0.008,1.365,0.25],"distEyeHead":0.503,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.044,"skirtDx":0.0434,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true}
+OK   B1: капитан с ТРУБОЙ (spy в телеметрии, 2 колена; Task 79: в руке) | prof=captain, sections=2
+{"ok":true,"p1":{"profession":"captain","pose":"spyglass","pistolPhase":null,"pistolInHand":false,"spyPhase":"draw","spyInHand":true,"spyExt":0,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.239,0.984,0.567],"axis":[0.33,0.931,0.168],"head":[0.011,1.361,0.286],"distEyeHead":0.533,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.03,"skirtDx":0.0476,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true},"p2":{"profession":"captain","pose":"spyglass","pistolPhase":null,"pistolInHand":false,"spyPhase":"draw","spyInHand":true,"spyExt":0.127,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.185,1.166,0.664],"axis":[-0.152,-0.521,-0.838],"head":[0.012,1.36,0.293],"distEyeHead":0.463,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.0524,"skirtDx":0.0488,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true},"p3":{"profession":"captain","pose":"spyglass","pistolPhase":null,"pistolInHand":false,"spyPhase":"observe","spyInHand":true,"spyExt":0.636,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.099,1.349,0.37],"axis":[-0.08,0.032,0.996],"head":[0.014,1.357,0.271],"distEyeHead":0.151,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.0583,"skirtDx":0.0432,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true},"p4":{"profession":"captain","pose":"spyglass","pistolPhase":null,"pistolInHand":false,"spyPhase":"observe","spyInHand":true,"spyExt":1,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.095,1.346,0.359],"axis":[-0.049,0.07,0.996],"head":[0.015,1.355,0.271],"distEyeHead":0.141,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.0437,"skirtDx":0.045,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true}}
+OK   B2: поза spyglass включается (кнопка «🔭 Труба») | pose=spyglass, phase=draw
+OK   B3: ВЫХВАТ в кисть (draw, inHand) | phase=draw, inHand=true
+OK   B4: OBSERVE — у глаза | phase=observe
+OK   B5: КОЛЕНА полностью выдвинуты (ext > 0.9) | ext=1
+OK   B6: ТРЕМОР/дыхание не мешают (pose жива)
+{"p1":{"profession":"captain","pose":"spyglass","pistolPhase":null,"pistolInHand":false,"spyPhase":"lower","spyInHand":true,"spyExt":0,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.296,0.862,0.459],"axis":[0.365,0.902,-0.268],"head":[0.014,1.36,0.28],"distEyeHead":0.613,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.035,"skirtDx":0.032,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true},"p2":{"profession":"captain","pose":"idle","pistolPhase":null,"pistolInHand":false,"spyPhase":"hold","spyInHand":true,"spyExt":0,"spySections":2,"spyArm":"R","spyGeo":{"eye":[-0.213,0.861,0.387],"axis":[-0.078,-0.417,-0.905],"head":[0.003,1.362,0.276],"distEyeHead":0.558,"cutlassVisible":false},"windItems":["feather","hang","skirt"],"featherDx":0.0364,"skirtDx":0.0303,"charges":12,"hasCutlass":true,"hasFeather":true,"breathing":true}}
+OK   B7: смена режима — фаза lower (труба складывается) | phase=lower, pose=spyglass
+OK   B8: ТРУБА ВЕРНУЛАСЬ В РУКУ (hold, Task 79), поза сменилась на idle | phase=hold, pose=idle
+{"ok":false,"prof":"sailor","spy":null}
+OK   B9: МОРЯК — трубы нет (setPose false, spy null) | ok=false, prof=sailor
+
+===== C: классический капитан — труба за поясом ↔ в руке =====
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+{"c0":{"on":false,"fov":55,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":1.823,"uBlend":0,"blend":0},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"L"},"hud":false},"c1":{"on":true,"fov":32.34,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":1.923,"uBlend":0.386,"blend":0.386},"captain":{"phase":"observe","inHand":true,"ext":1,"hand":"L"},"hud":true},"c2":{"on":true,"fov":13.75,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":3.422,"uBlend":1,"blend":1},"captain":{"phase":"observe","inHand":true,"ext":1,"hand":"L"},"hud":true},"c3":{"on":false,"fov":46.62,"zoom":4,"fx":{"rt":true,"w":1280,"h":577,"uTime":3.622,"uBlend":0.377,"blend":0.377},"captain":{"phase":"hold","inHand":true,"ext":0,"hand":"L"},"hud":false}}
+OK   C1: классика — до подъёма труба В РУКЕ (hold, Task 79)
+OK   C2: классика — ТРУБА В РУКЕ сразу при T (observe, inHand) | phase=observe, hand=L
+OK   C3: классика — СТЕКЛО и FOV работают и тут | blend=1, fov=13.75
+OK   C4: классика — T опускает, труба ОСТАЁТСЯ В РУКЕ (hold, Task 79)
+
+ALL OK
