@@ -43,8 +43,8 @@ float t82fbm(vec2 p) {
 
 /** окраска дощатого корпуса (те же пояса, что и в росписи гладкого корпуса) */
 export interface PlankPaint {
-  wale0: number; wale1: number; waleCol: number;   // главный вельс
-  rail0: number; rail1: number;                    // пояс под планширем
+  L: number; fb: number; beak: boolean;   // седловатость: длина/надводный борт/бакштевень
+  waleCol: number;                                   // цвет вельса/пояса планширя
   stripes: { y0: number; y1: number; color: number }[];
   ports: { z: number; y: number }[];
   portSize: THREE.Vector2;                         // полуширина/полувысота порта
@@ -52,22 +52,21 @@ export interface PlankPaint {
   hullCol: number; deckCol: number; draft: number;
 }
 
-const MAX_PORTS = 16;
+const MAX_PORTS = 32; // Task 84: жемчужина — 26 закрытых орудий (2 дека), прежний лимит 16 резал второй ряд портов
 const MAX_STRIPES = 4;
 
 /** схему окраски из пресета (по высотам hullDeco.makeHullTextures) */
 export function plankPaint(P: ShipPreset): PlankPaint {
   const F = P.freeboard;
-  const wale0 = Math.max(0.9, F * 0.22);
-  const wale1 = wale0 + Math.max(0.45, F * 0.09);
-  const rail0 = Math.max(wale1 + 0.2, F * 0.62);
-  const rail1 = F + 0.6;
   const trim = new THREE.Color(P.colors.trim);
   const trimDark = trim.r + trim.g + trim.b < 0.2;
   const lidH = Math.min(0.52, Math.max(0.40, F * 0.095));
   return {
-    wale0, wale1, waleCol: P.colors.trim,
-    rail0, rail1,
+    // Task 82: вельс и пояс планширя следуют СЕДЛОВАТОСТИ борта (в GLSL —
+    // аппроксимация bulwark(t)): прежние ФИКСИРОВАННЫЕ полосы y 1.67–3.3
+    // заливали весь верх одним цветом — «монотонная тёмная масса» (VLM)
+    L: P.length, fb: F, beak: !!P.beakhead,
+    waleCol: P.colors.trim,
     stripes: (P.stripes ?? []).slice(0, MAX_STRIPES).map(st => ({ y0: st.y0 * F, y1: st.y1 * F, color: st.color })),
     ports: gunLayout(P).filter(s => s.tier > 0).slice(0, MAX_PORTS).map(s => ({ z: s.z, y: s.y })),
     // крышки портов: BoxGeometry(0.06, lidH, 0.66) — рамка на 7 см шире
@@ -104,7 +103,7 @@ varying vec2 vWuv;
 varying vec3 vLocalPos;
 varying vec3 vObjN;
 #ifdef T82_PLANKS
-uniform float uWale0, uWale1, uRail0, uRail1, uWaterY, uPortN, uStripeN, uDraft;
+uniform float uLen, uFb, uBeak, uWaterY, uPortN, uStripeN, uDraft;
 uniform vec3 uWaleCol, uPortFrameCol, uPortInCol, uHullCol, uDeckCol, uWlCol;
 uniform vec2 uPortSize;
 uniform vec2 uStripeY[${MAX_STRIPES}];
@@ -148,10 +147,11 @@ if (uWoodOn > 0.5) {
   vec3 col = diffuseColor.rgb * grain * (0.92 + 0.16 * wpn);
   float lum = dot(col, vec3(0.3, 0.5, 0.2));
   col = mix(col, vec3(lum) * vec3(1.06, 1.02, 0.94), 0.22 * isDeck);
-  // паз (конопачение) и «фаска» нахлёста — только на лицевой грани
+  // паз (конопачение) и «фаска» нахлёста — только на лицевой грани;
+  // Task 82: фаска усилена — линия нахлёста поясов читается и в краске
   float seam = mix(smoothstep(0.0, 0.016, edge), 1.0, 1.0 - show);
   float bevel = mix(smoothstep(0.0, 0.05, edge), 1.0, 1.0 - show);
-  col *= mix(isDeck > 0.5 ? 0.09 : 0.22, 1.0, seam) * mix(0.84, 1.0, bevel);
+  col *= mix(isDeck > 0.5 ? 0.09 : 0.22, 1.0, seam) * mix(0.72, 1.0, bevel);
   // нагели (деревянные гвозди) у торцов и середины длинных досок
   vec2 tq = vec2(min(vWuv.x, ln - vWuv.x), vWuv.y);
   float tn = 1.0 - smoothstep(0.013, 0.021, length(tq - vec2(0.17, w * 0.30)));
@@ -163,9 +163,22 @@ if (uWoodOn > 0.5) {
   float lx = isTransom > 0.5 ? vLocalPos.x : vLocalPos.z;
   float paint = 0.0;
   if (isDeck < 0.5) {
+    // Task 82: СЕДЛОВАТОСТЬ борта — аппроксимация bulwark(t) в GLSL
+    // (та же формула, что в buildShip.hullProfile): вельс и пояс под
+    // планширем поднимаются к носу и корме ВМЕСТЕ с бортом. Прежде
+    // полосы шли на ФИКСИРОВАННОЙ высоте: у носа пояс планширя
+    // опускался на середину борта, у миделя заливал весь верх —
+    // «монотонная тёмная масса» без читаемых поясов (VLM)
+    float t = clamp((vLocalPos.z + 0.5 * uLen) / uLen, 0.0, 1.0);
+    float sheer = uFb * (uBeak > 0.5
+      ? (0.85 + 0.36 * pow(1.0 - t, 2.4) + 0.08 * pow(max(0.0, t - 0.7) / 0.3, 2.0))
+      : (0.82 + 0.35 * pow(max(0.0, t - 0.75) / 0.25, 1.4) + 0.5 * pow(1.0 - t, 2.2) * 0.6));
     float aaY = fwidth(y) + 1e-4;
-    float bw = smoothstep(uWale0 - aaY, uWale0 + aaY, y) * (1.0 - smoothstep(uWale1 - aaY, uWale1 + aaY, y));
-    float br = smoothstep(uRail0 - aaY, uRail0 + aaY, y) * (1.0 - smoothstep(uRail1 - aaY, uRail1 + aaY, y));
+    // вельс — у кромки настила (sheer − 1.0); пояс планширя — верхний
+    float waleA = sheer - 1.35, waleB = sheer - 0.90;
+    float railA = sheer - 0.42, railB = sheer - 0.04;
+    float bw = smoothstep(waleA - aaY, waleA + aaY, y) * (1.0 - smoothstep(waleB - aaY, waleB + aaY, y));
+    float br = smoothstep(railA - aaY, railA + aaY, y) * (1.0 - smoothstep(railB - aaY, railB + aaY, y));
     vec3 pc = uWaleCol;
     paint = max(bw, br * 0.85);
     for (int i = 0; i < ${MAX_STRIPES}; i++) {
@@ -175,9 +188,20 @@ if (uWoodOn > 0.5) {
       pc = mix(pc, uStripeCol[i], step(0.5, bs));
       paint = max(paint, bs);
     }
-    // крашеная доска: волокна и паз просвечивают, кромки обтерты
-    vec3 painted = pc * (0.78 + 0.30 * grain) * (0.92 + 0.14 * wpn) * mix(0.88, 1.0, seam) * tint;
+    // крашеная доска: волокна просвечивают, ПАЗЫ читаются и в краске
+    // (Task 82: контраст паза в краске усилен с 12% до 45% — пояса
+    // читались только на некрашеном дереве)
+    vec3 painted = pc * (0.78 + 0.30 * grain) * (0.92 + 0.14 * wpn) * mix(0.55, 1.0, seam) * tint;
     col = mix(col, painted, paint * mix(0.55, 1.0, seam));
+    // Task 84: ПОТЁКИ — дождевые ручьи под планширем/вельсом: узкая
+    // зона под верхней кромкой, внутри — вертикальные тёмные колонки
+    // (шум закреплён по горизонтали, тянется вниз): живая «убитая
+    // погодой» обшивка вместо стерильной краски
+    float dripZone = smoothstep(sheer - 1.85, sheer - 1.25, y)
+                   * (1.0 - smoothstep(sheer - 0.45, sheer - 0.15, y));
+    float dripCol = t82vnoise(vec2(lx * 2.1, 1.7));
+    float drip = dripZone * smoothstep(0.45, 0.8, dripCol) * 0.13;
+    col *= 1.0 - drip;
     // ПОРТЫ закрытых батарей: проём + рамка
     if (uPortN > 0.5) {
       vec2 lp = vec2(lx, y);
@@ -251,8 +275,8 @@ export function applyPlankShader(mat: THREE.MeshStandardMaterial, paint: PlankPa
   const range = (n: number) => Array.from({ length: n }, (_, i) => i);
   return inject(mat, 'T82_PLANKS', {
     uWoodOn: { value: 1 },
-    uWale0: { value: paint.wale0 }, uWale1: { value: paint.wale1 },
-    uRail0: { value: paint.rail0 }, uRail1: { value: paint.rail1 },
+    uLen: { value: paint.L }, uFb: { value: paint.fb },
+    uBeak: { value: paint.beak ? 1 : 0 },
     uWaleCol: { value: new THREE.Color(paint.waleCol) },
     uWaterY: { value: 0.02 },
     uStripeY: { value: range(MAX_STRIPES).map(i => new THREE.Vector2(paint.stripes[i]?.y0 ?? 0, paint.stripes[i]?.y1 ?? 0)) },

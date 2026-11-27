@@ -1,0 +1,23 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A: полигон, экипажи 60/60 (равные силы — кровопролитный бой) | {"proving":true,"warp":240,"crew":60,"tgt":60}
+OK   B: G — абордаж идёт, мостки легли (фаза fight) | phase=fight, бойцов 7+7
+OK   C: колесо мыши при абордаже зумит корабельную камеру | дистанция 95 → 75.8
+OK   D: V во время абордажа — капитан на своей палубе (mode=deck) | {"active":true,"mode":"deck","cap":"own"}
+OK   E: колесо мыши на палубе зумит камеру капитана | дистанция 5.4 → 3.48
+OK   F: матросы гибнут У ОБОИХ команд + трупы на палубе игрока | наши 55/60, их 39/60, трупов на палубе 6
+FAIL G: у планширя с мостком капитан переходит на ЧУЖУЮ палубу | last=null
+OK   H: сабля капитана (ЛКМ) срубает чужого бойца — капитан влияет на исход | капитан сразил 1 (было 0), экипаж цели 48
+OK   I: бой окончен — капитан ВОЗВРАЩЁН на свою палубу | res=repelled, mode=deck, своя палуба=true
+OK   J: VLM — капитан виден на палубе среди бойцов (сабля в руке) | 🚀 Initializing Z-AI SDK...
+🚀 Sending vision chat request...
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+       
+
+9/10 ALL FAIL
+EXIT=1

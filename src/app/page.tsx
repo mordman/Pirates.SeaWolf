@@ -6,7 +6,7 @@ import { GOODS, SKINS, UPGRADE_INFO, UPGRADE_MAX, goodName, type ShipUpgrades } 
 import type { AmmoType } from '@/game/combat/combat';
 import SettingsPanel from './SettingsPanel';
 import CharacterCreate from './CharacterCreate';
-import { ENCYCLOPEDIA, type ShipEntry } from '@/game/ship/encyclopedia';
+import { ENCYCLOPEDIA, PIRATE_CODEX, type ShipEntry } from '@/game/ship/encyclopedia';
 import { PRESETS, shipPrice } from '@/game/ship/buildShip';
 import { loadSettings, saveSettings, keyLabel, DEFAULT_SETTINGS, type GameSettings, type PlayerAppearance } from '@/game/core/settings';
 
@@ -367,6 +367,8 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [encyOpen, setEncyOpen] = useState(false);
   const [encyId, setEncyId] = useState(ENCYCLOPEDIA[0].id);
+  // Task 86: вкладка «Пиратский кодекс и законы» в энциклопедии
+  const [encyCodex, setEncyCodex] = useState(false);
   const [portTab, setPortTab] = useState<'harbor' | 'market' | 'yard' | 'upgrades' | 'skins'>('harbor');
   const [pickerCat, setPickerCat] = useState<'war' | 'merchant'>('war');
   const [settings, setSettings] = useState<GameSettings>(() =>
@@ -627,7 +629,7 @@ export default function Home() {
               onClick={() => setEncyOpen(true)}
               className="pointer-events-auto mt-2 rounded-lg border border-stone-500 bg-gradient-to-b from-stone-600 to-stone-800 px-8 py-2 font-serif text-sm font-bold text-stone-100 shadow-lg transition hover:from-stone-500 hover:to-stone-700 active:scale-95"
             >
-              📖 Энциклопедия кораблей
+              📖 Энциклопедия
             </button>
             <p className="mt-2 text-[11px] text-stone-500">Чистое море · мишень на якоре · проверка урона</p>
           </div>
@@ -874,6 +876,40 @@ export default function Home() {
                     <span>{hud.target.holesBelow} под ВЛ / {hud.target.holesAbove} над</span></div>
                   <div className="flex justify-between"><span className="text-stone-400">Экипаж</span>
                     <span>{hud.target.crew} / {hud.target.maxCrew}</span></div>
+                  {/* Task 86: проверка абордажа на полигоне — фаза и итог */}
+                  {hud.boarding && (
+                    <div className="mt-1 rounded border border-amber-700/70 bg-amber-950/40 px-2 py-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-stone-400">⚔ Абордаж</span>
+                        <span className="font-semibold text-amber-200">{
+                          hud.boarding.phase === 'hooks' ? 'кошки/тали'
+                            : hud.boarding.phase === 'lash' ? 'сцепка/мостки'
+                              : hud.boarding.phase === 'fight' ? 'бой на палубах'
+                                : 'завершение'}</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-stone-400">
+                        <span>штурмующие {hud.boarding.crewA}</span>
+                        <span>обороняются {hud.boarding.crewD}</span>
+                      </div>
+                      {hud.boarding.phase === 'fight' && hud.boarding.washed > 0 && (
+                        <div className="text-[10px] text-sky-300">~ волна смыла бойцов: {hud.boarding.washed}</div>
+                      )}
+                    </div>
+                  )}
+                  {!hud.boarding && hud.lastBoardingResult && (
+                    <div className="mt-1 rounded border border-stone-700 bg-stone-900/60 px-2 py-1 text-[10px]">
+                      <span className="text-stone-400">Проверка абордажа: </span>
+                      <span className={
+                        hud.lastBoardingResult === 'won' ? 'font-semibold text-emerald-300'
+                          : hud.lastBoardingResult === 'lost' ? 'font-semibold text-red-400'
+                            : 'text-stone-300'}>
+                        {hud.lastBoardingResult === 'won' ? '✅ пройдена (мишень взята)'
+                          : hud.lastBoardingResult === 'lost' ? '☠ корабль захвачен'
+                            : hud.lastBoardingResult === 'repelled' ? '↩ атака отбита'
+                              : '✕ отменена'}
+                      </span>
+                    </div>
+                  )}
                   {hud.target.sinking && <div className="text-center font-bold text-red-400">МИШЕНЬ ТОНЕТ!</div>}
                   {hud.target.sunk && <div className="text-center font-bold text-stone-400">Затонула</div>}
                 </div>
@@ -955,9 +991,43 @@ export default function Home() {
                 <b>E</b> — высадиться на берег (сабля, пистолет, джунгли)
               </div>
             )}
-            {hud.canBoard && hud.boardedName && (
+            {hud.canBoard && hud.boardedName && hud.boardKind === 'prize' && (
               <div className="pointer-events-none rounded-lg border border-emerald-700 bg-[#0a1f12]/90 px-5 py-2 text-sm text-emerald-200 shadow-lg animate-pulse">
-                <b>E</b> — взять приз: {hud.boardedName} (сдался)
+                <b>{keyLabel(settings.controls.boarding)}</b> — взять приз: {hud.boardedName} (сдался)
+              </div>
+            )}
+            {hud.canBoard && hud.boardedName && hud.boardKind === 'assault' && (
+              <div className="pointer-events-none rounded-lg border border-red-700 bg-[#1f0a0a]/90 px-5 py-2 text-sm text-red-200 shadow-lg animate-pulse">
+                <b>{keyLabel(settings.controls.boarding)}</b> — <b>АБОРДАЖ</b>: {hud.boardedName} (кошки на борт, мостки, бой на палубах)
+              </div>
+            )}
+            {hud.boarding && (
+              <div className="pointer-events-none rounded-lg border border-red-800 bg-[#1f0808]/95 px-6 py-2.5 text-sm text-red-100 shadow-xl">
+                {hud.boarding.phase === 'hooks' && (
+                  <span className="font-serif font-bold">🪝 {hud.boarding.attackerIsPlayer
+                    ? `Кошки на борту «${hud.boarding.defender}» — тали тянут…`
+                    : `«${hud.boarding.attacker}» зацепил нас крюками — тали тянут!`}</span>
+                )}
+                {hud.boarding.phase === 'lash' && (
+                  <span className="font-serif font-bold">🪝 Сцепка! Мостки на борт — {hud.boarding.planksDown}/{hud.boarding.planks} досок</span>
+                )}
+                {hud.boarding.phase === 'fight' && (
+                  <span className="font-serif font-bold">
+                    ⚔ АБОРДАЖ: наши <span className="text-emerald-300">{hud.boarding.crewA}</span>
+                    {' '}против{' '}
+                    <span className="text-red-300">{hud.boarding.crewD}</span>
+                    {' '}· бойцов {hud.boarding.fightersA + hud.boarding.fightersD}
+                    {!hud.land?.active && ' · V — рубиться самому'}
+                  </span>
+                )}
+                {hud.boarding.phase === 'ending' && (
+                  <span className="font-serif font-bold text-amber-200">
+                    {hud.boarding.result === 'won' && '🏆 Противник сбросил флаг!'}
+                    {hud.boarding.result === 'repelled' && 'Абордаж отбит…'}
+                    {hud.boarding.result === 'lost' && 'Мы проиграли бой…'}
+                    {hud.boarding.result === 'aborted' && 'Отбой абордажа…'}
+                  </span>
+                )}
               </div>
             )}
             {hud.canDock && !hud.aiming && (
@@ -976,8 +1046,17 @@ export default function Home() {
       {hud?.dead && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80">
           <div className="rounded-xl border-2 border-red-900 bg-[#150a08] p-8 text-center">
-            <h2 className="mb-2 font-serif text-3xl font-bold text-red-400">Корабль затонул</h2>
-            <p className="mb-6 text-sm text-stone-400">Море забрало судно и половину золота...</p>
+            {hud.deadReason === 'captured' ? (
+              <>
+                <h2 className="mb-2 font-serif text-3xl font-bold text-red-400">Корабль захвачен</h2>
+                <p className="mb-6 text-sm text-stone-400">Абордажная команда перебила экипаж и взяла судно...</p>
+              </>
+            ) : (
+              <>
+                <h2 className="mb-2 font-serif text-3xl font-bold text-red-400">Корабль затонул</h2>
+                <p className="mb-6 text-sm text-stone-400">Море забрало судно и половину золота...</p>
+              </>
+            )}
             <button
               onClick={() => gameRef.current?.respawn()}
               className="pointer-events-auto rounded-lg border border-amber-600 bg-gradient-to-b from-amber-700 to-amber-900 px-6 py-2.5 font-serif font-bold text-amber-50 transition hover:from-amber-600 active:scale-95">
@@ -1322,7 +1401,8 @@ export default function Home() {
               <div><b className="text-amber-200">{keyLabel(settings.controls.sailsDown)} (держать)</b> — задний ход: паруса или вёсла</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.anchor)}</b> — якорь</div>
               <div><b className="text-amber-200">{keyLabel(settings.controls.aimPort)}</b> — прицел левый борт</div>
-              <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / действие</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.aimStarboard)}</b> — прицел правый борт / высадка / причал</div>
+              <div><b className="text-amber-200">{keyLabel(settings.controls.boarding)}</b> — АБОРДАЖ: кошки на борт, тали тянут, мостки, бой на палубах</div>
               <div><b className="text-amber-200">Мышь</b> — наведение в прицеле</div>
               <div><b className="text-amber-200">Колесо</b> — зум</div>
               <div><b className="text-amber-200">ЛКМ</b> — выстрел орудия</div>
@@ -1339,7 +1419,7 @@ export default function Home() {
               <p><b className="text-amber-200">Мореходство:</b> против ветра (левентик) корабль почти не идёт — лавируйте галсами.
               Лучший ход — галфвинд (ветер в борт). В шторм рифите паруса.</p>
               <p className="mt-1.5"><b className="text-amber-200">Добыча:</b> дырявьте торговцам паруса книппелями, корпус — ядрами,
-              команду — картечью. Сдавшийся корабль — это приз: подойдите и нажмите E.</p>
+              команду — картечью. Сдавшийся корабль — это приз: подойдите и нажмите {keyLabel(settings.controls.boarding)}.</p>
             </div>
           </div>
         </div>
@@ -1377,25 +1457,36 @@ export default function Home() {
             <div className="w-[780px] max-h-[88vh] overflow-hidden rounded-xl border-2 border-amber-800 bg-[#1a120a] shadow-2xl"
               onClick={ev => ev.stopPropagation()}>
               <div className="flex items-center justify-between border-b border-amber-900/60 px-5 py-3">
-                <h2 className="font-serif text-xl font-bold text-amber-300">📖 Энциклопедия кораблей</h2>
-                <span className="text-[10px] text-stone-500">3D-модель: вращайте мышью, масштаб — колесом</span>
+                <h2 className="font-serif text-xl font-bold text-amber-300">📖 Энциклопедия</h2>
+                <span className="text-[10px] text-stone-500">{encyCodex
+                  ? '📜 Кодекс: статьи, обычаи и законы о пиратстве'
+                  : '3D-модель: вращайте мышью, масштаб — колесом'}</span>
                 <button onClick={() => setEncyOpen(false)}
                   className="rounded border border-stone-600 bg-stone-900 px-3 py-1 text-xs text-stone-300 hover:border-amber-600 hover:text-amber-200">
                   Закрыть
                 </button>
               </div>
               <div className="flex max-h-[74vh]">
-                {/* список судов: военные / торговые */}
+                {/* список: кодекс + суда (военные / торговые) */}
                 <div className="w-52 shrink-0 overflow-y-auto border-r border-amber-900/40 py-2">
+                  {/* Task 86: «Пиратский кодекс и законы» — статья не о судне */}
+                  <button onClick={() => setEncyCodex(true)}
+                    className={`block w-full px-4 py-1.5 text-left text-xs leading-tight transition ${
+                      encyCodex
+                        ? 'bg-amber-700/50 text-amber-100'
+                        : 'text-stone-300 hover:bg-stone-800/60 hover:text-amber-200'}`}>
+                    <span className="block font-semibold">📜 Пиратский кодекс</span>
+                    <span className="text-[10px] text-stone-500">законы и обычаи</span>
+                  </button>
                   {(['war', 'merchant'] as const).map(cat => (
                     <div key={cat}>
                       <div className="sticky top-0 z-10 bg-[#1a120a] px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
                         {cat === 'war' ? '⚓ Военные' : '📦 Торговые'}
                       </div>
                       {ENCYCLOPEDIA.filter(s => s.category === cat).map(s => (
-                        <button key={s.id} onClick={() => setEncyId(s.id)}
+                        <button key={s.id} onClick={() => { setEncyId(s.id); setEncyCodex(false); }}
                           className={`block w-full px-4 py-1.5 text-left text-xs leading-tight transition ${
-                            s.id === encyId
+                            !encyCodex && s.id === encyId
                               ? 'bg-amber-700/50 text-amber-100'
                               : 'text-stone-400 hover:bg-stone-800/60 hover:text-amber-200'}`}>
                           <span className="block font-semibold">{s.name}</span>
@@ -1407,6 +1498,39 @@ export default function Home() {
                 </div>
                 {/* статья */}
                 <div className="flex-1 overflow-y-auto px-5 py-4">
+                  {/* Task 86: «Пиратский кодекс и законы» — статья не о судне */}
+                  {encyCodex && (
+                    <div>
+                      <div className="flex items-baseline justify-between gap-3">
+                        <h3 className="font-serif text-lg font-bold text-amber-200">{PIRATE_CODEX.title}</h3>
+                        <span className="rounded border border-amber-800/60 bg-stone-900/70 px-2 py-0.5 text-[10px] text-amber-300/90">историческая статья</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <span className="rounded border border-red-800/70 bg-red-950/40 px-1.5 py-0.5 font-semibold text-red-300">📜 Кодекс</span>
+                        <span className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5 text-stone-300">XVII–XVIII вв.</span>
+                        <span className="rounded border border-stone-700 bg-stone-900/60 px-1.5 py-0.5 text-stone-300">Карибское море</span>
+                      </div>
+                      <p className="mt-3 text-xs leading-relaxed text-stone-300">{PIRATE_CODEX.intro}</p>
+                      <div className="mt-4 space-y-3">
+                        {PIRATE_CODEX.sections.map(sec => (
+                          <div key={sec.h} className="rounded border border-stone-700/60 bg-stone-900/40">
+                            <div className="border-b border-stone-700/60 px-3 py-1.5 font-serif text-sm font-bold text-amber-200">{sec.h}</div>
+                            <div className="space-y-2 px-3 py-2">
+                              {sec.body.map((p, i) => (
+                                <p key={i} className="text-xs leading-relaxed text-stone-300">{p}</p>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-4 text-[10px] leading-relaxed text-stone-500">
+                        Источники: статьи команд Б. Робертса (1721) и Дж. Филлипса (1724) в записи
+                        капитана Чарльза Джонсона («Общая история пиратов», 1724); английские
+                        акты о пиратстве 1698 и 1721 гг.
+                      </p>
+                    </div>
+                  )}
+                  {!encyCodex && (<>
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 className="font-serif text-lg font-bold text-amber-200">{e.name}</h3>
                     <span className="rounded border border-amber-800/60 bg-stone-900/70 px-2 py-0.5 text-[10px] text-amber-300/90">{e.role}</span>
@@ -1451,6 +1575,7 @@ export default function Home() {
                   <p className="mt-2 text-xs leading-relaxed text-stone-400">
                     <span className="font-semibold text-amber-300/90">⚓ Тактика: </span>{e.tactics}
                   </p>
+                  </>)}
                 </div>
               </div>
             </div>

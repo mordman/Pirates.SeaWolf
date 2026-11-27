@@ -47,6 +47,9 @@ export interface LanderDeps {
   audio: LanderAudio;
   folkKill: (x: number, y: number, z: number, r: number, mode: 'grape' | 'ball', dx?: number, dz?: number) => number;
   chop: (x: number, y: number, z: number, r: number) => number;
+  /** Task 89: АБОРДАЖ — удар саблей капитана на палубе: поражение
+   *  чужих абордажных бойцов (мировые координаты); 0 — нет боя */
+  boardHit?: (x: number, y: number, z: number, r: number) => number;
   /** Task 39: внешность капитана (экран создания персонажа) */
   appearance?: PlayerAppearance;
 }
@@ -62,6 +65,8 @@ export interface LanderHud {
   moving: boolean;
   camYaw: number;
   bullets: number;
+  /** Task 89: дистанция камеры (колесо мыши — зум, e2e) */
+  camDist: number;
 }
 
 const WALK = 3.6;
@@ -204,10 +209,11 @@ export class Lander {
     saber.add(grip);
     // Task 42: САБЛЯ — В РУКЕ: родитель — маунт у КИСТИ (не корень
     // фигурки): оружие следует за рукой во всех анимациях, рука с
-    // оружией больше не «третья рука». База: клинок вверх, чуть
-    // вперёд и наружу от бедра
-    saber.position.set(0.01, 0.02, 0.02);
-    saber.rotation.set(0.25, 0, -0.3);
+    // оружием больше не «третья рука». База: клинок вверх, чуть
+    // вперёд и наружу от бедра. Task 88: маунт у ПРАВОЙ руки (−X)
+    // — офсеты зеркалированы (наружу = −X)
+    saber.position.set(-0.01, 0.02, 0.02);
+    saber.rotation.set(0.25, 0, 0.3);
     saber.visible = false;
     this.saberG = saber;
     // --- ПИСТОЛЕТ ---
@@ -226,8 +232,9 @@ export class Lander {
     lock.position.set(0.05, 0.02, 0.02);
     pistol.add(lock);
     // Task 42: пистолет — В РУКЕ, дуло ВДОЛЬ РУКИ (при висящей
-    // руке — вниз у бедра, при прицеле — вперёд)
-    pistol.position.set(0.01, -0.03, 0.03);
+    // руке — вниз у бедра, при прицеле — вперёд). Task 88: правая
+    // рука — офсет зеркалирован
+    pistol.position.set(-0.01, -0.03, 0.03);
     pistol.rotation.set(Math.PI / 2, 0, 0);
     pistol.visible = false;
     this.pistolG = pistol;
@@ -271,7 +278,7 @@ export class Lander {
     draw2.add(lens);
     draw2.position.z = 0.15;
     draw1.add(draw2);
-    spy.position.set(0.01, -0.03, 0.03);
+    spy.position.set(-0.01, -0.03, 0.03);   // Task 88: правая рука
     spy.rotation.set(Math.PI / 2, 0, 0);
     spy.visible = false;
     this.spyglassG = spy;
@@ -433,8 +440,9 @@ export class Lander {
       weapon: this.weapon,
       saberMounted: !!this.saberG && !!mount && this.saberG.parent === mount,
       pistolMounted: !!this.pistolG && !!mount && this.pistolG.parent === mount,
-      wristPose: (this.fig && (this.fig.hasHook ? this.fig.armL : this.fig.armR))
-        ? +(this.fig.hasHook ? this.fig.armL!.rotation.x : this.fig.armR!.rotation.x).toFixed(3)
+      // Task 88: рука с оружием — всегда ПРАВАЯ (armL, маунт −X)
+      wristPose: (this.fig && this.fig.armL)
+        ? +this.fig.armL.rotation.x.toFixed(3)
         : null,
       holding: this.weapon !== 'none',
       // Task 57: куда СМОТРИТ ствол и куда ЛЕТИТ пуля (e2e:
@@ -511,6 +519,17 @@ export class Lander {
     this.group.visible = false;
   }
 
+  /** Task 89: АБОРДАЖ — перебраться на ДРУГУЮ палубу по мосткам:
+   *  сменить носителя и план палубы, не меняя режим; координаты —
+   *  ЛОКАЛЬНЫЕ нового корабля (у планширя мостка) */
+  transferDeck(plan: DeckPlan, host: THREE.Group, x: number, z: number) {
+    this.detachFromShip();
+    this.deckPlan = plan;
+    this.deckHost = host;
+    host.add(this.group);
+    this.group.position.set(x, plan.surfaceY(x, z), z);
+  }
+
   /** убрать фигурку с корабля, вернуть в мир (без смены mode) */
   private detachFromShip() {
     if (this.deckHost && this.group.parent === this.deckHost) {
@@ -537,6 +556,7 @@ export class Lander {
           : this.weapon === 'spyglass' ? `Труба ×${this.spyZoom.toFixed(1)}` : 'Без оружия',
       aiming: this.aiming, nearBoat: this.nearBoat, nearWheel: this.nearWheel,
       moving: this.moving, camYaw: this.camYaw, bullets: this.bullets.length,
+      camDist: +this.camDist.toFixed(2),
     };
   }
 
@@ -774,11 +794,12 @@ export class Lander {
       this.fig.group.position.y = this.moving ? Math.abs(s) * 0.05 : 0;
       this.fig.group.rotation.z = this.moving ? 0 : Math.sin(time * 1.4) * 0.02;
       const armL = this.fig.armL, armR = this.fig.armR;
-      // Task 42: рука с оружием — КИСТЬ С МАУНТОМ (у игрока крюк
-      // правый, оружие — в ЛЕВОЙ; обычно — правая). При оружии эта
-      // рука ДЕРЖИТ его и НЕ МАШЕТ (фикс «третьей руки»), свободная
-      // рука машет при ходьбе / покачивается в покое
-      const hookSide = !!this.fig.hasHook;
+      // Task 42: рука с оружием — КИСТЬ С МАУНТОМ. Task 88: маунт у
+      // ПРАВОЙ руки капитана (−X, armL: фигурка смотрит в +Z, крюк
+      // если включён — на левой): рука с оружием НЕ МАШЕТ (фикс
+      // «третьей руки»), свободная машет при ходьбе. Анимация —
+      // как прежний «крюкастый» случай (wrist=armL, freeArm=armR)
+      const hookSide = true;
       const wrist = hookSide ? armL : armR;
       const freeArm = hookSide ? armR : armL;
       if (wrist && freeArm) {
@@ -880,6 +901,15 @@ export class Lander {
           const killed = this.deps.folkKill(ax, p.y + 1.0, az, 2.3, 'grape', Math.sin(this.yaw), Math.cos(this.yaw));
           if (chopped > 0) this.deps.msg(`Срублено: ${chopped}`);
           if (killed > 0) this.deps.msg(`Сабля нашла цель: ${killed}`);
+        } else if (this.mode === 'deck' && this.deckHost && this.deps.boardHit) {
+          // Task 89: АБОРДАЖ — точку удара (локальную) переводим в МИР
+          // и отдаём хуку абордажа: гибнут чужие бойцы. Радиус 2.6 —
+          // дуга сабли в свалке: противник семенит, замах не мгновенен
+          this.deckHost.updateWorldMatrix(true, false);
+          const w = this._w1.set(ax, p.y + 1.0, az);
+          this.deckHost.localToWorld(w);
+          const killed = this.deps.boardHit(w.x, w.y, w.z, 2.6);
+          if (killed > 0) this.deps.msg(`Капитан сразил ${killed}!`);
         }
       }
       if (t >= 1) {
@@ -1087,6 +1117,8 @@ export class Lander {
     this.camYaw = yaw;
     this.camPitch = THREE.MathUtils.clamp(pitch, -0.5, 1.15);
   }
+  /** Task 89 (e2e): задать курс фигурки (наведение сабли на бойца) */
+  debugSetYaw(y: number) { this.yaw = y; }
   debugTeleport(x: number, z: number) {
     if (this.mode === 'deck') {
       const plan = this.deckPlan!;

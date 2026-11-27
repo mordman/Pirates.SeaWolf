@@ -88,6 +88,22 @@ export class CameraRig {
   /** следующий кадр — без сглаживания (телепорт по карте, смена корабля) */
   snap() { this.snapNext = true; }
 
+  /** Task 89: зум колесом ВНЕ основного апдейта — для ветки абордажа
+   *  в handleInput (её ранний endFrame стирает wheelDelta ДО того,
+   *  как колесо увидит rig.update — зум при абордаже умирал) */
+  zoomWheel(wheel: number) {
+    if (!wheel) return;
+    if (this.spyglass) {
+      this.spyZoom = clamp(this.spyZoom * (wheel > 0 ? 1 / 1.2 : 1.2), 2, 8);
+    } else {
+      this.dist[this.mode] = clamp(this.dist[this.mode] + wheel * 0.08,
+        this.mode === 'iso' ? 35 : 16, this.mode === 'iso' ? 420 : 260);
+    }
+  }
+
+  /** e2e: текущая дистанция камеры (проверка зума) */
+  debugDist(): number { return Math.round(this.dist[this.mode] * 10) / 10; }
+
   // ---- отладочные сеттеры (E2E/съёмка): поза свободной камеры ----
   freeAzimSet(a: number) { this.freeAzim = a; }
   freeElevSet(e: number) { this.freeElev = clamp(e, 0.10, 1.45); }

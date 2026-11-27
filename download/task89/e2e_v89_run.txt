@@ -1,0 +1,26 @@
+⚠ Chrome 158.0.8127.36 is behind the current stable release 158.0.8127.88, which fixes 1 CVEs (CVE-2026-134401). Update the browser; for agent-browser's Chrome, run `agent-browser install`.
+[agent-browser] launched browser
+OK   A: полигон, экипажи 24/24 (равные силы — кровопролитный бой) | {"proving":true,"warp":240,"crew":24,"tgt":24}
+OK   B: G — абордаж идёт, мостки легли (фаза fight) | phase=fight, бойцов 5+5
+OK   C: колесо мыши при абордаже зумит корабельную камеру | дистанция 95 → 75.8
+OK   D: V во время абордажа — капитан на своей палубе (mode=deck) | {"active":true,"mode":"deck","cap":"own"}
+FAIL E: колесо мыши на палубе зумит камеру капитана | дистанция null → null
+FAIL F: матросы гибнут У ОБОИХ команд + трупы на палубе игрока | last=null
+OK   G: у планширя с мостком капитан переходит на ЧУЖУЮ палубу | captain=enemy, наши 24, их 8
+✗ Evaluation error: TypeError: Cannot read properties of null (reading 'debugFighterLocal')
+    at <anonymous>:1:93
+    at <anonymous>:1:473
+FAIL H: сабля капитана (ЛКМ) срубает чужого бойца — капитан влияет на исход | last=null
+OK   I: бой окончен — капитан ВОЗВРАЩЁН на свою палубу | res=won, mode=deck, своя палуба=true
+FAIL J: VLM — капитан виден на палубе среди бойцов (сабля в руке) | 🚀 Initializing Z-AI SDK...
+🚀 Sending vision chat request...
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+       
+
+6/10 ALL FAIL
+EXIT=1

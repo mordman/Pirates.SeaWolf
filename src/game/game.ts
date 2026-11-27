@@ -11,6 +11,7 @@ import { FIGUREHEADS } from './ship/figurehead';
 import { DECOS } from './ship/hullDeco';
 import { CameraRig, CAMERA_LABEL, CameraMode } from './camera/cameraRig';
 import { CombatSystem, AMMO_INFO, AmmoType, setHullDamageMul } from './combat/combat';
+import { Boarding, type BoardingResult } from './combat/boarding';
 import { World, heightAt, VILLAGES, type PortDef } from './world/world';
 import { Lander } from './player/lander';
 import { appearanceToTraits } from './player/appearance';
@@ -58,6 +59,8 @@ export interface TargetReport {
 export interface HudState {
   started: boolean;
   dead: boolean;
+  /** Task 85: чем закончилось — 'sunk' (потонул) / 'captured' (проигран абордаж) */
+  deadReason: 'sunk' | 'captured' | null;
   speed: number;         // узлы
   headingDeg: number;
   windFromDeg: number;   // компас, откуда
@@ -100,6 +103,14 @@ export interface HudState {
   nearPortName: string | null; // ближайшая гавань (подсказка швартовки)
   canBoard: boolean;
   boardedName: string | null;
+  /** Task 85: что предложит клавиша E у борта — приз (сдался)
+   *  или штурм (живой противник — начинается АБОРДАЖ) */
+  boardKind: 'prize' | 'assault' | null;
+  /** Task 85: состояние абордажа (null — боя нет) */
+  boarding: ReturnType<Boarding['snapshot']> | null;
+  /** Task 86: результат ПОСЛЕДНЕГО абордажа (панель полигона —
+   *  итог проверки: won/lost/repelled/aborted; null — не было) */
+  lastBoardingResult: string | null;
   shipId: string;        // пресет корабля игрока (подсветка в порту)
   shipName: string;
   shipClass: string;
@@ -261,6 +272,13 @@ export class Game {
 
   docked = false;
   dead = false;
+  /** Task 85: причина гибели (экран смерти) */
+  deadReason: 'sunk' | 'captured' | null = null;
+  /** Task 85 (e2e/отладка): «ускорение времени» — макс. шагов физики
+   *  на кадр и потолок dt (0 — обычный режим). В песочнице со
+   *  SwiftShader fps падает до ~1 и симуляция ползёт; warp возвращает
+   *  ей реальное время. Игровая логика НЕ ветвится по нему */
+  testWarp = 0;
   started = false;
   settings: GameSettings;         // графика/управление/звук (см. core/settings.ts)
   uiOpen = false;                 // открыт ли модальный экран (пауза ввода)
@@ -320,6 +338,15 @@ export class Game {
   private rafId = 0;
   private lastSOffset = 0; // удержание S для заднего хода
   private boardingTarget: AIShip | null = null;
+  /** Task 85: тип подсказки у борта: 'prize' (сдался — забрать
+   *  приз) или 'assault' (живой противник — АБОРДАЖ) */
+  private boardKind: 'prize' | 'assault' | null = null;
+  /** Task 85: АКТИВНЫЙ АБОРДАЖ (модуль Boarding: подход →
+   *  сцепка/мостки → бой на палубах → исход) */
+  boarding: Boarding | null = null;
+  /** Task 85 (e2e/отладка): результат ПОСЛЕДНЕГО закончившегося
+   *  абордажа (won/lost/repelled/aborted) */
+  lastBoardingResult: string | null = null;
   private spawnPos = new THREE.Vector3(315, 0, 620);
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -894,6 +921,9 @@ export class Game {
       },
       folkKill: (x, y, z, r, mode, dx, dz) => this.killFolkNear(x, y, z, r, mode, dx, dz),
       chop: (x, y, z, r) => this.world.breakTrees(x, y, z, r, this.particles, this.gibs),
+      // Task 89: удар саблей капитана на палубе — по чужим
+      // абордажным бойцам (мировая точка + радиус)
+      boardHit: (x, y, z, r) => this.boarding ? this.boarding.playerKill(x, z, r) : 0,
     });
 
     // корабельные коты — палуба игрока (если уже куплены)
@@ -1783,6 +1813,11 @@ export class Game {
     if (!this.pgTarget) return;
     const s = this.pgTarget.ship;
     s.clearDamage();
+    // Task 86: абордаж выбивал экипаж мишени — вернуть команду
+    // (как при спавне: 80% от полного состава), иначе после первой
+    // проверки штурмать некого
+    s.crew = Math.round(s.preset.maxCrew * 0.8);
+    s.surrendered = false;
     clearDebris();
     s.position.copy(this.pgTargetPos());
     s.position.y = 0;
@@ -2085,6 +2120,7 @@ export class Game {
     const seed = Array.from(this.player.preset.id)
       .reduce((a, ch) => a + ch.charCodeAt(0) * 17, 5)
       + Math.round(this.player.preset.beam * 91);
+    // Task 84: на проклятом корабле (жемчужина) коты — МЕРТВЕЦЫ
     this.cats3d = buildCats(this.player.preset, seed, (idx) => {
       // кот поймал мышь — сообщение с кличкой (не чаще раза в 20 с)
       const now = this.time;
@@ -2092,7 +2128,7 @@ export class Game {
       this._lastCatMsg = now;
       const nm = this.catNames[idx] ?? 'Кот';
       this.pushMessage(`🐱 ${nm} поймал мышь!`);
-    });
+    }, this.player.crewUndeadOpt);
     this.cats3d.setCount(this.catCount);
     this.player.visual.group.add(this.cats3d.group);
   }
@@ -2276,14 +2312,132 @@ export class Game {
   }
 
   // ---------- абордаж/приз ----------
-  canBoard(): AIShip | null {
-    if (this.docked || this.player.sinking) return null;
+  /** Task 85: цель у борта. 'prize' — сдавшееся судно (G — забрать
+   *  приз), 'assault' — живой противник (G — АБОРДАЖ: кошки, талы,
+   *  мостки, бой на палубах; Task 88 — своя клавиша c.boarding).
+   *  Абордируем ЛЮБОЕ непотопленное судно — морская пиратская
+   *  песочница, торговцы тоже жертвы. */
+  canBoard(): { ai: AIShip; kind: 'prize' | 'assault' } | null {
+    if (this.docked || this.player.sinking || this.boarding) return null;
+    // Task 86: ПРОВЕРКА АБОРДАЖА НА ПОЛИГОНЕ — мишень на якоре
+    // абордируема (она никогда не сдаётся — всегда штурм). Чистая
+    // вода + стоячая цель = детерминированный стенд конвейера
+    // подход → сцепка → мостки → бой → исход. Проверяется ПЕРВОЙ,
+    // чтобы случайный ИИ-корабль не перебивал мишень
+    if (this.proving && this.pgTarget && !this.pgTarget.ship.sinking && !this.pgTarget.ship.sunk) {
+      const dpg = this.pgTarget.ship.position.distanceTo(this.player.position);
+      if (dpg <= 55 && this.player.speedKnots() <= 5) {
+        return { ai: this.pgTarget, kind: 'assault' };
+      }
+    }
     for (const ai of this.aiShips) {
-      if (ai.state !== 'surrender' || ai.ship.sinking || ai.ship.sunk) continue;
+      if (ai.ship.sinking || ai.ship.sunk || ai.state === 'derelict') continue;
+      if (ai.ship === this.player) continue;
       const d = ai.ship.position.distanceTo(this.player.position);
-      if (d < 55 && this.player.speedKnots() < 5) return ai;
+      if (d > 55) continue;
+      if (this.player.speedKnots() > 5) continue;
+      if (ai.state === 'surrender' || ai.ship.surrendered) return { ai, kind: 'prize' };
+      return { ai, kind: 'assault' };
     }
     return null;
+  }
+
+  /** Task 85/87: НАЧАТЬ АБОРДАЖ. byPlayer=true — штурмует игрок (E),
+   *  false — brawler-ИИ сам полез на борт. На время боя корабли
+   *  ведёт модуль (крючья + тали), ИИ цели замораживается. Ход
+   *  обоих корпусов гасит сам модуль — тросы легли на планширь */
+  startBoarding(ai: AIShip, byPlayer: boolean) {
+    if (this.boarding || this.docked || this.player.sinking || ai.ship.sinking) return;
+    const attacker = byPlayer ? this.player : ai.ship;
+    const defender = byPlayer ? ai.ship : this.player;
+    ai.frozen = true;
+    // цель-обороняющийся ложится в дрейф (паруса вниз)
+    if (byPlayer) {
+      ai.ship.sailTarget = 0;
+      ai.ship.rudderTarget = 0;
+    }
+    // выход из режима прицела — капитан идёт на абордаж
+    if (this.combat.aim.active) this.combat.toggleAim(this.combat.aim.side);
+    this.boarding = new Boarding(attacker, defender, {
+      pushMessage: (t) => this.pushMessage(t),
+      audio: {
+        woodHit: () => this.audio.woodHit(),
+        saber: () => this.audio.saberSwing(),
+        bell: () => this.audio.bell(),
+      },
+      splash: (x, y, z, size) => this.particles.splash(x, y, z, size),
+      sceneRoot: this.worldGroup,
+      onEnd: (result: BoardingResult) => this.finishBoarding(ai, result),
+    });
+    this.boardingTarget = null;
+    this.boardKind = null;
+  }
+
+  /** Task 85: абордаж окончен — снять блокировки, применить исход */
+  private finishBoarding(ai: AIShip, result: BoardingResult) {
+    this.boarding = null;
+    this.lastBoardingResult = result;
+    ai.frozen = false;
+    ai.boardCd = 90;   // повторное нападение — не сразу
+    // Task 89: капитан остался на ЧУЖОЙ палубе — мостки втянулись,
+    // корабли расходятся: вернуть его на свою палубу
+    if (this.lander && this.lander.mode === 'deck'
+      && this.lander.deckHost && this.lander.deckHost !== this.player.visual.group) {
+      const plan = deckPlan(this.player.preset);
+      this.lander.transferDeck(plan, this.player.visual.group,
+        plan.hasQuarter ? 0.62 : 0.5, plan.wheelZ - 1.35);
+      this.pushMessage('Мостки втянулись — капитан вернулся на свою палубу');
+    }
+    if (result === 'lost') {
+      this.dead = true;
+      this.deadReason = 'captured';
+      this.pushMessage('Корабль захвачен абордажной командой...');
+    }
+    // Task 86: ПОЛИГОН — итог проверки абордажа в судовой журнал;
+    // мишень после штурма без экипажа — «⟳ Восстановить» вернёт
+    // и команду, и корпус — проверку можно повторять
+    if (this.proving && ai.isProvingTarget && result !== 'lost') {
+      const label = result === 'won'
+        ? 'проверка пройдена — мишень взята'
+        : result === 'repelled' ? 'атака отбита' : 'проверка сорвана';
+      this.pushMessage(`Полигон (абордаж): ${label}. «⟳ Восстановить» — повтор`);
+    }
+  }
+
+  /** Task 85 (e2e/отладка): телеметрия абордажа */
+  boardingInfo() {
+    if (!this.boarding) return null;
+    const snap = this.boarding.snapshot();
+    // Task 89: где сейчас капитан (own — своя палуба, enemy — чужая)
+    const ld = this.lander;
+    const captain = ld && ld.mode === 'deck' && ld.deckHost
+      ? (ld.deckHost === this.player.visual.group ? 'own' : 'enemy') : null;
+    return { ...snap, captain };
+  }
+
+  /** Task 85 (e2e/отладка): насильно начать абордаж с ИИ-кораблём
+   *  номер i — игрок телепортируется ПОЗАДИ цели по её курсу, носом
+   *  на неё (детерминированный быстрый подход), скорости обнуляются;
+   *  полный конвейер фаз сохранён */
+  forceBoarding(i: number): boolean {
+    const ai = this.aiShips[i];
+    if (!ai || !this.started || this.boarding || ai.ship.sinking || ai.ship.sunk) return false;
+    const cd = (this.player.preset.beam + ai.ship.preset.beam) / 2 + 2.6;
+    // позади цели по её курсу — автопилоту остаётся прямой сближающийся
+    // проход (без разворота на 90°, который на слабом fps длителен)
+    const off = new THREE.Vector3(0, 0, -(cd * 2.3)).applyQuaternion(ai.ship.quaternion);
+    this.player.position.copy(ai.ship.position).add(off);
+    this.player.position.y = ai.ship.position.y;
+    this.player.quaternion.copy(ai.ship.quaternion);
+    this.player.velocity.set(0, 0, 0);
+    if (this.player.angular) this.player.angular.set(0, 0, 0);
+    this.player.anchored = false;
+    this.player.rudderTarget = 0;
+    this.player.sailTarget = 0;
+    ai.ship.velocity.set(0, 0, 0);
+    if (ai.ship.angular) ai.ship.angular.set(0, 0, 0);
+    this.startBoarding(ai, true);
+    return true;
   }
 
   takePrize(ai: AIShip) {
@@ -2332,6 +2486,22 @@ export class Game {
           this.lander.restoreCamera();
           this.rig.snap();
           this.pushMessage('Капитан снова за штурвалом!');
+        } else if (this.boarding && this.lander.deckHost) {
+          // Task 89: ПЕРЕХОД ПО МОСТКАМ — капитан у планширя рядом
+          // с лежащим мостком перебирается на другую палубу (и
+          // обратно): свою рубит/обороняет сам, сабля — по чужим
+          const host = this.lander.deckHost;
+          const onShip = host === this.boarding.attacker.visual.group
+            ? this.boarding.attacker
+            : host === this.boarding.defender.visual.group ? this.boarding.defender : null;
+          const cp = onShip && this.boarding.crossPointFor(onShip, this.lander.pos.x, this.lander.pos.z);
+          if (cp) {
+            this.lander.transferDeck(deckPlan(cp.to.preset), cp.to.visual.group, cp.x, cp.z);
+            this.boarding.noteCross();
+            this.pushMessage(cp.to === this.player
+              ? 'Капитан вернулся по мосткам на свою палубу'
+              : `Капитан перешёл по мосткам на палубу «${cp.to.preset.name}»! 1 — сабля наголо`);
+          }
         }
       } else if (inp.pressed(c.aimStarboard) && this.lander.nearBoat) {
         this.lander.despawn();
@@ -2377,6 +2547,36 @@ export class Game {
         }
       }
       p.rudderTarget = 0;
+      inp.endFrame();
+      return;
+    }
+
+    // === АБОРДАЖ (Task 85): руль и паруса ведёт абордажная
+    //     команда (модуль Boarding: авто-подход → сцепка → бой).
+    //     ВАЖНО: здесь НЕ обнуляем sailTarget/rudderTarget — модуль
+    //     выставляет их ПОСЛЕ физики (boarding.update в stepFrame),
+    //     обнуление здесь затирало бы команды автопилота каждый
+    //     кадр. В сцепке (lash/fight) руль и паруса гасит сам модуль
+    //     (holdLash). Камера и сообщения остаются доступны игроку ===
+    if (this.boarding) {
+      p.rowing = 0;
+      if (inp.pressed(c.camera)) {
+        this.rig.cycleMode();
+        this.pushMessage(`Камера: ${CAMERA_LABEL[this.rig.mode]}`);
+      }
+      // Task 89: ЗУМ КОЛЕСОМ — ранний endFrame этой ветки стирал
+      // wheelDelta до rig.update (зум при абордаже не работал);
+      // отдаём колесо ригу прямо здесь
+      this.rig.zoomWheel(inp.wheelDelta);
+      // Task 89: КАПИТАН НА ПАЛУБУ (V) — идти рубиться самому:
+      // прогулка по палубе + переход по мосткам на чужой борт
+      if (inp.pressed(c.deckWalk)) {
+        this.lander!.enterDeck(deckPlan(p.preset), p.visual.group);
+        this.rig.snap();
+        this.pushMessage(this.boarding.phase === 'fight'
+          ? 'Капитан с саблей на палубу! У мостков у планширя — переход на чужой борт (1 — сабля)'
+          : 'Капитан на палубу! Мостки лягут на борт — ждите у планширя');
+      }
       inp.endFrame();
       return;
     }
@@ -2504,13 +2704,19 @@ export class Game {
     // мышь ОТ СЕБЯ (вверх экрана, mouseDY<0) — стволы ПОДНИМАЮТСЯ
     if (this.combat.aim.active) {
       this.combat.aim.azimuth = clamp(this.combat.aim.azimuth - inp.mouseDX * 0.0022, -0.62, 0.62);
-      this.combat.aim.elevation = clamp(this.combat.aim.elevation - inp.mouseDY * 0.0016, 0.01, 0.24);
+      // Task 88: ДЕПРЕССИЯ ПРИЦЕЛА — вниз до −0.10 рад (≈ −6°):
+      // близкая цель и ватерлиния НИЖЕ линии стволов; раньше элевация
+      // была зажата в [0.01, 0.24] (только вверх) — в упор стрелять
+      // по корпусу было нечем. Дальность — симуляция траектории,
+      // отрицательная элевация обрабатывается штатно
+      this.combat.aim.elevation = clamp(this.combat.aim.elevation - inp.mouseDY * 0.0016, -0.10, 0.24);
     }
 
     // борта; «правый борт» ещё и взаимодействие
     const boardTarget = this.canBoard();
     const canDockHere = this.canDock();
-    this.boardingTarget = boardTarget;
+    this.boardingTarget = boardTarget?.ai ?? null;
+    this.boardKind = boardTarget?.kind ?? null;
     // Task 50: прицел требует ВИДИМЫЙ курсор (наведение по позиции
     // мыши) — при активации прицела освобождаем перехват
     if (this.combat.aim.active && this.input.pointerLocked) this.input.releaseLock();
@@ -2529,12 +2735,19 @@ export class Game {
       this.toggleSpyglass();
     }
     if (inp.pressed(c.aimStarboard)) {
-      if (boardTarget) {
-        this.takePrize(boardTarget);
-      } else if (canDockHere && !this.combat.aim.active) {
+      if (canDockHere && !this.combat.aim.active && !boardTarget) {
         this.dock();
-      } else {
+      } else if (!boardTarget) {
         this.combat.toggleAim(1);
+      }
+    }
+    // Task 88: АБОРДАЖ/приз — СВОЯ клавиша (по умолчанию G, настройка
+    // «Управление»). Раньше висел на E вместе с прицелом правого
+    // борта, высадкой и причалом — E была перегружена
+    if (inp.pressed(c.boarding)) {
+      if (boardTarget) {
+        if (boardTarget.kind === 'prize') this.takePrize(boardTarget.ai);
+        else this.startBoarding(boardTarget.ai, true);
       }
     }
 
@@ -2573,6 +2786,13 @@ export class Game {
       for (let j = i + 1; j < all.length; j++) {
         const a = all[i], b = all[j];
         if (a.sunk || b.sunk) continue;
+        // Task 85: сцепленные абордажной паре корабли НЕ расталкиваются —
+        // они сходятся борт-в-борт НАРОЧНО (подход ведёт модуль Boarding,
+        // скорость к моменту сцепки погашена, таран не засчитывается)
+        if (this.boarding) {
+          const A = this.boarding.attacker, B = this.boarding.defender;
+          if ((a === A && b === B) || (a === B && b === A)) continue;
+        }
         const minD = (a.preset.length + b.preset.length) * 0.30;
         const d = a.position.distanceTo(b.position);
         if (d < minD && d > 0.01) {
@@ -2607,7 +2827,7 @@ export class Game {
   // ---------- HUD ----------
   private makeHud(): HudState {
     return {
-      started: false, dead: false,
+      started: false, dead: false, deadReason: null,
       speed: 0, headingDeg: 0, windFromDeg: 0, windSpeed: 0, windRelDeg: 0,
       sailLevel: 0, rudder: 0, hullPct: 1, sailPct: 1, crew: 0, maxCrew: 0, waterPct: 0,
       onFire: false, firePct: 0, anchored: false, grounded: false, sinking: false,
@@ -2618,6 +2838,7 @@ export class Game {
       aiming: false, aimSide: '', aimRange: 0, gunsReadyPct: 0, targetName: null,
       cameraLabel: CAMERA_LABEL.iso, clock: '', seaState: 0, repairAction: null,
       canDock: false, nearPortName: null, canBoard: false, boardedName: null,
+      boardKind: null, boarding: null, lastBoardingResult: null,
       shipId: 'sloop', shipName: '', shipClass: '', docked: false,
       portInfo: null, oars: null, gunPorts: null, figureOn: 'figure.stock', decoOn: 'deco.none',
       messages: [], mapIslands: [], mapShips: [], mapPlayer: { x: 0, z: 0, h: 0 },
@@ -2643,6 +2864,7 @@ export class Game {
     const rel = (windDeg - hdgDeg + 360) % 360;   // 0=в нос, 90=правый борт
     h.started = this.started;
     h.dead = this.dead;
+    h.deadReason = this.dead ? this.deadReason : null;
     h.speed = p.speedKnots();
     h.headingDeg = Math.round(hdgDeg);
     h.windFromDeg = Math.round(windDeg);
@@ -2686,6 +2908,9 @@ export class Game {
     h.nearPortName = this.nearPort?.name ?? null;
     h.canBoard = !!this.boardingTarget;
     h.boardedName = this.boardingTarget?.ship.preset.name ?? null;
+    h.boardKind = this.boardKind;
+    h.boarding = this.boarding ? this.boarding.snapshot() : null;
+    h.lastBoardingResult = this.lastBoardingResult;
     h.shipId = p.preset.id;
     h.shipName = p.preset.name;
     h.shipClass = p.preset.shipClass;
@@ -2918,7 +3143,9 @@ export class Game {
     let dt = (now - this.lastFrame) / 1000;
     this.lastFrame = now;
     this.fpsSmooth += (1 / Math.max(dt, 1e-4) - this.fpsSmooth) * 0.05; // истинный FPS
-    dt = Math.min(dt, 0.1);
+    // Task 85: обычный режим — анти-спираль (dt ≤ 0.1); testWarp —
+    // до 4 с реального времени на кадр (аккумулятор догонит физику)
+    dt = this.testWarp > 0 ? Math.min(dt, 4) : Math.min(dt, 0.1);
     this.stepFrame(dt);
   };
 
@@ -3014,8 +3241,13 @@ export class Game {
     // физика фиксированным шагом
     this.accum += dt;
     const STEP = 1 / 60;
+    // Task 85 (e2e/отладка): «ускорение времени» — сколько шагов
+    // физики разрешено на кадр. В песочнице SwiftShader душит fps
+    // до ~1 (симуляция ползёт в 10%); testWarp>5 позволяет догнать
+    // реальное время. 0/5 — обычный лимит (анти-спираль смерти)
+    const maxSteps = this.testWarp > 0 ? this.testWarp : 5;
     let steps = 0;
-    while (!this.paused && this.accum >= STEP && steps < 5) {
+    while (!this.paused && this.accum >= STEP && steps < maxSteps) {
       this.time += STEP;
       this.updateWeather(STEP);
       this.player.fixedStep(STEP, this.time);
@@ -3040,6 +3272,27 @@ export class Game {
       this.accum -= STEP;
       steps++;
     }
+
+    // Task 85: АБОРДАЖ. brawler-ИИ в упор сам лезет на борт игрока
+    // (таранно-абордажная тактика); кулдаун guard от мгновенного
+    // повторного нападения после отбоя
+    if (!this.boarding && !this.docked && !this.player.sinking && !this.dead) {
+      for (const ai of this.aiShips) {
+        if (ai.state !== 'combat' || ai.tactic !== 'brawler' || ai.frozen) continue;
+        if (ai.boardCd > 0 || ai.ship.sinking) continue;
+        if (ai.ship.position.distanceTo(this.player.position) < 34
+          && this.player.speedKnots() < 9) {
+          this.startBoarding(ai, false);
+          break;
+        }
+      }
+    }
+    // абордаж: тяга крючьев, сцепка, мостки, бой (после шагов
+    // физики — позы кораблей уже посчитаны). dt = СИМ-время кадра:
+    // при warp и медленном fps бой идёт в темпе физики, а не
+    // каркасов рендера. Task 87: фаза ПОДХОДА удалена — тросы
+    // тянут корабли напрямую, подшагового управления больше нет
+    this.boarding?.update(steps * STEP, this.time);
 
     // «зелёная вода» (Task 25): слишком большая волна накрыла палубу —
     // сообщить игроку (не чаще раза в 12 с)
@@ -3257,6 +3510,8 @@ export class Game {
                     onQuarter: !!(plan?.hasQuarter && this.lander!.pos.z < plan.qFrontZ),
                     onStair: !!(plan && this.lander!.pos.z > plan.qFrontZ && this.lander!.pos.z < plan.stairZ0
                       && Math.abs(Math.abs(this.lander!.pos.x) - plan.stairX) < 0.46),
+                    // Task 89: дистанция камеры (колесо — зум)
+                    camDist: lh.camDist,
                     bullets: lh.bullets,
                   }
                 : null,
@@ -3502,6 +3757,9 @@ export class Game {
       const one = (sh: Ship) => ({
         detailed: sh.crewDetailedOpt,
         figures: sh.crew3d.total,
+        // Task 89: сколько видимых фигур погибло (абордаж: матросы
+        // гибнут и на своей палубе)
+        dead: sh.crew3d.dead,
         tris: sh.crew3d.group.children.length
           ? Math.round(sh.crew3d.group.children.reduce((a, g) => a + (g as THREE.Group).children!.length, 0))
           : 0,
@@ -3570,6 +3828,7 @@ export class Game {
     // sinking игрока
     if (this.player.sinking && !this.dead && this.player.sinkT > 5) {
       this.dead = true;
+      this.deadReason = 'sunk';
       this.boatLaunch?.abort();
       this.pushMessage('Корабль затонул...');
     }
@@ -4099,6 +4358,7 @@ export class Game {
       : { ...this.settings.gameplay.startingAmmo };
     p.sailTarget = 0;
     this.dead = false;
+    this.deadReason = null;
     this.pushMessage(`Новый корабль у гавани. Половина золота ушла на дно...`);
   }
 

@@ -686,7 +686,11 @@ export function buildFigure(role: CrewRole, traits: Traits, seed: number,
     if (mount) { m.add(mount); if (traits.hook !== side) wristMount = mount; }
     return m;
   };
-  for (const side of [-1, 1] as const) {
+  // Task 88: порядок [1, −1] — маунт у кисти (рука без крюка)
+  // достаётся ПОСЛЕДНЕЙ обработанной руке (side −1 = ПРАВАЯ рука
+  // персонажа, фигурка смотрит в +Z): сабля/пистолет/труба капитана
+  // теперь в ПРАВОЙ руке (заказ игрока), крюк — на левой
+  for (const side of [1, -1] as const) {
     if (movable && role !== 'helmsman') {
       const m = mkArmMesh(side);
       if (side < 0) armL = m; else armR = m;
@@ -1321,7 +1325,7 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
   const nSpares = Math.min(12, Math.max(0, Math.round(P.maxCrew * 0.8) - nDeck));
   for (let i = 0; i < nSpares; i++) {
     const f = allCats
-      ? buildCatCrewFigure('watch', nextSeed(), true)
+      ? buildCatCrewFigure('watch', nextSeed(), true, undead)
       : detailed && !undead
       ? (() => { const df = buildDetailedFigure('watch', rollKind('watch'), nextSeed(), true, false, professionFor('watch', kind, rot)); df.verts = detailTris(df.group); return df; })()
       : buildFigure('watch', rollKind('watch'), nextSeed(), true, undead && !allCats);
@@ -1404,7 +1408,8 @@ export function buildCrew(P: ShipPreset, seed: number, allCats = false,
     const prof = professionFor(role, kind, rot);
     let f: CrewFigure;
     if (allCats) {
-      f = buildCatCrewFigure(role, nextSeed(), busy || role === 'walker');
+      f = buildCatCrewFigure(role, nextSeed(), busy || role === 'walker', undead);
+      if (undead) ks.undead++;   // Task 84: коты-мертвецы — в телеметрию
     } else if (detailed && (!undead || isPlayerCap)) {
       f = buildDetailedFigure(role, tr, nextSeed(), busy || role === 'walker',
         undead || capCurse, prof);

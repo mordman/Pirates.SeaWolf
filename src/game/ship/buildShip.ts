@@ -3,7 +3,11 @@ import { woodNormalTex, woodRoughTex, metalNormalTex, metalRoughTex } from './pb
 import { makeHullTextures } from './hullDeco';
 import { buildFigurehead } from './figurehead';
 import { textureUrls } from '../assets/textures';
-import { PlankSystem, buildSkeleton, plankCutY, TRANSOM_Z_TOP } from './plankHull';
+import {
+  PlankSystem, buildSkeleton, plankCutY, transomZ, transomTopY,
+  STRAKE_W, LAP_TILT,
+} from './plankHull';
+import { applyWoodShader } from './woodShader';
 
 // ============================================================
 // Процедурная постройка кораблей (исторические силуэты
@@ -262,11 +266,16 @@ export const PRESETS: Record<string, ShipPreset> = {
     // голландца». 32 пушки: 18 на нижней палубе + 14 на верхней
     id: 'blackpearl', name: 'Чёрная жемчужина',
     length: 40, beam: 10, draft: 3.4, freeboard: 3.6,
-    masts: 3, gunsPerSide: 16, gunportRows: 2,
+    masts: 3, gunsPerSide: 16,
     mass: 640_000, maxSpeed: 10.6,
     hullHP: 430, sailHP: 220, maxCrew: 130, cargo: 160,
     colors: { hull: 0x141419, deck: 0x453c33, trim: 0x1e1e26, sail: 0x1a1a20 },
     flagKind: 'pirate', gallery: true, beakhead: true, quarter: 2.0,
+    // Task 84: rows 2 → 3 — ДВА закрытых орудийных дека (энциклопедия:
+    // «18 на нижней пушечной палубе и 14 на верхней»), на палубе —
+    // один неполный ряд. Прежде поровну палуба/дек давала 8 лафетов
+    // на палубе на борт, носовые — «к центру палубы» (жалоба игрока)
+    gunportRows: 3,
     category: 'war', shipClass: 'Легендарный галеон', year: 1693, country: 'Карибское море',
   },
 
@@ -498,7 +507,13 @@ export function sailAddHole(s: SailInfo, u: number, v: number, r: number) {
 }
 
 // ---------- шейдер паруса ----------
-function sailMaterial(baseColor: number): THREE.ShaderMaterial {
+/** Task 82: ткань паруса — вертикальные полотнища со швами, риф-банты,
+ *  пришивная кромка (таблица), погодные пятна/грязь у шкаторины,
+ *  плетение ткани вблизи и ПРОСВЕТ насквозь против солнца + мягкое
+ *  небесное окружение вместо жёсткого `ndl`. Рифление/пузо/трепет/
+ *  пробоины и путь uTex (своя картинка ткани) — без изменений.
+ *  panels — число полотнищ по ширине (≈ ширина/0.55 м). */
+function sailMaterial(baseColor: number, panels = 9): THREE.ShaderMaterial {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uBelly: { value: 0.5 },
@@ -516,6 +531,7 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uHoles: { value: Array.from({ length: 8 }, () => new THREE.Vector3(0, 0, 0)) },
       uHoleN: { value: 0 },
       uAspect: { value: 1 },      // ширина/высота — дыры круглые в метрах
+      uSeamsN: { value: panels }, // Task 82: полотнища по ширине
     },
     vertexShader: /* glsl */`
       uniform float uBelly, uTime, uFurl, uFlutter;
@@ -541,10 +557,14 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         float dz = belly + flut;
         p.z += dz;
         // нормаль аналитически (по пуза) — с полным наклоном, чтобы
-        // выпуклость читалась и в освещении, а не только в силуэте
+        // выпуклость читалась и в освещении, а не только в силуэте.
+        // Task 82: В МИРОВЫЕ координаты (mat3(modelMatrix)) — прежде
+        // нормаль оставалась ЛОКАЛЬНОЙ, а солнце uSunDir мировое: при
+        // повёрнутом корабле свет/просвет падали «не туда», парус
+        // висел тёмным силуэтом против солнца
         float dzu = uBelly * cos(uv.x * 3.14159) * 3.14159 * sin(uv.y * 3.14159);
         float dzv = uBelly * sin(uv.x * 3.14159) * 3.14159 * cos(uv.y * 3.14159);
-        vN = normalize(vec3(-dzu * 0.8, -dzv * 0.8, 1.0));
+        vN = normalize(mat3(modelMatrix) * vec3(-dzu * 0.8, -dzv * 0.8, 1.0));
         // рифление: при uFurl парус собирается к рее/штагу
         p.y *= mix(1.0, 0.10, uFurl);
         p.x *= mix(1.0, 0.55, uFurl);
@@ -561,6 +581,7 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
       uniform vec3 uHoles[8];
       uniform float uHoleN;
       uniform float uAspect;
+      uniform float uSeamsN;      // Task 82: число полотнищ по ширине
       uniform sampler2D uTex;    // Task 39: своя ткань паруса по ссылке
       uniform float uTexOn;
       float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
@@ -570,9 +591,56 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
         // Task 39: СВОЯ ткань — вместо базового цвета полотна;
         // швы/заплатки/пробоины рисуются ПОВЕРХ картинки
         vec3 col = uTexOn > 0.5 ? texture2D(uTex, vUv).rgb : uColor;
-        // швы (горизонтальные полотнища)
+        // ===== Task 82: ПОЛОТНИЩА (вертикальные швы, ~55 см ткани) =====
+        // шов — двойная строчка: тёмная линия + лёгкий рельеф тона
+        // (контраст 26% — при 14% на дальнем плане швы не читались)
+        float fx = fract(vUv.x * uSeamsN);
+        float pseam = 1.0 - smoothstep(0.005, 0.016, min(fx, 1.0 - fx));
+        float pseam2 = 1.0 - smoothstep(0.012, 0.05, min(fx, 1.0 - fx));
+        col *= 1.0 - pseam * 0.26;
+        col *= 0.96 + 0.04 * pseam2;
+        // Task 84: ПАНЕЛЬНЫЙ ТОН — каждое полотнище из своего рулона
+        // ткани (±2.5% яркости): живая «лоскутная» фактура полотна
+        float panel = hash12(vec2(floor(vUv.x * uSeamsN), 7.31));
+        col *= 0.975 + 0.05 * panel;
+        // Task 84: БОЛТ-РОП (ликпас) — трос, вшитый в шкаторину:
+        // чуть темнее кромка на самом краю полотна; БОУТЫ — усилительные
+        // накладки в углах (галсовый/шкотовый/ноковый) — там полотнище
+        // рвётся первым. edH — своя кромка (ed объявлен ниже по коду)
+        float edH = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+        float lik = 1.0 - smoothstep(0.002, 0.008, edH);
+        col *= 1.0 - lik * 0.10;
+        float corner = 0.0;
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(0.0, 0.0))));
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(1.0, 0.0))));
+        corner = max(corner, 1.0 - smoothstep(0.16, 0.06, length(vUv - vec2(0.5, 1.0))));
+        col *= 1.0 - corner * 0.07;
+        // старые горизонтальные швы (поперечные полотнища) — слабее
         float seams = smoothstep(0.035, 0.0, abs(fract(vUv.y * 5.0) - 0.5) - 0.46);
-        col *= 1.0 - seams * 0.16;
+        col *= 1.0 - seams * 0.08;
+        // ===== РИФ-БАНТЫ: усиленные горизонтальные полосы, к ним
+        // пришиты риф-шкертсы (гребёнка коротких точек). Task 82:
+        // контраст 14% и шире — при 7% полосы не читались =====
+        float rb = 1.0 - smoothstep(0.05, 0.10, abs(fract(vUv.y * 2.4 + 0.13) - 0.5));
+        col *= 1.0 - rb * 0.14;
+        col *= 1.0 - rb * 0.5 * step(0.93, fract(vUv.x * uSeamsN * 1.7));
+        // ===== ПРИШИВНАЯ КРОМКА (таблица): двойной подгиб шкаторины
+        // + строчка на 3 см внутрь =====
+        float ed = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+        float tab = 1.0 - smoothstep(0.016, 0.028, ed);
+        float stitch = smoothstep(0.014, 0.006, abs(ed - 0.032));
+        col *= 1.0 - tab * 0.10 - stitch * 0.10;
+        // ===== ПОГОДА: пятна плесени, грязь у галсового угла (низ),
+        // потёки от реи (верх), выгоревшая середина =====
+        float stain = smoothstep(0.58, 0.75, vnoise(vUv * vec2(1.3, 2.1) + 3.1));
+        col = mix(col, col * 0.78, stain * 0.65);
+        col *= 0.90 + 0.10 * vnoise(vUv * vec2(2.7, 1.9) + 8.7);
+        col *= mix(1.0, 0.84, (1.0 - vUv.y) * 0.34);          // грязь у шкота
+        col *= mix(0.93, 1.0, smoothstep(0.9, 0.72, vUv.y)); // потёки от реи
+        // плетение ткани — только вблизи (fwidth гасит мерцание вдали)
+        float wv = vnoise(vUv * vec2(uAspect * 160.0, 160.0));
+        float wfade = 1.0 - clamp(fwidth(vUv.y * 160.0) * 0.7, 0.0, 1.0);
+        col *= 1.0 + (wv - 0.5) * 0.07 * wfade;
         // заплатки и рваные края от повреждений
         float dmg = vDmgU;
         float patches = step(0.55, vnoise(vUv * 4.7 + 7.3)) * dmg;
@@ -592,9 +660,23 @@ function sailMaterial(baseColor: number): THREE.ShaderMaterial {
             if (hdist < rr * 0.58) discard;   // рваный сквозной проём
           }
         }
-        // простое освещение
-        float ndl = max(dot(normalize(vN), normalize(uSunDir)), 0.0) * 0.5 + 0.55;
-        col *= ndl;
+        // ===== ОСВЕЩЕНИЕ Task 82: мягкое небо + ПРОСВЕТ =====
+        vec3 N = normalize(vN);
+        vec3 sun = normalize(uSunDir);
+        // лицевое рассеяние: обёрнутое (полотно — не металл), меньше
+        // жёсткой границы света/тени, чем прежде
+        float ndl = max(dot(N, sun), 0.0);
+        ndl = pow(ndl, 0.78) * 0.62 + 0.38 * smoothstep(-0.35, 0.6, dot(N, sun));
+        // ПРОСВЕТ: солнце СЗАДИ полотна светит сквозь волокно — тёплое
+        // свечение (главный признак парусины на просвет); швы и кромка
+        // толще — светят меньше, дыры не светят вовсе
+        float back = max(dot(-N, sun), 0.0);
+        back *= back;
+        float thick = 1.0 - 0.55 * pseam - 0.35 * tab - 0.3 * rb - 0.4 * holes;
+        vec3 sunTint = vec3(1.0, 0.92, 0.76);
+        vec3 amb = vec3(0.40, 0.44, 0.52) * 0.46 + vec3(0.30, 0.26, 0.22) * 0.18 * (1.0 - vUv.y);
+        col = col * (amb + vec3(1.0, 0.96, 0.88) * ndl * 0.85)
+            + sunTint * back * 0.50 * clamp(thick, 0.0, 1.0) * (0.35 + 0.65 * uColor.g);
         float a = 1.0 - clamp(holes, 0.0, 0.9);
         if (a < 0.55) discard; // дыры — без полупрозрачности (нет проблем сортировки)
         gl_FragColor = vec4(col, 1.0);
@@ -702,8 +784,16 @@ export function hullProfile(t: number, P: ShipPreset) {
   let w: number;
   if (t < 0.45) w = THREE.MathUtils.lerp(0.58, 1.0, smooth01(t / 0.45));
   else w = THREE.MathUtils.lerp(1.0, 0.0, Math.pow(smooth01((t - 0.45) / 0.55), 0.75));
-  // пинасс: сужение только в самом конце — почти вертикальный плоский нос
-  if (P.flatBow && t > 0.82) w = Math.max(w, THREE.MathUtils.lerp(0.74, 0.42, smooth01((t - 0.82) / 0.18)));
+  // пинасс: сужение только в самом конце — почти вертикальный плоский нос.
+  // Task 82: вход в плоский нос ПЛАВНЫЙ (t 0.74→0.82): прежде ширина
+  // прыгала на ~2.3 м ЗА ОДНУ шпацию (жёсткий max) — пояса обшивки
+  // перерезали угол диагональными досками (аудит пинасса: попадания
+  // на 0.2–1.8 м ГЛУБЖЕ обвода) и на борту читалась ступень
+  if (P.flatBow && t > 0.74) {
+    const flat = THREE.MathUtils.lerp(0.74, 0.42, smooth01((t - 0.82) / 0.18));
+    const blend = smooth01((t - 0.74) / 0.08);
+    w = THREE.MathUtils.lerp(w, Math.max(w, flat), blend);
+  }
   const draft = P.draft * (0.72 + 0.28 * Math.sin(Math.PI * Math.min(1, t * 1.15)));
   let bulwark: number;
   if (P.beakhead) {
@@ -735,17 +825,37 @@ export function gunLayout(P: ShipPreset): GunSlot[] {
   // у судов с квартердеком открытая батарея начинается ОТ его
   // передней кромки (под квартердеком орудий на палубе не ставят)
   const qFront = P.quarter ? quarterFrontZ(P) : -Infinity;
-  // распределение стволов по ярусам: поровну, остаток — верхним ярусам
+  // распределение стволов по ярусам. Task 84 (жалоба игрока: «на
+  // палубе должен быть только ОДИН ряд, всё остальное — ниже по
+  // бортам»): при закрытых батареях палубе достаётся лишь ~18–22%
+  // стволов (минимум 2) — НЕПОЛНЫЙ ряд в широком миделе; прежде
+  // стволы делились ПОРОВНУ между палубой и деками — палуба
+  // заряжалась 8–9 орудиями на борт, носовые уходили в сужение
+  // корпуса «к центру палубы». Остальное — в закрытые деки с
+  // портами (у жемчужины rows=3 → ДВА закрытых дека, как в
+  // энциклопедии: 18 нижняя + 14 верхняя)
   const counts = new Array<number>(tiers).fill(0);
-  for (let i = 0; i < N; i++) counts[i % tiers]++;
+  if (tiers === 1) {
+    counts[0] = N;
+  } else {
+    counts[0] = Math.max(2, Math.round(N * 0.2));
+    const closed = tiers - 1;
+    let rest = N - counts[0];
+    for (let i = 0; i < rest; i++) counts[1 + (i % closed)]++;
+  }
   const slots: GunSlot[] = [];
   for (let tier = 0; tier < tiers; tier++) {
     const n = counts[tier];
     if (n <= 0) continue;
     if (tier === 0) {
-      // открытая палуба: от квартердека (или кормы) до полубака
+      // открытая палуба: от квартердека (или кормы) до полубака;
+      // при закрытых батареях — КОРОЧЕ и только широкий мидель
+      // (z ≤ 0.12L): у носа корпус сужается, и лафеты «у борта»
+      // визуально уезжают к середине палубы
       const z0 = Math.max(-L * 0.22, qFront + Math.max(0.9, L * 0.025));
-      const z1 = P.castleH ? L * 0.18 : L * 0.24;
+      const z1 = tiers > 1
+        ? (P.castleH ? L * 0.08 : L * 0.12)
+        : (P.castleH ? L * 0.18 : L * 0.24);
       for (let i = 0; i < n; i++) {
         const z = THREE.MathUtils.lerp(z0, z1, n === 1 ? 0.5 : i / (n - 1));
         slots.push({ z, tier: 0, y: 0 }); // y палубы считает потребитель
@@ -1125,8 +1235,11 @@ function makeDeckTexture(baseColor: number, seed: number): THREE.Texture {
 function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
   const S = 48, L = P.length;
   const pos: number[] = [], col: number[] = [], idx: number[] = [], uvs: number[] = [];
-  const cTop = new THREE.Color(P.colors.trim).multiplyScalar(1.45);
-  const cSide = new THREE.Color(P.colors.trim).multiplyScalar(1.12);
+  // Task 83 (жалоба «перила стали белыми»): планширь — ПОД ЦВЕТ КОРАБЛЯ
+  // (hull), лишь едва светлее/темнее по граням; прежде — цветом trim с
+  // высветлением ×1.45/×1.12, что на солнце читалось белой лентой
+  const cTop = new THREE.Color(P.colors.hull).multiplyScalar(1.08);
+  const cSide = new THREE.Color(P.colors.hull).multiplyScalar(0.95);
   // сечение бруса: свес наружу, ширина внутрь, высота вверх/вниз
   const OUT = 0.12, IN = 0.30, HT = 0.06, HB = 0.07;
   type V3 = [number, number, number];
@@ -1155,9 +1268,15 @@ function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
   for (const s of [1, -1] as const) {
     // вершины сечения на шпации: [наружная-низ, наружная-верх,
     // внутренняя-верх, внутренняя-низ]
+    // Task 82: кормовой конец бруса — на таффреле: планширь начинается
+    // на 10 см впереди линии верха стены транца и уходит в её торец
+    // (прежде начинался на −L/2 — над стеной, стоявшей впереди среза,
+    // оставался участок борта без планширя)
     const sec: V3[][] = [];
+    const zTop = transomZ(P, transomTopY(P));
+    const t0 = Math.max(-0.05, (zTop + 0.10 + L / 2) / L);
     for (let i = 0; i <= S; i++) {
-      const t = i / S;
+      const t = THREE.MathUtils.lerp(t0, 1, i / S);
       const p = hullProfile(t, P);
       const z = THREE.MathUtils.lerp(-L / 2, L / 2, t);
       const xo = s * (p.w + OUT);
@@ -1188,13 +1307,33 @@ function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
     const a0 = sec[0], aS = sec[S];
     q(a0[0], a0[3], a0[2], a0[1], cSide);
     q(aS[0], aS[1], aS[2], aS[3], cSide);
+    // Task 84: ТОП-ТИМБЕРСЫ — концы шпангоутов, выходящие над планширем
+    // (кницы, к которым швартуются и вяжут снасти): стойки ~2 м шаг,
+    // отстоят от таффрела и от штевня. Придают борту живой зубчатый
+    // силуэт настоящего парусника (VLM: «ровная труба» без них)
+    {
+      const step = Math.max(2, Math.round((S * 2.0) / L));
+      for (let i = 3; i < S - 3; i += step) {
+        const st = sec[i];
+        const z = st[0][2], xo = st[0][0], yb = st[1][1];
+        const h = 0.15, d = 0.07, xi2 = xo - s * 0.07, xo2 = xo + s * 0.012;
+        // наружная грань (x ≈ const)
+        q([xo2, yb, z - d], [xo2, yb + h, z - d], [xo2, yb + h, z + d], [xo2, yb, z + d], cSide);
+        // верх
+        q([xi2, yb + h, z - d], [xo2, yb + h, z - d], [xo2, yb + h, z + d], [xi2, yb + h, z + d], cTop);
+        // носовая и кормовая грани
+        q([xi2, yb, z + d], [xi2, yb + h, z + d], [xo2, yb + h, z + d], [xo2, yb, z + d], cSide);
+        q([xi2, yb + h, z - d], [xi2, yb, z - d], [xo2, yb, z - d], [xo2, yb + h, z - d], cSide);
+      }
+    }
   }
-  // кормовой планширь: от крайней кормовой точки до верха стены транца
-  // (закрывает сверху карман между обшивкой и стеной)
+  // кормовой планширь (таффрел): замыкает верх стены транца — от 12 см
+  // впереди линии верха стены до 30 см за корму (широкая кормовая
+  // балка-counter, Task 82: VLM не читал прежние 26 см как таффрел)
   {
     const p = hullProfile(0.02, P);
-    crossBar(p.w + OUT, p.bulwark - HB, p.bulwark + HT,
-      -L / 2 - 0.03, TRANSOM_Z_TOP * L + 0.012 * L);
+    const zTop = transomZ(P, transomTopY(P));
+    crossBar(p.w + OUT, p.bulwark - HB, p.bulwark + HT, zTop - 0.12, zTop + 0.30);
   }
   // плоский нос (пинасс): бортовые планшири не сходятся к штевню
   const pw = hullProfile(1, P).w;
@@ -1214,6 +1353,46 @@ function buildCapRail(P: ShipPreset): THREE.BufferGeometry {
 /** Мишень для слияния реквизита в один меш (uv — диагональная
  *  коробочная развёртка: рельеф мелким деталям без растяжений) */
 interface BakedTarget { pos: number[]; col: number[]; uv: number[] }
+
+/** Task 82: дощатая стена ПЛОСКОГО носа (пинасс): пояса, как у транца,
+ *  закрывают носовой срез от нижнего пояса обшивки до планширя — борта
+ *  у плоского носа не сходятся к штевню, и без стены над срезом (между
+ *  z 0.497L и носом) оставалась открытая щель во всю ширину носа.
+ *  Стена неразрушаемая (гладкое дерево, как надстройки): попадания в
+ *  нос выше среза уходят в корпус/штевень, как и раньше. */
+function buildBowWall(P: ShipPreset): THREE.BufferGeometry {
+  const L = P.length;
+  const t: BakedTarget = { pos: [], col: [], uv: [] };
+  const zW = L * 0.497;                       // плоскость стены = кромка поясов
+  const y0 = plankCutY(P) - 0.01 + STRAKE_W / 2;
+  const yTop = hullProfile(0.99, P).bulwark - 0.015 - STRAKE_W / 2;
+  const nStr = Math.max(3, Math.ceil((yTop - y0) / 0.42) + 1);
+  const pitch = (yTop - y0) / (nStr - 1);
+  for (let k = 0; k < nStr; k++) {
+    const y = y0 + k * pitch;
+    const below = y < 0.05;
+    const hw = hullHalfWidthAt(P, 0.99, y);
+    const half = Math.max(hw, 0.34) + 0.02;   // торцы под обшивку бортов
+    const width = half * 2;
+    const nSplit = Math.max(1, Math.ceil(width / 1.4));
+    const segLen = width / nSplit;
+    const thick = below ? 0.105 : 0.09;
+    const tone = 0.93 + (((k * 73) % 11) / 11) * 0.14;
+    const c = new THREE.Color(P.colors.hull).multiplyScalar(tone);
+    if (below) {
+      const f = Math.min(1, (0.05 - y) / Math.max(0.8, P.draft * 0.45));
+      c.lerp(new THREE.Color(0x33402a), f * 0.82);
+    }
+    for (let p = 0; p < nSplit; p++) {
+      const xc = -half + p * segLen + segLen / 2;
+      // наклон поясья: нижняя кромка наружу (в +Z, к носу), как у бортов
+      const euler = new THREE.Euler(-LAP_TILT, 0, 0);
+      bakeInto(t, new THREE.BoxGeometry(segLen + 0.006, STRAKE_W, thick),
+        c, xc, y, zW + (p % 2) * 0.0007, euler);
+    }
+  }
+  return bakedGeo(t);
+}
 
 /** Запечь геометрию в общие массивы (для слияния реквизита в один меш) */
 function bakeInto(target: BakedTarget, geo: THREE.BufferGeometry,
@@ -1354,7 +1533,7 @@ function buildCastles(P: ShipPreset): THREE.BufferGeometry {
   const t: BakedTarget = { pos: [], col: [], uv: [] };
   const cWall = new THREE.Color(P.colors.trim).multiplyScalar(1.15);
   const cWoodD = new THREE.Color(0x4a3420);
-  const cRail = new THREE.Color(P.colors.trim).multiplyScalar(1.35);
+  const cRail = new THREE.Color(P.colors.hull).multiplyScalar(1.08); // Task 83: перила — под цвет корпуса
   const ch = P.castleH || 0;
 
   const mkCastle = (t0: number, t1: number, extra: number) => {
@@ -1409,9 +1588,12 @@ function buildQuarterdeck(
 
   // окраска — В ТОН КОРПУСА (просьба игрока): надстройка красится той
   // же краской, что и борт; поручни/планшири — отделка цветом trim
+  // Task 83 (жалоба «кватердэк стал белым»): настил темнее (0.92 → 0.58)
+  // — плоская поверхность в полный солнечный свет читалась белым
+  // листом; поручни/стойки — цвет корпуса почти без высветления
   const cWall = new THREE.Color(P.colors.hull);
   const cWallD = new THREE.Color(P.colors.trim);
-  const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.92);
+  const cFloor = new THREE.Color(P.colors.deck).multiplyScalar(0.58);
   const cCopper = new THREE.Color(0x9a6a3a);
   const cWoodPeg = new THREE.Color(0xb08a58);
   const t: BakedTarget = { pos: [], col: [], uv: [] };
@@ -1463,8 +1645,8 @@ function buildQuarterdeck(
   const parapetH = 0.14;             // бортик над настилом
   const balH = railH - parapetH;     // высота открытых перил над бортиком
   const cWallX = new THREE.Color(P.colors.hull);                    // обшивка — точный цвет корпуса
-  const cPost = new THREE.Color(P.colors.hull).multiplyScalar(1.3); // стойки — чуть светлее
-  const cHand = new THREE.Color(P.colors.hull).multiplyScalar(1.55); // поручень/планширь — светлее корпуса
+  const cPost = new THREE.Color(P.colors.hull).multiplyScalar(1.04); // стойки — в тон корпуса
+  const cHand = new THREE.Color(P.colors.hull).multiplyScalar(1.08); // поручень/планширь — едва светлее
   // гладкая «лента» вдоль кривой борта: непрерывная геометрия
   // (внешняя+внутренняя грани, верх, низ, торцы) — без швов-ступеней
   const smoothBand = (
@@ -2130,8 +2312,13 @@ function buildShipDetail(P: ShipPreset, mastDefs: { z: number; h: number }[], bo
       const N = 5;
       const tops: THREE.Vector3[] = [], bases: THREE.Vector3[] = [];
       for (let k = 0; k < N; k++) {
-        tops.push(new THREE.Vector3(0, m.h * (0.55 + k * 0.09), m.z));
-        bases.push(new THREE.Vector3(side * 2.6, 1.6, m.z - 2.0 + k * 1.0));
+        // Task 84: базы вант — на ПЛАНШИРЕ (вантпутенсы реального
+        // борта), не на фиксированном x=2.6 «в воздухе» у миделя
+        const zb = m.z - 2.2 + k * 0.86;
+        const tt = clamp2((zb + L / 2) / L, 0, 1);
+        const prof = hullProfile(tt, P);
+        tops.push(new THREE.Vector3(0, m.h * (0.56 + k * 0.075), m.z));
+        bases.push(new THREE.Vector3(side * (prof.w + 0.16), prof.bulwark + 0.04, zb));
       }
       for (let k = 0; k < N; k++) addLine(tops[k], bases[k]); // плотный веер вант
       for (let k = 0; k < N - 1; k++) {
@@ -2491,6 +2678,11 @@ export interface RigLine {
 export interface Rigging {
   lines: THREE.LineSegments;
   meta: RigLine[];
+  /** Task 82: ОБЪЁМНЫЕ тросы стоячего такелажа — по одному мешу на
+   *  мачту (userData.mast): при ломе мачты прячется весь меш, как
+   *  ванты с выбленками (Ship.snapRigging). Линии остаются — по ним
+   *  работает обрыв (вырождение в точку) и восстановление */
+  ropes: THREE.Mesh[];
 }
 function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowspritTip: THREE.Vector3,
   pinRopes?: { mast: number; ends: { a: THREE.Vector3; b: THREE.Vector3 }[] }): Rigging {
@@ -2505,21 +2697,41 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
     // штаги к носу и корме
     addLine(mi, top.clone(), bowspritTip.clone());
     addLine(mi, top.clone(), new THREE.Vector3(0, 1.2, -L / 2 + 0.4));
-    // ванты к бортам
+    // ванты к бортам. Task 84: от ПЛАНШИРЯ — вантпутенсы на РЕАЛЬНОМ
+    // борту (прежде x=±2.6 у всех судов: у широких корпусов ванты
+    // «висели в воздухе» над палубой); 4 на борт, плюс ВЫБЛЕНКИ —
+    // поперечные ступени-лесенка между соседними вантами (в volume
+    // они идут тоньше — см. ниже)
     for (const side of [-1, 1]) {
+      const shrouds: { a: THREE.Vector3; b: THREE.Vector3 }[] = [];
+      for (let k = 0; k < 4; k++) {
+        const zb = m.z - 2.2 + k * 1.15;
+        const tt = clamp2((zb + L / 2) / L, 0, 1);
+        const prof = hullProfile(tt, P);
+        const a = new THREE.Vector3(side * (prof.w + 0.16), prof.bulwark + 0.04, zb);
+        const b = new THREE.Vector3(0, m.h * (0.56 + k * 0.10), m.z);
+        shrouds.push({ a, b });
+        addLine(mi, a.clone(), b.clone());
+      }
       for (let k = 0; k < 3; k++) {
-        const zz = m.z - 1.5 + k * 1.5;
-        addLine(mi, new THREE.Vector3(side * 2.6, 1.6, zz),
-          new THREE.Vector3(0, m.h * (0.55 + k * 0.15), m.z));
+        for (let f = 0.18; f <= 0.80; f += 0.082) {
+          addLine(mi,
+            new THREE.Vector3().lerpVectors(shrouds[k].a, shrouds[k].b, f),
+            new THREE.Vector3().lerpVectors(shrouds[k + 1].a, shrouds[k + 1].b, f));
+        }
       }
     }
   }
-  // бакштаги к корме от грот-мачты
+  // бакштаги к корме от грот-мачты (Task 84: к ПЛАНШИРУ транца)
   if (masts.length >= 2) {
     const mainIdx = masts.length - 1 > 1 ? masts.length - 2 : 0;
     const main = masts[mainIdx];
-    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(2.4, 1.4, -L / 2 + 0.3));
-    addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z), new THREE.Vector3(-2.4, 1.4, -L / 2 + 0.3));
+    const zStern = -L / 2 + 0.5;
+    const profS = hullProfile(clamp2((zStern + L / 2) / L, 0, 1), P);
+    for (const side of [-1, 1]) {
+      addLine(mainIdx, new THREE.Vector3(0, main.h * 0.8, main.z),
+        new THREE.Vector3(side * (profS.w + 0.1), profS.bulwark + 0.04, zStern));
+    }
   }
   // концы с нагельных планок квартердека — к СВОЕЙ мачте
   // (вместе с ней рвутся — «тросы падают вместе с мачтой»)
@@ -2531,7 +2743,40 @@ function buildRigging(P: ShipPreset, masts: { z: number; h: number }[], bowsprit
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   const mat = new THREE.LineBasicMaterial({ color: 0x241c12, transparent: true, opacity: 0.85 });
-  return { lines: new THREE.LineSegments(g, mat), meta };
+  // Task 82: ОБЪЁМНЫЕ тросы (диаметр ~6.5 см) — меш на мачту из тех же
+  // meta-линий: «провода» 1px не читались как такелаж (VLM). Снасти
+  // короткие (<0.4 м) объёмом не дублируем
+  const perMast: BakedTarget[] = masts.map(() => ({ pos: [], col: [], uv: [] }));
+  const cRope = new THREE.Color(0x3a2d20);
+  const up = new THREE.Vector3(0, 1, 0);
+  const dir = new THREE.Vector3();
+  for (const l of meta) {
+    const len = l.a.distanceTo(l.b);
+    if (len < 0.4) continue;
+    dir.subVectors(l.b, l.a).normalize();
+    const e = new THREE.Euler().setFromQuaternion(
+      new THREE.Quaternion().setFromUnitVectors(up, dir));
+    // Task 84: ВЫБЛЕНКИ тоньше (1.3 см против 6.6 см у несущих вант) —
+    // лесенка читается как ступени, а не как второй веер тросов
+    const r = len < 2.2 ? 0.013 : 0.033;
+    bakeInto(perMast[l.mast], new THREE.BoxGeometry(r * 2, len, r * 2), cRope,
+      (l.a.x + l.b.x) / 2, (l.a.y + l.b.y) / 2, (l.a.z + l.b.z) / 2, e);
+  }
+  // Task 82: пеньковый трос — тугое волокно: микрорельеф + блик на
+  // солнце (roughness 0.55; прежде 0.92 — «провода без блеска», VLM)
+  const ropeMat = new THREE.MeshStandardMaterial({
+    color: 0x35291c, roughness: 0.55,
+    normalMap: woodNormalTex('spar'), normalScale: new THREE.Vector2(0.45, 0.45),
+  });
+  const ropes: THREE.Mesh[] = [];
+  for (let mi = 0; mi < masts.length; mi++) {
+    if (!perMast[mi].pos.length) continue;
+    const mesh = new THREE.Mesh(bakedGeo(perMast[mi]), ropeMat);
+    mesh.userData.mast = mi;
+    mesh.castShadow = true;
+    ropes.push(mesh);
+  }
+  return { lines: new THREE.LineSegments(g, mat), meta, ropes };
 }
 
 // ---------- полная сборка ----------
@@ -2615,6 +2860,19 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     }));
   group.add(capRail);
 
+  // Task 82: дощатая стена плоского носа (пинасс)
+  let bowWallMesh: THREE.Mesh | undefined;
+  if (P.flatBow) {
+    bowWallMesh = new THREE.Mesh(buildBowWall(P),
+      new THREE.MeshStandardMaterial({
+        vertexColors: true, metalness: 0.05,
+        normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
+        normalScale: new THREE.Vector2(0.4, 0.4), roughness: 1,
+      }));
+    bowWallMesh.castShadow = true;
+    group.add(bowWallMesh);
+  }
+
   // рангоут — оструганные брёвна: вертикальные волокна;
   // тёмная окраска (darkMat) — крашеное дерево: рельеф обшивки мягче
   const woodMat = new THREE.MeshStandardMaterial({
@@ -2622,6 +2880,9 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     normalMap: woodNormalTex('spar'), roughnessMap: woodRoughTex('spar'),
     normalScale: new THREE.Vector2(0.5, 0.5), roughness: 1,
   });
+  // Task 82: процедурные волокна на рангоут/колесо/шпиль (общая
+  // проекция по нормали даёт осевое волокно и мачтам, и реям)
+  applyWoodShader(woodMat);
   const darkMat = new THREE.MeshStandardMaterial({
     color: P.colors.trim,
     normalMap: woodNormalTex('hull'), roughnessMap: woodRoughTex('hull'),
@@ -2744,9 +3005,10 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
   const sails: SailInfo[] = [];
   const addSquareSail = (mastIndex: number, level: number, width: number, height: number, setAt: number) => {
     const md = mastDefs[mastIndex];
-    const g = new THREE.PlaneGeometry(width, height, 10, 7);
+    const g = new THREE.PlaneGeometry(width, height, 16, 11);
     g.translate(0, -height / 2, 0); // верхняя кромка у реи
-    const mat = sailMaterial(P.colors.sail);
+    // Task 82: полотнища ~55 см — число швов пропорционально ширине
+    const mat = sailMaterial(P.colors.sail, Math.max(5, Math.round(width / 0.55)));
     mat.uniforms.uAspect.value = width / height;
     const mesh = new THREE.Mesh(g, mat);
     const y = md.h * level - P.draft * 0.3;
@@ -2789,7 +3051,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     const H = { x: 0, y: 0 };
     const T = { x: yLen, y: -drop * 0.62 };        // нижний конец рея — вперёд и вниз
     const C = { x: -yLen * aftFrac, y: -drop };     // шкотовый угол — к корме
-    const NU = 9, NV = 6;
+    const NU = 14, NV = 9;
     const pos: number[] = [], uvs: number[] = [], idx: number[] = [];
     for (let i = 0; i <= NU; i++) {
       const u = i / NU;
@@ -2813,7 +3075,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    const mat = sailMaterial(P.colors.sail);
+    const mat = sailMaterial(P.colors.sail, Math.max(5, Math.round(yLen / 0.55)));
     // зона прострела латинского паруса — треугольник H(голова)-T(конец реи)-C(шкот):
     // в локалях меша +X -> нос после поворота меша на -90° вокруг Y
     const yardLenM = Math.hypot(T.x - H.x, T.y - H.y);
@@ -2893,7 +3155,7 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     // локальная система: X = −мирZ (продольная), Y = мирY, Z = мирX (пузо вбок)
     const a = { x: -(tip.z - head.z), y: tip.y - head.y };
     const b = { x: -(foot.z - head.z), y: foot.y - head.y };
-    const NU = 8, NV = 5;
+    const NU = 12, NV = 8;
     const pos: number[] = [], uvs: number[] = [], idx: number[] = [];
     for (let i = 0; i <= NU; i++) {
       const u = i / NU;
@@ -2918,7 +3180,8 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    const mat = sailMaterial(P.colors.sail);
+    // Task 82: полотнища по нижней шкаторине кливера
+    const mat = sailMaterial(P.colors.sail, Math.max(4, Math.round(Math.hypot(b.x, b.y) / 0.55)));
     mat.uniforms.uAspect.value = Math.max(0.3, Math.hypot(a.x, a.y) / Math.max(1, Math.hypot(b.x, b.y)));
     const mesh = new THREE.Mesh(g, mat);
     mesh.position.set(head.x, head.y, head.z - mastZ);
@@ -3012,7 +3275,14 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
       // дуло в локальных осях орудия (ствол длиной 1.15, центр 0.62)
       gun.userData.muzzleX = side * (0.62 + 0.575);
       if (isDeck) {
-        gun.position.set(side * (prof.w * 0.9 - 0.15), prof.bulwark - 0.72, slot.z);
+        // Task 83 (жалоба «пушки посреди палубы»): лафет стоит У БОРТА на
+        // ЛОКАЛЬНОЙ ширине корпуса в этом месте (прежде x = w·0.9 − 0.15
+        // от мидель-ширины профиля — у носа, где корпус сужается, лафет
+        // уезжал почти на середину палубы). Дуло при этом выдается за
+        // обшивку: hw − 0.42 + 1.20 (ствол) ≈ hw + 0.78 наружу
+        const y = prof.bulwark - 0.72;
+        const hw = Math.max(0.45, hullHalfWidthAt(P, tt, y + 0.35));
+        gun.position.set(side * Math.max(0.3, hw - 0.42), y, slot.z);
       } else {
         // закрытая батарея: УБРАНО (дульный срез за обшивкой),
         // при открытии порта лафет ВЫЕЗЖАЕТ наружу — ствол выдаётся
@@ -3192,7 +3462,17 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
   const rudGeo = new THREE.BoxGeometry(0.15, Math.max(1.2, P.draft * 0.72), rudLen);
   rudGeo.translate(0, 0, -rudLen / 2); // ось вращения — передняя кромка
   const rudderMesh = new THREE.Mesh(rudGeo, darkMat);
-  rudderMesh.position.set(0, -P.draft * 0.40, -L / 2 + 0.03);
+  // Task 82: руль висит ЗА стеной транца/ахтерштевнем: передняя кромка
+  // на 4 см за линией штевня на высоте ВЕРХА пера — перо целиком за
+  // кормой, как у подвесного руля шлюпа. Прежде стоял на −L/2+0.03 и
+  // входил в корпус на 0.7 м — сквозь стену транца торчала плоская
+  // плаха, VLM видел её как «большой светлый план под кормой»
+  {
+    const rudTopY = -P.draft * 0.42 + Math.max(1.2, P.draft * 0.72) / 2;
+    // вплотную к стене (7 см от линии) — не оставляем тёмную щель
+    // между транцем и пером руля над ватерлинией (VLM: «тёмный провал»)
+    rudderMesh.position.set(0, -P.draft * 0.42, transomZ(P, rudTopY) - 0.07);
+  }
   rudderMesh.castShadow = true;
   group.add(rudderMesh);
 
@@ -3212,12 +3492,14 @@ export function buildShip(P: ShipPreset, opts?: { boatCount?: number; planking?:
     const gProps = new THREE.Group(); gProps.name = 'Props';
     gSkeleton.add(buildSkeleton(P));
     gSkeleton.add(hull, capRail, rudderMesh);
+    if (bowWallMesh) gSkeleton.add(bowWallMesh);
     if (castlesMesh) gSkeleton.add(castlesMesh);
     if (ornMesh) gSkeleton.add(ornMesh);
     if (quarterGroup) gSkeleton.add(quarterGroup);
     for (const m of masts) gMasts.add(m);
     gMasts.add(bowsprit);
     gRig.add(rigging.lines);
+    for (const rope of rigging.ropes) gRig.add(rope);   // Task 82: объёмные тросы
     for (const gp of gunsPort) gProps.add(gp);
     for (const gs of gunsStarboard) gProps.add(gs);
     for (const gport of gunPorts) gProps.add(gport.lid);
