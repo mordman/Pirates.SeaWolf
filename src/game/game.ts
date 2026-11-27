@@ -2379,7 +2379,6 @@ export class Game {
     this.lastBoardingResult = result;
     ai.frozen = false;
     ai.boardCd = 90;   // повторное нападение — не сразу
-<<<<<<< HEAD
     // Task 89: капитан остался на ЧУЖОЙ палубе — мостки втянулись,
     // корабли расходятся: вернуть его на свою палубу
     if (this.lander && this.lander.mode === 'deck'
@@ -2389,8 +2388,6 @@ export class Game {
         plan.hasQuarter ? 0.62 : 0.5, plan.wheelZ - 1.35);
       this.pushMessage('Мостки втянулись — капитан вернулся на свою палубу');
     }
-=======
->>>>>>> origin/main
     if (result === 'lost') {
       this.dead = true;
       this.deadReason = 'captured';
@@ -2409,7 +2406,6 @@ export class Game {
 
   /** Task 85 (e2e/отладка): телеметрия абордажа */
   boardingInfo() {
-<<<<<<< HEAD
     if (!this.boarding) return null;
     const snap = this.boarding.snapshot();
     // Task 89: где сейчас капитан (own — своя палуба, enemy — чужая)
@@ -2417,9 +2413,6 @@ export class Game {
     const captain = ld && ld.mode === 'deck' && ld.deckHost
       ? (ld.deckHost === this.player.visual.group ? 'own' : 'enemy') : null;
     return { ...snap, captain };
-=======
-    return this.boarding ? this.boarding.snapshot() : null;
->>>>>>> origin/main
   }
 
   /** Task 85 (e2e/отладка): насильно начать абордаж с ИИ-кораблём
@@ -2571,7 +2564,6 @@ export class Game {
         this.rig.cycleMode();
         this.pushMessage(`Камера: ${CAMERA_LABEL[this.rig.mode]}`);
       }
-<<<<<<< HEAD
       // Task 89: ЗУМ КОЛЕСОМ — ранний endFrame этой ветки стирал
       // wheelDelta до rig.update (зум при абордаже не работал);
       // отдаём колесо ригу прямо здесь
@@ -2585,8 +2577,6 @@ export class Game {
           ? 'Капитан с саблей на палубу! У мостков у планширя — переход на чужой борт (1 — сабля)'
           : 'Капитан на палубу! Мостки лягут на борт — ждите у планширя');
       }
-=======
->>>>>>> origin/main
       inp.endFrame();
       return;
     }

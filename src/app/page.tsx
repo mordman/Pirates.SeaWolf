@@ -1017,10 +1017,7 @@ export default function Home() {
                     {' '}против{' '}
                     <span className="text-red-300">{hud.boarding.crewD}</span>
                     {' '}· бойцов {hud.boarding.fightersA + hud.boarding.fightersD}
-<<<<<<< HEAD
                     {!hud.land?.active && ' · V — рубиться самому'}
-=======
->>>>>>> origin/main
                   </span>
                 )}
                 {hud.boarding.phase === 'ending' && (
